@@ -20,7 +20,7 @@ HoloMotion is a unified foundation model designed for robust, real-time, and gen
 
 The framework supports the complete pipeline from data preparation to real-world deployment, including motion retargeting, distributed training with reinforcement learning and motion priors, performance evaluation, and ROS2-based deployment. With modular design, HoloMotion enables humanoid agents to imitate, and generalize whole-body motions in both simulation and the physical world.
 
-Whether you're building a next-generation humanoid controller in embodied systems, HoloMotion offers a practical and extensible foundation for whole-body motion tracking.
+If you're building a next-generation humanoid controller in embodied systems, HoloMotion offers a practical and extensible foundation for whole-body motion tracking.
 
 ---
 
