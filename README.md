@@ -14,7 +14,7 @@
 
 ## Introduction
 
-**HoloMotion: A Foundation Model for Whole-Body Humanoid Tracking**
+**HoloMotion: A Foundation Model for Whole-Body Humanoid Motion Tracking**
 
 HoloMotion is a unified foundation model designed for robust, real-time, and generalizable whole-body tracking of humanoid robots. Built upon high-fidelity motion capture data and advanced retargeting techniques, HoloMotion bridges the gap between human motion and embodied robot control across diverse terrains and morphologies.
 
@@ -109,7 +109,7 @@ Deploy the exported ONNX model using our ROS2 package to run on real-world robot
 ```
 @software{holomotion_2025,
   author = {Maiyue Chen, Kaihui Wang, Bo Zhang, Yi Ren, Zihao Zhu, Yucheng Wang, Zhizhong Su},
-  title = {HoloMotion: A Foundation Model for Whole-Body Humanoid Tracking},
+  title = {HoloMotion: A Foundation Model for Whole-Body Humanoid Motion Tracking},
   year = {2025},
   month = july,
   version = {0.2.2},
