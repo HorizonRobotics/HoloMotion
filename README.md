@@ -12,6 +12,32 @@
 
 </div>
 
+## Introduction
+
+**HoloMotion: A Foundation Model for Whole-Body Humanoid Tracking**
+
+HoloMotion is a unified foundation model designed for robust, real-time, and generalizable whole-body tracking of humanoid robots. Built upon high-fidelity motion capture data and advanced retargeting techniques, HoloMotion bridges the gap between human motion and embodied robot control across diverse terrains and morphologies.
+
+The framework supports the complete pipeline from data preparation to real-world deployment, including motion retargeting, distributed training with reinforcement learning and motion priors, performance evaluation, and ROS2-based deployment. With modular design, HoloMotion enables humanoid agents to imitate, and generalize whole-body motions in both simulation and the physical world.
+
+Whether you're building a next-generation humanoid controller in embodied systems, HoloMotion offers a practical and extensible foundation for whole-body motion tracking.
+
+---
+
+### 🛠️ Roadmap: Progress Toward Any Humanoid Control
+
+We envision HoloMotion as a general-purpose foundation for humanoid motion tracking and control. Its development is structured around four core generalization goals: Any Pose, Any Command, Any Terrain, and Any Embodiment. Each goal corresponds to a major version milestone.
+
+| Version   | Target Capability     | Description |
+|-----------|------------------------|-------------|
+| **v0.2.x** | 🧪 Alpha Preview        | Infrastructure for motion retargeting, training, and deployment to support future Any Pose capability |
+| **v1.0**   | 🔄 Any Pose             | Robust tracking and imitation of diverse whole-body human motions |
+| **v2.0**   | ⏳ Any Command          | Language- and task-conditioned motion generation and control |
+| **v3.0**   | ⏳ Any Terrain          | Adaptation to uneven, dynamic, and complex real-world environments |
+| **v4.0**   | ⏳ Any Embodiment       | Generalization across humanoids with different morphologies and kinematics |
+
+> Each stage builds on the previous one, moving from motion imitation to instruction following, terrain adaptation, and embodiment-level generalization.
+
 ## Pipeline Overview
 
 ```mermaid
@@ -83,11 +109,11 @@ Deploy the exported ONNX model using our ROS2 package to run on real-world robot
 ```
 @software{holomotion_2025,
   author = {Maiyue Chen, Kaihui Wang, Bo Zhang, Yi Ren, Zihao Zhu, Yucheng Wang, Zhizhong Su},
-  title = {{HoloMotion}},
+  title = {HoloMotion: A Foundation Model for Whole-Body Humanoid Tracking},
   year = {2025},
   month = july,
   version = {0.2.2},
-  url = {https://github.com/},
+  url = {https://github.com/HorizonRobotics/HoloMotion},
   license = {Apache-2.0}
 }
 ```
