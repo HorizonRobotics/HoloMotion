@@ -82,7 +82,7 @@ Deploy the exported ONNX model using our ROS2 package to run on real-world robot
 
 ```
 @software{holomotion_2025,
-  author = {Maiyue,Kaihui,Bo,Yi,Zihao,Yucheng,Zhizhong},
+  author = {Maiyue Chen, Kaihui Wang, Bo Zhang, Yi Ren, Zihao Zhu, Yucheng Wang, Zhizhong Su},
   title = {{HoloMotion}},
   year = {2025},
   month = july,
