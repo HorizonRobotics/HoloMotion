@@ -86,7 +86,7 @@ Deploy the exported ONNX model using our ROS2 package to run on real-world robot
   title = {{HoloMotion}},
   year = {2025},
   month = july,
-  version = {0.2.1},
+  version = {0.2.2},
   url = {https://github.com/},
   license = {Apache-2.0}
 }
