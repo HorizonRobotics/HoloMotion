@@ -1,0 +1,31 @@
+# Machine Learning Runtime  
+onnxruntime
+
+# SMPL/SMPLX support
+smplx==0.1.28
+
+# Configuration management
+hydra-core==1.3.2
+
+# Progress and logging
+tqdm
+loguru
+termcolor
+rich
+
+# Data processing
+lmdb
+einops
+
+# Protobuf (specific version for compatibility)
+protobuf==3.20.3
+onnx
+
+# Development tools
+ipdb
+
+# Note: The following packages are installed via conda in environment_deploy.yaml:
+# - torch, torchvision, torchaudio (with CUDA support)
+# - numpy, scipy, matplotlib, pandas  
+# - pyyaml, easydict, joblib
+# - system utilities (git, curl, wget, sshpass) 

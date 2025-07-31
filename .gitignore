@@ -1,0 +1,59 @@
+# ignore logs and cache
+logs/
+logs_eval/
+data/
+outputs/
+
+thirdparties/isaacgym/
+thirdparties/smpl_models/
+
+# ignore deployment bag_record, install, log
+deployment/unitree_g1_ros2/bag_record/
+deployment/unitree_g1_ros2/install/
+deployment/unitree_g1_ros2/log/
+
+# ignore data and outputs
+data/
+outputs/
+build/
+.DS_Store/
+**.egg-info/
+
+# ignore large files
+*.log
+*.pkl
+*.pt
+*.onnx
+*.npy
+*.npz
+*.zip
+*.tar.gz
+
+# ignore video, image, etc.
+*.mp4
+*.avi
+*.mov
+*.png
+*.pdf
+
+__pycache__/
+*.pyc
+*.egg-info
+
+.cursor/
+.cursorignore
+.vscode/
+
+.*_cache/
+
+
+
+# allow certain files
+!deployment/unitree_g1_ros2/src/models/*.onnx
+!deployment/unitree_g1_ros2/src/motion_data/*.pkl
+!assets/smpl/*.pkl
+!assets/smpl/*.npz
+!assets/smplx/*.pkl
+!assets/smplx/*.npz
+!assets/test_data/**
+!assets/media/**

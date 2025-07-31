@@ -1,0 +1,30 @@
+[submodule "thirdparties/SMPLSim"]
+	path = thirdparties/SMPLSim
+	url = https://github.com/ZhengyiLuo/SMPLSim
+	branch = master
+
+[submodule "thirdparties/joints2smpl"]
+	path = thirdparties/joints2smpl
+	url = https://github.com/wangsen1312/joints2smpl.git
+	branch = main
+
+[submodule "thirdparties/omomo_release"]
+	path = thirdparties/omomo_release
+	url = https://github.com/lijiaman/omomo_release.git
+	branch = main
+
+[submodule "thirdparties/unitree_ros"]
+	path = thirdparties/unitree_ros
+	url = https://github.com/unitreerobotics/unitree_ros
+	branch = master
+
+[submodule "thirdparties/unitree_ros2"]
+	path = thirdparties/unitree_ros2
+	url = https://github.com/unitreerobotics/unitree_ros2
+	branch = master
+
+
+[submodule "thirdparties/tram"]
+	path = thirdparties/tram
+	url = https://github.com/yufu-wang/tram.git
+	branch = main

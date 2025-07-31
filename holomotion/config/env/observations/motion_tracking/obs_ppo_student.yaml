@@ -1,0 +1,145 @@
+# @package _global_
+
+# Be careful when using _raw, history
+obs:
+  context_length: 25
+  n_fut_frames: 1
+  target_fps: 50
+
+  obs_dict:
+    actor_obs:
+      - base_ang_vel
+      - projected_gravity
+      - dof_pos
+      - dof_vel
+      - actions
+      - rel_fut_ref_motion_state_flat
+      - history_actor
+
+    teacher_obs:
+      - base_rpy
+      - rel_base_lin_vel
+      - rel_base_ang_vel
+      - dof_pos
+      - dof_vel
+      - actions
+      - rel_bodylink_pos_flat
+      - rel_bodylink_rot_tannorm_flat
+      - rel_bodylink_vel_flat
+      - rel_bodylink_ang_vel_flat
+      - rel_fut_ref_motion_state_flat
+      - domain_params
+
+  obs_auxiliary:
+    history_actor:
+      base_ang_vel: ${obs.context_length}
+      projected_gravity: ${obs.context_length}
+      dof_pos: ${obs.context_length}
+      dof_vel: ${obs.context_length}
+      actions: ${obs.context_length}
+
+  obs_scales:
+    base_rpy: 1.0
+    base_height: 1.0
+    projected_gravity: 1.0
+    rel_base_lin_vel: 2.0
+    rel_base_ang_vel: 0.25
+    base_ang_vel: 0.25
+    dof_pos: 1.0
+    dof_vel: 0.05
+    actions: 1.0
+    local_body_pos_flat: 1.0
+    local_body_rot_quat_flat: 1.0
+    local_body_vel_flat: 1.0
+    local_body_ang_vel_flat: 1.0
+    limb_weight_params: 1.0
+    dif_local_rigid_body_pos_flat: 1.0
+    dif_local_rigid_body_rot_flat: 1.0
+    dif_local_rigid_body_vel_flat: 1.0
+    dif_local_rigid_body_ang_vel_flat: 1.0
+    local_ref_rigid_body_pos_flat: 1.0
+    local_ref_rigid_body_rot_flat: 1.0
+    history_actor: 1.0
+    history_critic: 1.0
+    amp_agent_seq: 1.0
+    local_key_pos: 1.0
+    domain_params: 1.0
+    rel_bodylink_pos_flat: 1.0
+    rel_bodylink_vel_flat: 1.0
+    rel_bodylink_ang_vel_flat: 1.0
+    rel_bodylink_rot_tannorm_flat: 1.0
+    rel_fut_ref_motion_state_flat: 1.0
+    mogen_dof_pos: 1.0
+
+  noise_scales:
+    base_rpy: 0.0
+    base_height: 0.0
+    projected_gravity: 0.0
+    rel_base_lin_vel: 0.0
+    rel_base_ang_vel: 0.0
+    base_ang_vel: 0.0
+    dof_pos: 0.0
+    dof_vel: 0.0
+    actions: 0.0
+    local_body_pos_flat: 0.0
+    local_body_rot_quat_flat: 0.0
+    local_body_vel_flat: 0.0
+    local_body_ang_vel_flat: 0.0
+    limb_weight_params: 0.0
+    dif_local_rigid_body_pos_flat: 0.0
+    dif_local_rigid_body_rot_flat: 0.0
+    dif_local_rigid_body_vel_flat: 0.0
+    dif_local_rigid_body_ang_vel_flat: 0.0
+    local_ref_rigid_body_pos_flat: 0.0
+    local_ref_rigid_body_rot_flat: 0.0
+    history_actor: 0.0
+    history_critic: 0.0
+    amp_agent_seq: 0.0
+    local_key_pos: 0.0
+    domain_params: 0.0
+    rel_bodylink_pos_flat: 0.0
+    rel_bodylink_vel_flat: 0.0
+    rel_bodylink_ang_vel_flat: 0.0
+    rel_bodylink_rot_tannorm_flat: 0.0
+    rel_fut_ref_motion_state_flat: 0.0
+    mogen_dof_pos: 0.0
+
+  add_noise_currculum: False
+  noise_initial_value: 0.0
+  noise_value_max: 0.0
+  noise_value_min: 0.0
+  soft_dof_pos_curriculum_degree: 0.0
+  soft_dof_pos_curriculum_level_down_threshold: 40
+  soft_dof_pos_curriculum_level_up_threshold: 42
+
+  obs_dims:
+    - mogen_dof_pos: ${robot.dof_obs_size}
+    - base_rpy: 3
+    - base_height: 1
+    - projected_gravity: 3
+    - rel_base_lin_vel: 3
+    - rel_base_ang_vel: 3
+    - base_ang_vel: 3
+    - dof_pos: ${robot.dof_obs_size}
+    - dof_vel: ${robot.dof_obs_size}
+    - actions: ${robot.dof_obs_size}
+    - local_body_pos_flat: ${eval:'3 * ${robot.num_bodies}'}
+    - local_body_rot_quat_flat: ${eval:'4 * ${robot.num_bodies}'}
+    - local_body_vel_flat: ${eval:'3 * ${robot.num_bodies}'}
+    - local_body_ang_vel_flat: ${eval:'3 * ${robot.num_bodies}'}
+    - limb_weight_params: ${robot.num_limb_groups}
+    - dif_local_rigid_body_pos_flat: ${eval:'3 * ${obs.n_fut_frames} * (${robot.num_bodies} + ${robot.num_extend_bodies})'}
+    - dif_local_rigid_body_rot_flat: ${eval:'4 * ${obs.n_fut_frames} * (${robot.num_bodies} + ${robot.num_extend_bodies})'}
+    - dif_local_rigid_body_vel_flat: ${eval:'3 * ${obs.n_fut_frames} * (${robot.num_bodies} + ${robot.num_extend_bodies})'}
+    - dif_local_rigid_body_ang_vel_flat: ${eval:'3 * ${obs.n_fut_frames} * (${robot.num_bodies} + ${robot.num_extend_bodies})'}
+    - local_ref_rigid_body_pos_flat: ${eval:'3 * ${obs.n_fut_frames} * (${robot.num_bodies} + ${robot.num_extend_bodies})'}
+    - local_ref_rigid_body_rot_flat: ${eval:'4 * ${obs.n_fut_frames} * (${robot.num_bodies} + ${robot.num_extend_bodies})'}
+    - amp_agent_seq: ${eval:'${env.config.amp_context_length} * (3 + 3 + 3 + ${robot.dof_obs_size} * 2 + (3 * ${robot.num_key_bodies}))'}
+    - local_key_pos: ${eval:'3 * ${robot.num_key_bodies}'}
+    - domain_params: ${eval:'3 + len(${robot.randomize_link_body_names}) + 2 * ${robot.dof_obs_size} + 1 + 1 + 1 + ${robot.dof_obs_size}'}
+    - rel_bodylink_pos_flat: ${eval:'3 * (${robot.num_bodies} + ${robot.num_extend_bodies})'}
+    - rel_bodylink_vel_flat: ${eval:'3 * (${robot.num_bodies} + ${robot.num_extend_bodies})'}
+    - rel_bodylink_ang_vel_flat: ${eval:'3 * (${robot.num_bodies} + ${robot.num_extend_bodies})'}
+    - rel_bodylink_rot_tannorm_flat: ${eval:'6 * (${robot.num_bodies} + ${robot.num_extend_bodies})'}
+    - rel_fut_ref_motion_state_flat: ${eval:'${obs.n_fut_frames} * (9 + (${robot.num_bodies} + ${robot.num_extend_bodies})*(3+6+3+3) + ${robot.dof_obs_size}*2)'}
+  post_compute_config: {} # Will store values after preprocessing, don't put anything here

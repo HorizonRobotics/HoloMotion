@@ -1,0 +1,83 @@
+robot:
+  humanoid_type: unitree/G1/21dof
+
+  fitted_shape_dump_path: "assets/robots/${robot.humanoid_type}/fitted_smpl_shape.pkl"
+
+  asset:
+    smpl_dir: "assets/smpl"
+    assetRoot: "./"
+    assetFileName: "assets/robots/${robot.humanoid_type}/retargeting_g1_21dof.xml"
+    training_mjcfName: "assets/robots/${robot.humanoid_type}/g1_21dof.xml"
+
+  extend_config:
+    - joint_name: "left_hand_link"
+      parent_name: "left_elbow_link"
+      pos: [0.25, 0.0, 0.0]
+      rot: [1.0, 0.0, 0.0, 0.0] # w x y z
+    - joint_name: "right_hand_link"
+      parent_name: "right_elbow_link"
+      pos: [0.25, 0.0, 0.0]
+      rot: [1.0, 0.0, 0.0, 0.0] # w x y z
+    - joint_name: "head_link"
+      parent_name: "torso_link"
+      pos: [0.0, 0.0, 0.42]
+      rot: [1.0, 0.0, 0.0, 0.0] # w x y z
+
+  base_link: "torso_link"
+  
+  joint_matches:
+    - ["pelvis", "Pelvis"]
+    - ["left_hip_pitch_link", "L_Hip"]
+    - ["left_knee_link", "L_Knee"]
+    - ["left_ankle_roll_link", "L_Ankle"]
+    - ["right_hip_pitch_link", "R_Hip"]
+    - ["right_knee_link", "R_Knee"]
+    - ["right_ankle_roll_link", "R_Ankle"]
+    - ["left_shoulder_roll_link", "L_Shoulder"]
+    - ["left_elbow_link", "L_Elbow"]
+    - ["left_hand_link", "L_Hand"]
+    - ["right_shoulder_roll_link", "R_Shoulder"]
+    - ["right_elbow_link", "R_Elbow"]
+    - ["right_hand_link", "R_Hand"]
+    - ["head_link", "Head"]
+
+  mink_keypoint_to_joint:
+    "Pelvis":
+      "name": "pelvis"
+      "weight": 5.0
+    "L_Hip":
+      "name": "left_hip_pitch_link"
+      "weight": 1.0
+    "L_Knee":
+      "name": "left_knee_link"
+      "weight": 1.0
+    "L_Ankle":
+      "name": "left_ankle_roll_link"
+      "weight": 1.0
+    "R_Hip":
+      "name": "right_hip_pitch_link"
+      "weight": 1.0
+    "R_Knee":
+      "name": "right_knee_link"
+      "weight": 1.0
+    "R_Ankle":
+      "name": "right_ankle_roll_link"
+      "weight": 1.0
+    "L_Shoulder":
+      "name": "left_shoulder_roll_link"
+      "weight": 3.0
+    "L_Elbow":
+      "name": "left_elbow_link"
+      "weight": 1.0
+    "L_Wrist":
+      "name": "left_wrist_roll_rubber_hand"
+      "weight": 1.0
+    "R_Shoulder":
+      "name": "right_shoulder_roll_link"
+      "weight": 3.0
+    "R_Elbow":
+      "name": "right_elbow_link"
+      "weight": 1.0
+    "R_Wrist":
+      "name": "right_wrist_roll_rubber_hand"
+      "weight": 1.0

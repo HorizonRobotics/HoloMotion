@@ -1,0 +1,163 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "holomotion"
+version = "0.1.0"
+description = "HoloMotion"
+authors = [
+    {name = "Horizon Robotics"},
+]
+readme = "README.md"
+requires-python = ">=3.8"
+
+
+[project.urls]
+Homepage = "https://horizonrobotics.github.io/robot_lab/holomotion/ "
+Repository = "https://github.com/"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["holomotion*"]
+
+[tool.ruff]
+
+exclude = [
+    # common
+    ".bzr",
+    ".direnv",
+    ".eggs",
+    ".git",
+    ".git-rewrite",
+    ".hg",
+    ".ipynb_checkpoints",
+    ".mypy_cache",
+    ".nox",
+    ".pants.d",
+    ".pyenv",
+    ".pytest_cache",
+    ".pytype",
+    ".ruff_cache",
+    ".svn",
+    ".tox",
+    ".venv",
+    ".vscode",
+    "__pypackages__",
+    "_build",
+    "buck-out",
+    "build",
+    "dist",
+    "node_modules",
+    "site-packages",
+    "venv",
+    # project
+    "3rdparty/*",
+    "dummy/*",
+    "*.pyi",
+    "*_pb2.py",
+]
+
+# Same as Black.
+line-length = 79
+indent-width = 4
+
+# required python 3.10
+target-version = "py310"
+
+[tool.ruff.lint]
+
+select = [
+    "E",   # flake8-errors
+    "F",   # pyflake
+    "I",   # isort
+    "B",   # flake8-bugber
+    "TID", # flake8-tidy-imports
+    "D",   # pydocstyle
+    "Q",   # flake8-quotes
+    "W",   # flake8-warnings
+    "N",   # pep8-naming
+]
+
+ignore = [
+    "D104",
+    "D107",
+    "D202",
+    "D105",
+    "D100",
+    "D102",
+    "D103",
+    "D101",
+    "D301",
+    "F403",
+    "B904", # Within an `except` clause, raise exceptions with `raise ... from err` or `raise ... from None` to distinguish them from errors in exception handling
+    "B028", # No explicit `stacklevel` keyword argument found
+    "D417", # requires documentation for every function parameter.
+]
+
+[tool.ruff.lint.isort]
+known-third-party = []
+no-lines-before = ["future", "standard-library"]
+combine-as-imports = true
+force-wrap-aliases = true
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.flake8-tidy-imports]
+# Disallow all relative imports.
+ban-relative-imports = "all"
+
+[tool.ruff.lint.flake8-quotes]
+avoid-escape = false
+
+[tool.ruff.lint.mccabe]
+max-complexity = 18
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["TID252", "F401"]
+
+[tool.ruff.lint.pep8-naming]
+classmethod-decorators = [
+    # Allow Pydantic's `@validator` decorator to trigger class method treatment.
+    "pydantic.validator",
+    # Allow SQLAlchemy's dynamic decorators, like `@field.expression`, to trigger class method treatment.
+    "declared_attr",
+    "expression",
+    "comparator",
+]
+ignore-names = [
+    # ruff default (https://docs.astral.sh/ruff/settings/#lintpep8-naming)
+    "setUp",
+    "tearDown",
+    "setUpClass",
+    "tearDownClass",
+    "setUpModule",
+    "tearDownModule",
+    "asyncSetUp",
+    "asyncTearDown",
+    "setUpTestData",
+    "failureException",
+    "longMessage",
+    "maxDiff",
+    # project
+    "PROJECT_ROOT",  # project test environment fixture
+    "ROBO_ORCHARD_TEST_WORKSPACE",  # project test fixture
+    "F",  # import torch.nn.functional as F
+]
+
+[tool.ruff.format]
+
+# Like Black, use double quotes for strings.
+quote-style = "double"
+
+# Like Black, indent with spaces, rather than tabs.
+indent-style = "space"
+
+# Like Black, respect magic trailing commas.
+skip-magic-trailing-comma = false
+
+# Like Black, automatically detect the appropriate line ending.
+line-ending = "auto"
+
+docstring-code-format = true

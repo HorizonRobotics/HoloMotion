@@ -1,0 +1,22 @@
+# @package _global_
+
+project_name: ???
+experiment_name: ???
+
+num_envs: ???
+headless: ???
+
+motion_lmdb_path: ???
+checkpoint: null
+
+use_accelerate: ???
+num_processes: ???
+main_process: ???
+process_id: ???
+
+timestamp: ${now:%Y%m%d_%H%M%S}
+base_dir: logs
+experiment_dir: ${base_dir}/${project_name}/${timestamp}-${experiment_name}
+save_dir: ${experiment_dir}/.hydra
+output_dir: ${experiment_dir}/output
+experiment_save_dir: ???

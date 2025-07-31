@@ -1,0 +1,14 @@
+# @package _global_
+
+defaults:
+  - /training: train_base
+  - /simulator: isaacgym
+  - /algo: dagger
+  - /robot: unitree/G1/21dof/21dof_training
+  - /env: motion_tracking
+  - /env/observations: motion_tracking/obs_ppo_student
+  - /env/rewards: motion_tracking/relative_tracking
+  - /env/domain_randomization: domain_rand_base
+  - /env/terrain: rough
+
+project_name: HoloMotion

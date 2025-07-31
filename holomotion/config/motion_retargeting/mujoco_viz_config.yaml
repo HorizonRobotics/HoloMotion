@@ -1,0 +1,14 @@
+video_dir: ${motion_pkl_root}/video_rendering
+skip_frames: 3 # when skip frames=1, it means 30hz, when skip frames=2, it means 15hz, etc.
+show_markers: False
+max_workers: 12
+
+robot:
+  humanoid_type: unitree/G1/21dof
+
+  asset:
+    smpl_dir: "assets/smpl"
+    assetRoot: "./"
+    assetFileName: "assets/robots/${robot.humanoid_type}/retargeting_g1_21dof.xml"
+    urdfFileName: "assets/robots/${robot.humanoid_type}/retargeting_g1_21dof.xml"
+    training_mjcfName: "assets/robots/${robot.humanoid_type}/g1_21dof.xml"

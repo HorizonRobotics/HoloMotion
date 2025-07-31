@@ -1,0 +1,107 @@
+# @package _global_
+
+env:
+  _target_: holomotion.src.env.motion_tracking.MotionTrackingEnvironment
+  _recursive_: False
+  config:
+    experiment_name: ${experiment_name}
+    num_envs: ${num_envs}
+    headless: ${headless}
+    num_processes: ${num_processes}
+    main_process: ${main_process}
+    process_id: ${process_id}
+    ckpt_dir: null
+    disable_ref_viz: false
+    eval_log_dir: null
+    save_rendering_dir: null
+
+    robot: ${robot}
+    domain_rand: ${domain_rand}
+    rewards: ${rewards}
+    terrain: ${terrain}
+    obs: ${obs}
+    simulator: ${simulator}
+    domain_params: ${domain_rand}
+
+    env_spacing: 5.0
+
+    normalization:
+      clip_actions: 100.0
+      clip_observations: 100.0
+
+    resample_motion_when_training: True
+    resample_time_interval_s: 100
+    max_episode_length_s: 250
+    amp_context_length: 10
+
+    motion_far_type: "max" # "max" or "mean", when max, use torch.any to check termination, when mean, use torch.mean to check termination, in PHC codebase, max for training, mean for evaluation
+    termination:
+      terminate_by_contact: False
+
+      terminate_by_gravity: True
+      terminate_by_low_height: False
+
+      terminate_when_motion_end: True
+      terminate_when_motion_far: True
+      terminate_when_motion_far_patience_steps: 1
+
+      terminate_when_joint_far: False
+      terminate_when_joint_far_patience_steps: 1
+
+      terminate_when_close_to_dof_pos_limit: False
+      terminate_when_close_to_dof_vel_limit: False
+      terminate_when_close_to_torque_limit: False
+
+    termination_scales:
+      eval_motion_far_threshold: 0.25
+      termination_min_base_height: 0.3
+      termination_gravity_x: 0.7
+      termination_gravity_y: 0.7
+      termination_motion_far_threshold: 1.0
+      terminate_when_joint_far_threshold: 0.5
+      termination_close_to_dof_pos_limit: 0.98
+      termination_close_to_dof_vel_limit: 0.98
+      termination_close_to_torque_limit: 0.98
+
+    termination_probality:
+      terminate_when_close_to_dof_pos_limit: 0.25
+      terminate_when_close_to_dof_vel_limit: 0.25
+      terminate_when_close_to_torque_limit: 0.25
+
+    termination_curriculum:
+      terminate_when_motion_far_curriculum: False
+      terminate_when_motion_far_initial_threshold: 1.5
+      terminate_when_motion_far_threshold_max: 2.0
+      terminate_when_motion_far_threshold_min: 0.25
+      terminate_when_motion_far_curriculum_degree: 0.0000025
+      terminate_when_motion_far_curriculum_level_down_threshold: 40
+      terminate_when_motion_far_curriculum_level_up_threshold: 42
+
+      terminate_when_joint_far_curriculum: False
+      terminate_when_joint_far_initial_threshold: 1.0
+      terminate_when_joint_far_threshold_max: 1.0
+      terminate_when_joint_far_threshold_min: 0.01
+      terminate_when_joint_far_curriculum_degree: 0.0000025
+      terminate_when_joint_far_curriculum_level_down_threshold: 40
+      terminate_when_joint_far_curriculum_level_up_threshold: 42
+
+    init_entropy_coef: ${algo.algo.config.entropy_coef}
+    entropy_curriculum:
+      enable_entropy_curriculum: True
+      entropy_curriculum_threshold: 50
+      entropy_curriculum_degree: 5.0e-7
+      entropy_curriculum_threshold_min: 1.0e-5
+      entropy_curriculum_threshold_max: 1.0e-1
+
+    noise_to_initial_level: 0
+    init_noise_scale:
+      dof_pos: 0.1
+      dof_vel: 0.15
+      root_pos: 0.05
+      root_rot: 10 # degree, * 3.14 / 180
+      root_vel: 0.01
+      root_ang_vel: 0.01
+
+    enforce_randomize_motion_start_eval: False
+    enforce_zero_motion_start_train: False
+    align_marker_to_root: True

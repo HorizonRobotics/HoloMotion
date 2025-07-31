@@ -1,0 +1,1 @@
+../../thirdparties/smpl_models/SMPL_python_v.1.1.0/smpl/models/basicmodel_f_lbs_10_207_0_v1.1.0.pkl
