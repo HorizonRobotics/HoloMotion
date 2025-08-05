@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "holomotion"
-version = "0.1.0"
+version = "0.2.3"
 description = "HoloMotion"
 authors = [
     {name = "Horizon Robotics"},
@@ -62,8 +62,8 @@ exclude = [
 line-length = 79
 indent-width = 4
 
-# required python 3.10
-target-version = "py310"
+# required python 3.8
+target-version = "py38"
 
 [tool.ruff.lint]
 

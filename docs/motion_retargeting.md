@@ -25,8 +25,9 @@ Before running the motion retargeting pipeline, ensure you have:
 2. **Data Preparation**: Place your AMASS motion data in `/assets/test_data/motion_retargeting/{dataset_name}`
    or modify 'amass_dir' in 'script/motion_retargeting/*.sh' !Please check all related path in .sh and .yaml are right!
 
-3. **Model Preparation**: Beside SMPL*.pkl file, please download three SMPLX*.npz model files from 'https://smpl-x.is.tue.mpg.de/download.php' 'Julia Models' part.
-   Then put them at `/assets/smpl/*`
+3. **Model Preparation**: Beside SMPL*.pkl file, please download three SMPLX*.npz model files from 'https://smpl-x.is.tue.mpg.de/download.php'.  
+​   ​Download from the first option under 'SMPL-X MODEL'  
+   Then put 'SMPLX_NETURAL.npz', 'SMPLX_MALE.npz', 'SMPLX_FEMALE.npz' at `/assets/smpl/*`
 
 4. **Path Verification**: Check data paths in the configuration scripts:
    - `holomotion/scripts/motion_retargeting/*.sh`

@@ -117,7 +117,11 @@ def export_policy_to_onnx(algo, checkpoint_path: str, device: str):
     class WrappedActor(torch.nn.Module):
         def __init__(self, ppo):
             super().__init__()
-            self.actor = ppo.actor.actor_module
+            # Handle DistributedDataParallel wrapper from accelerate
+            if hasattr(ppo.actor, "module"):
+                self.actor = ppo.actor.module.actor_module
+            else:
+                self.actor = ppo.actor.actor_module
 
         def forward(self, raw_obs):
             return self.actor(raw_obs)
@@ -125,10 +129,16 @@ def export_policy_to_onnx(algo, checkpoint_path: str, device: str):
     wrapped_actor = copy.deepcopy(WrappedActor(algo)).to(device)
 
     # Determine input dimension
-    if "tf" in algo.actor_type.lower():
-        feature_dim = algo.actor.actor_module.obs_serializer.obs_flat_dim
+    # Handle DistributedDataParallel wrapper from accelerate
+    if hasattr(algo.actor, "module"):
+        actor_module = algo.actor.module.actor_module
     else:
-        feature_dim = algo.actor.actor_module.input_dim
+        actor_module = algo.actor.actor_module
+
+    if "tf" in algo.actor_type.lower():
+        feature_dim = actor_module.obs_serializer.obs_flat_dim
+    else:
+        feature_dim = actor_module.input_dim
 
     example_input = torch.randn(1, feature_dim, device=device)
 

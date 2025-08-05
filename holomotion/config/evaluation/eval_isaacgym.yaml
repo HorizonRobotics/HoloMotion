@@ -1,12 +1,6 @@
 # @package _global_
 
 defaults:
-  - /simulator: isaacgym
-  - /algo: ppo
-  - /robot: unitree/G1/21dof/21dof_training
-  - /env: motion_tracking
-  - /env/observations: motion_tracking/obs_ppo_teacher
-  - /env/rewards: motion_tracking/relative_tracking
   - /env/domain_randomization: NO_domain_rand
   - /env/terrain: plane
   - _self_
@@ -23,7 +17,6 @@ use_accelerate: true
 export_policy: true  # Whether to export policy to ONNX
 # noise settings
 obs:
-
   noise_scales:
     base_rpy: 0.0
     base_height: 0.0
@@ -85,6 +78,8 @@ env:
       root_vel: 0.0
       root_ang_vel: 0.0
 robot:
+  motion:
+    max_frame_length: 1000
   control:
     action_scale: 0.25
     action_clip_value: 100.0

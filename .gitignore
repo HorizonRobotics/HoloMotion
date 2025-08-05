@@ -13,6 +13,7 @@ deployment/unitree_g1_ros2/install/
 deployment/unitree_g1_ros2/log/
 
 # ignore data and outputs
+data
 data/
 outputs/
 build/

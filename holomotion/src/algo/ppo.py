@@ -2163,17 +2163,28 @@ class PPO:
                         )
 
                 if holomotion_metrics_mean:
+                    holomotion_metrics = {
+                        "MPJPE_G": f"{holomotion_metrics_mean.get('mpjpe_g', 0):.4f}",  # noqa: E501
+                        "MPJPE_L": f"{holomotion_metrics_mean.get('mpjpe_l', 0):.4f}",  # noqa: E501
+                        "MPJPE_PA": f"{holomotion_metrics_mean.get('mpjpe_pa', 0):.4f}",  # noqa: E501
+                        "ACCELERATION_DIST": f"{holomotion_metrics_mean.get('accel_dist', 0):.4f}",  # noqa: E501
+                        "VELOCITY_DIST": f"{holomotion_metrics_mean.get('vel_dist', 0):.4f}",  # noqa: E501
+                        "UPPER_BODY_JOINTS_DIST": f"{holomotion_metrics_mean.get('upper_body_joints_dist', 0):.4f}",  # noqa: E501
+                        "LOWER_BODY_JOINTS_DIST": f"{holomotion_metrics_mean.get('lower_body_joints_dist', 0):.4f}",  # noqa: E501
+                        "ROOT_Roll_ERROR": f"{holomotion_metrics_mean.get('root_r_error', 0):.4f}",  # noqa: E501
+                        "ROOT_Pitch_ERROR": f"{holomotion_metrics_mean.get('root_p_error', 0):.4f}",  # noqa: E501
+                        "ROOT_Yaw_ERROR": f"{holomotion_metrics_mean.get('root_y_error', 0):.4f}",  # noqa: E501
+                        "ROOT_VEL_ERROR": f"{holomotion_metrics_mean.get('root_vel_error', 0):.4f}",  # noqa: E501
+                        "ROOT_HEIGHT_ERROR": f"{holomotion_metrics_mean.get('root_height_error', 0):.4f}",  # noqa: E501
+                    }
                     logger.info(
-                        "holomotion MPJPE_G: %.4f, "
-                        "Upper body error: %.4f, "
-                        "Lower body error: %.4f",
-                        holomotion_metrics_mean.get("mpjpe_g", 0),
-                        holomotion_metrics_mean.get(
-                            "upper_body_joints_dist", 0
-                        ),
-                        holomotion_metrics_mean.get(
-                            "lower_body_joints_dist", 0
-                        ),
+                        "\n"
+                        + tabulate(
+                            [[k, v] for k, v in holomotion_metrics.items()],
+                            headers=["Metric", "Value"],
+                            tablefmt="simple_outline",
+                        )
+                        + "\n"
                     )
 
                 # Save global metrics to a separate file
