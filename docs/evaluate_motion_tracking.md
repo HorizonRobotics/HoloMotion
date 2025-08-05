@@ -140,7 +140,7 @@ ${Train_CONDA_PREFIX}/bin/accelerate launch \
     headless=false \
     export_policy=true \
     env.config.termination.terminate_when_motion_far=False \
-    +robot.motion.motion_file="${lmdb_path}" \
+    robot.motion.motion_file="${lmdb_path}" \
     checkpoint="${checkpoint_path}"
 ```
 
