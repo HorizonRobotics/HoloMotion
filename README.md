@@ -19,14 +19,7 @@
 - [2025.08.05] Join us to build HoloMotion and shape the future of humanoid robots. We're hiring full-time, new grads, and interns. Send your resume to yucheng.wang@horizon.auto or scan the QR code with **WeChat**.
 
 <p align="center">
-  <img width="100" height="100" src="assets/media/ft_QR.jpg" hspace="20">
-  <img width="100" height="100" src="assets/media/ng_QR.jpg" hspace="20">
-  <img width="100" height="100" src="assets/media/intern_QR.jpg" hspace="20">
-</p>
-<p align="center">
-  <span style="display: inline-block; width: 140px; text-align: center;">Full-time</span>
-  <span style="display: inline-block; width: 140px; text-align: center;">New Graduate</span>
-  <span style="display: inline-block; width: 140px; text-align: center;">Internship</span>
+  <img width="420" height="150" src="assets/media/qr_codes.png" hspace="10">
 </p>
 
 ## Introduction
