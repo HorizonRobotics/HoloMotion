@@ -104,4 +104,4 @@ env:
 
     enforce_randomize_motion_start_eval: False
     enforce_zero_motion_start_train: False
-    align_marker_to_root: True
+    align_marker_to_root: False

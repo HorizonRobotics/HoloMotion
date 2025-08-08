@@ -8,6 +8,7 @@
 [![Python](https://img.shields.io/badge/Python3.8-3776AB?logo=python&logoColor=fff)](#)
 [![Ubuntu](https://img.shields.io/badge/Ubuntu22.04-E95420?logo=ubuntu&logoColor=white)](#)
 [![License](https://img.shields.io/badge/License-Apache_2.0-green?logo=apache&logoColor=white)](./LICENSE)
+
 <!-- [![arXiv](https://img.shields.io/badge/arXiv-2025.00000-red?logo=arxiv&logoColor=white)](https://arxiv.org/abs/2025.00000) -->
 <!-- [![arXiv](https://img.shields.io/badge/arXiv-2025.00000-red?logo=arxiv&logoColor=white)](https://arxiv.org/abs/2025.00000) -->
 
@@ -15,11 +16,22 @@
 
 ## NEWS
 
-- [2025.08.05] Join as an intern to build HoloMotion and shape the future of humanoid robots together. Send your resume to yucheng.wang@horizon.auto or scan the QR code with **WeChat** .
-<p align="center">
-  <img width="100" height="100" src="https://github.com/user-attachments/assets/69532682-8d3a-4870-ba4c-c064a5d81885">
-</p>
+- [2025.08.05] Join us to build HoloMotion and shape the future of humanoid robots. We're hiring full-time, new grads, and interns. Send your resume to yucheng.wang@horizon.auto or scan the QR code with **WeChat**.
 
+<div align="center" style="display: flex; justify-content: center; gap: 40px; flex-wrap: wrap;">
+  <div style="text-align: center;">
+    <img width="100" height="100" src="assets/media/ft_QR.jpg"><br>
+    Full-time
+  </div>
+  <div style="text-align: center;">
+    <img width="100" height="100" src="assets/media/ng_QR.jpg"><br>
+    New Graduate
+  </div>
+  <div style="text-align: center;">
+    <img width="100" height="100" src="assets/media/intern_QR.jpg"><br>
+    Internship
+  </div>
+</div>
 
 ## Introduction
 
@@ -37,13 +49,13 @@ If you're building a next-generation humanoid controller in embodied systems, Ho
 
 We envision HoloMotion as a general-purpose foundation for humanoid motion tracking and control. Its development is structured around four core generalization goals: Any Pose, Any Command, Any Terrain, and Any Embodiment. Each goal corresponds to a major version milestone.
 
-| Version   | Target Capability     | Description |
-|-----------|------------------------|-------------|
-| **v0.2.x** | 🧪 Alpha Preview        | Infrastructure for motion retargeting, training, and deployment to support future Any Pose capability |
-| **v1.0**   | 🔄 Any Pose             | Robust tracking and imitation of diverse whole-body human motions |
-| **v2.0**   | ⏳ Any Command          | Language- and task-conditioned motion generation and control |
-| **v3.0**   | ⏳ Any Terrain          | Adaptation to uneven, dynamic, and complex real-world environments |
-| **v4.0**   | ⏳ Any Embodiment       | Generalization across humanoids with different morphologies and kinematics |
+| Version    | Target Capability | Description                                                                                           |
+| ---------- | ----------------- | ----------------------------------------------------------------------------------------------------- |
+| **v0.2.x** | 🧪 Alpha Preview  | Infrastructure for motion retargeting, training, and deployment to support future Any Pose capability |
+| **v1.0**   | 🔄 Any Pose       | Robust tracking and imitation of diverse whole-body human motions                                     |
+| **v2.0**   | ⏳ Any Command    | Language- and task-conditioned motion generation and control                                          |
+| **v3.0**   | ⏳ Any Terrain    | Adaptation to uneven, dynamic, and complex real-world environments                                    |
+| **v4.0**   | ⏳ Any Embodiment | Generalization across humanoids with different morphologies and kinematics                            |
 
 > Each stage builds on the previous one, moving from motion imitation to instruction following, terrain adaptation, and embodiment-level generalization.
 
@@ -73,7 +85,7 @@ flowchart LR
 
     classDef subgraphStyle fill:#f9f9f9,stroke:#333,stroke-width:2px,stroke-dasharray:5 5,rx:10,ry:10,font-size:16px,font-weight:bold
     classDef nodeStyle fill:#e1f5fe,stroke:#0277bd,stroke-width:2px,rx:10,ry:10
-    
+
     class dataFrame,modelFrame subgraphStyle
     class A,B,C,D,E,F nodeStyle
 ```
