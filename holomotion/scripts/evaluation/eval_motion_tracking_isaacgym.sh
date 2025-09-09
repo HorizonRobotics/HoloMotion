@@ -2,11 +2,11 @@
 source train.env
 export CUDA_VISIBLE_DEVICES="0"
 
-eval_config="eval_isaacgym"
-# eval_config="eval_isaacgym_with_dr"
+eval_config="eval_isaacgym"  # use this for ideal eval
+# eval_config="eval_isaacgym_with_dr"  # use this for domain randomization eval
 
-checkpoint_path="/home/maiyue01.chen/project3/humanoid_locomotion/holomotion/logs/HoloMotionDebug/20250909_175315-train_ZJ-Humanoid-hi2_21dof_teacher_stage2/model_0.pt"
-lmdb_path="/home/maiyue01.chen/project3/humanoid_locomotion/holomotion/data/lmdb_datasets/lmdb_ZJ-Humanoid-hi2_21dof_train"
+checkpoint_path="your_ckpt_path"
+lmdb_path="your_lmdb_path"
 
 num_envs=4
 
