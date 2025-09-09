@@ -2,9 +2,12 @@
 source train.env
 export CUDA_VISIBLE_DEVICES="0"
 
-# Configuration
-checkpoint_path="logs/HoloMotion/20250804_205352-train_unitree_g1_21dof_student/model_0.pt" # REQUIRED: Set this to your checkpoint path
-lmdb_path="data/lmdb_datasets/lmdb_g1_21dof_test"
+eval_config="eval_isaacgym"
+# eval_config="eval_isaacgym_with_dr"
+
+checkpoint_path="/home/maiyue01.chen/project3/humanoid_locomotion/holomotion/logs/HoloMotionDebug/20250909_175315-train_ZJ-Humanoid-hi2_21dof_teacher_stage2/model_0.pt"
+lmdb_path="/home/maiyue01.chen/project3/humanoid_locomotion/holomotion/data/lmdb_datasets/lmdb_ZJ-Humanoid-hi2_21dof_train"
+
 num_envs=4
 
 ${Train_CONDA_PREFIX}/bin/accelerate launch \
@@ -12,10 +15,15 @@ ${Train_CONDA_PREFIX}/bin/accelerate launch \
     --mixed_precision=bf16 \
     --main_process_port=29501 \
     holomotion/src/evaluation/eval_motion_tracking.py \
-    use_accelerate=True \
+    --config-name=evaluation/${eval_config} \
+    use_accelerate=true \
     num_envs=${num_envs} \
-    headless=True \
-    export_policy=True \
-    env.config.termination.terminate_when_motion_far=False \
-    +robot.motion.motion_file="${lmdb_path}" \
+    env.config.align_marker_to_root=false \
+    headless=false \
+    export_policy=true \
+    env.config.termination.terminate_by_gravity=true \
+    env.config.termination.terminate_by_low_height=false \
+    env.config.termination.terminate_when_motion_far=false \
+    env.config.termination.terminate_when_ee_z_far=false \
+    motion_lmdb_path="${lmdb_path}" \
     checkpoint="${checkpoint_path}"

@@ -1,0 +1,18 @@
+input_dir: path/to/input
+output_dir: path/to/output
+butterworth:
+  trans:
+    enabled: false
+    order: 4
+    cutoff: 1.5
+    sample_rate: 30.0
+  poses:
+    enabled: true
+    order: 4
+    cutoff: 3.0
+    sample_rate: 30.0
+  jtr:
+    enabled: true
+    order: 4
+    cutoff: 3.0
+    sample_rate: 30.0

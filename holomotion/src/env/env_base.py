@@ -46,9 +46,12 @@ from holomotion.src.utils.torch_utils import (
 
 
 class BaseEnvironment:
-    def __init__(self, config, device):
+    def __init__(self, config, device, log_dir=None):
         self.init_done = False
         self.config = config
+        self.log_dir = log_dir
+        
+        logger.info(f"Log directory: {log_dir}")
 
         sim_cls = get_class(self.config.simulator._target_)
         self.simulator: BaseSimulator = sim_cls(
@@ -150,6 +153,12 @@ class BaseEnvironment:
         self.torques = torch.zeros(
             self.num_envs,
             self.dim_actions,
+            dtype=torch.float,
+            device=self.device,
+            requires_grad=False,
+        )
+        self.max_torques = torch.zeros(
+            self.num_dofs,
             dtype=torch.float,
             device=self.device,
             requires_grad=False,
@@ -265,6 +274,9 @@ class BaseEnvironment:
             found = False
             for dof_name in self.config.robot.control.stiffness.keys():
                 if dof_name in name:
+                    self.max_torques[i] = (
+                        self.config.robot.dof_effort_limit_list[i]
+                    )
                     self.p_gains[i] = self.config.robot.control.stiffness[
                         dof_name
                     ]
@@ -288,7 +300,24 @@ class BaseEnvironment:
                         f"PD gain of joint {name} were not defined. Should be "
                         f"defined in the yaml file."
                     )
-        self.default_dof_pos = self.default_dof_pos.unsqueeze(0)
+        if self.config.domain_rand.randomize_joint_default_pos:
+            # Expand to per-environment and add random bias
+            base_default_pos = self.default_dof_pos.unsqueeze(0).repeat(
+                self.num_envs, 1
+            )
+            bias = torch_rand_float(
+                self.config.domain_rand.joint_default_pos_range[0],
+                self.config.domain_rand.joint_default_pos_range[1],
+                (self.num_envs, self.num_dof),
+                device=self.device,
+            )
+            self.default_dof_pos = base_default_pos + bias
+            logger.info(
+                f"Randomized default joint positions with bias "
+                f"range: {self.config.domain_rand.joint_default_pos_range}"
+            )
+        else:
+            self.default_dof_pos = self.default_dof_pos.unsqueeze(0)
         self._init_domain_rand_buffers()
 
         # for reward penalty curriculum
@@ -415,16 +444,23 @@ class BaseEnvironment:
             device=self.device,
             requires_grad=False,
         )
+        self.default_joint_angle_bias = torch.zeros(
+            self.num_envs,
+            self.num_dof,
+            dtype=torch.float,
+            device=self.device,
+            requires_grad=False,
+        )
 
     def _prepare_reward_function(self):
-        self.reward_scales = self.config.rewards.reward_scales
-        for key in list(self.reward_scales.keys()):
-            logger.info(f"Scale: {key} = {self.reward_scales[key]}")
-            scale = self.reward_scales[key]
-            if scale == 0:
-                self.reward_scales.pop(key)
+        # Create a new dictionary to avoid modifying the original OmegaConf config
+        self.reward_scales = {}
+        for key, scale in self.config.rewards.reward_scales.items():
+            logger.info(f"Scale: {key} = {scale}")
+            if scale != 0:
+                self.reward_scales[key] = scale * self.dt
             else:
-                self.reward_scales[key] *= self.dt
+                logger.info(f"Skipping reward {key} as it has zero scale")
 
         self.use_reward_penalty_curriculum = (
             self.config.rewards.reward_penalty_curriculum
@@ -1067,6 +1103,17 @@ class BaseEnvironment:
                 )
                 - self._kd_scale * self.d_gains * self.simulator.dof_vel
             )
+        elif control_type == "P_Normed":
+            alpha = self.config.robot.control.action_scale * (
+                self.max_torques / self.p_gains
+            )
+            target_actions = self.default_dof_pos + alpha * actions
+            torques = (
+                self._kp_scale
+                * self.p_gains
+                * (target_actions - self.simulator.dof_pos)
+                - self._kd_scale * self.d_gains * self.simulator.dof_vel
+            )
         elif control_type == "V":
             torques = (
                 self._kp_scale
@@ -1267,6 +1314,9 @@ class BaseEnvironment:
 
     # ------------ reward functions----------------
     ########################### PENALTY REWARDS ###########################
+    
+    def _reward_alive(self):
+        return torch.ones(self.num_envs, device=self.device)
 
     def _reward_termination(self):
         # Terminal reward / penalty
@@ -2078,13 +2128,6 @@ class BaseEnvironment:
             self.torso_index = self.simulator.find_rigid_body_indice(
                 self.torso_name
             )
-
-        if self.config.robot.get("has_key_bodies", False):
-            self.key_body_names = self.config.robot.key_bodies
-            self.key_body_indices = [
-                self.simulator.find_rigid_body_indice(name)
-                for name in self.key_body_names
-            ]
 
         if self.config.robot.get("waist_roll_pitch_dof_names", []):
             self.waist_roll_pitch_dof_names = (

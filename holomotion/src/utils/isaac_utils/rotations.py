@@ -531,20 +531,29 @@ def transform_mul(x, y):
     return z
 
 
-##################################### FROM PHC rotation_conversions.py #####################################
-@torch.jit.script
-def quaternion_to_matrix(quaternions: torch.Tensor) -> torch.Tensor:
+@torch.compile
+def quaternion_to_matrix(
+    quaternions: torch.Tensor,
+    w_last: bool = True,
+) -> torch.Tensor:
     """Convert rotations given as quaternions to rotation matrices.
 
     Args:
-        quaternions: quaternions with real part first,
-            as tensor of shape (..., 4).
+        quaternions: quaternions as tensor of shape (..., 4).
+            If w_last=True (default): real part last (x, y, z, w)
+            If w_last=False: real part first (w, x, y, z)
+        w_last: If True, quaternion format is (x, y, z, w).
+                If False, quaternion format is (w, x, y, z). Default: True.
 
     Returns:
         Rotation matrices as tensor of shape (..., 3, 3).
 
     """
-    r, i, j, k = torch.unbind(quaternions, -1)
+    if w_last:
+        i, j, k, r = torch.unbind(quaternions, -1)
+    else:
+        r, i, j, k = torch.unbind(quaternions, -1)
+
     two_s = 2.0 / (quaternions * quaternions).sum(-1)
 
     o = torch.stack(
@@ -702,3 +711,111 @@ def quat_from_euler_xyz(roll, pitch, yaw):
     qz = sy * cr * cp - cy * sr * sp
 
     return torch.stack([qx, qy, qz, qw], dim=-1)
+
+
+@torch.compile
+def remove_yaw_component(
+    quat_raw: Tensor,
+    quat_init: Tensor,
+    w_last: bool = True,
+) -> Tensor:
+    """Remove yaw component from quaternion while keeping roll and pitch.
+
+    This function extracts the yaw component from the initial quaternion and uses
+    it to normalize the raw quaternion, effectively removing the initial heading
+    offset while preserving roll and pitch components.
+
+    Args:
+        quat_raw: Current quaternion from IMU, shape (..., 4)
+        quat_init: Initial quaternion (contains the yaw to be removed), shape (..., 4)
+        w_last: If True, quaternion format is (x, y, z, w).
+                If False, quaternion format is (w, x, y, z). Default: True.
+
+    Returns:
+        Quaternion with initial yaw component removed, same shape as input.
+        The resulting quaternion represents roll and pitch relative to the
+        heading-aligned coordinate frame.
+
+    Example:
+        >>> # Initial robot orientation (roll=0°, pitch=0°, yaw=45°)
+        >>> quat_init = quat_from_euler_xyz(
+        ...     torch.tensor(0.0), torch.tensor(0.0), torch.tensor(0.7854)
+        ... )
+        >>> # Current IMU reading (roll=10°, pitch=20°, yaw=60°)
+        >>> quat_raw = quat_from_euler_xyz(
+        ...     torch.tensor(0.1745),
+        ...     torch.tensor(0.3491),
+        ...     torch.tensor(1.0472),
+        ... )
+        >>> quat_norm = remove_yaw_component(quat_raw, quat_init)
+        >>> # quat_norm contains roll=10°, pitch=20°, with initial yaw offset removed
+    """
+    # Extract quaternion components based on format
+    if w_last:
+        q_w = quat_init[..., -1]
+        q_vec = quat_init[..., :3]
+    else:
+        q_w = quat_init[..., 0]
+        q_vec = quat_init[..., 1:]
+
+    # Calculate heading by rotating x-axis with quaternion
+    # ref_dir = [1, 0, 0] (x-axis)
+    ref_dir = torch.zeros_like(q_vec)
+    ref_dir[..., 0] = 1.0
+
+    # Quaternion rotation: v' = v + 2 * w * (q_vec × v) + 2 * q_vec × (q_vec × v)
+    cross1 = torch.cross(q_vec, ref_dir, dim=-1)
+    cross2 = torch.cross(q_vec, cross1, dim=-1)
+    rot_dir = ref_dir + 2.0 * q_w.unsqueeze(-1) * cross1 + 2.0 * cross2
+
+    # Extract heading angle from rotated x-axis
+    heading = torch.atan2(rot_dir[..., 1], rot_dir[..., 0])
+
+    # Create inverse heading quaternion (rotation about negative z-axis)
+    half_heading = (-heading) * 0.5
+    heading_q_inv = torch.zeros_like(quat_init)
+
+    if w_last:
+        heading_q_inv[..., 0] = 0.0  # x
+        heading_q_inv[..., 1] = 0.0  # y
+        heading_q_inv[..., 2] = torch.sin(half_heading)  # z
+        heading_q_inv[..., 3] = torch.cos(half_heading)  # w
+    else:
+        heading_q_inv[..., 0] = torch.cos(half_heading)  # w
+        heading_q_inv[..., 1] = 0.0  # x
+        heading_q_inv[..., 2] = 0.0  # y
+        heading_q_inv[..., 3] = torch.sin(half_heading)  # z
+
+    # Quaternion multiplication: heading_q_inv * quat_raw
+    shape = quat_raw.shape
+    a = heading_q_inv.reshape(-1, 4)
+    b = quat_raw.reshape(-1, 4)
+
+    if w_last:
+        x1, y1, z1, w1 = a[..., 0], a[..., 1], a[..., 2], a[..., 3]
+        x2, y2, z2, w2 = b[..., 0], b[..., 1], b[..., 2], b[..., 3]
+    else:
+        w1, x1, y1, z1 = a[..., 0], a[..., 1], a[..., 2], a[..., 3]
+        w2, x2, y2, z2 = b[..., 0], b[..., 1], b[..., 2], b[..., 3]
+
+    # Quaternion multiplication formula
+    ww = (z1 + x1) * (x2 + y2)
+    yy = (w1 - y1) * (w2 + z2)
+    zz = (w1 + y1) * (w2 - z2)
+    xx = ww + yy + zz
+    qq = 0.5 * (xx + (z1 - x1) * (x2 - y2))
+    w = qq - ww + (z1 - y1) * (y2 - z2)
+    x = qq - xx + (x1 + w1) * (x2 + w2)
+    y = qq - yy + (w1 - x1) * (y2 + z2)
+    z = qq - zz + (z1 + y1) * (w2 - x2)
+
+    if w_last:
+        quat_result = torch.stack([x, y, z, w], dim=-1).view(shape)
+    else:
+        quat_result = torch.stack([w, x, y, z], dim=-1).view(shape)
+
+    # Normalize the result quaternion
+    norm = torch.norm(quat_result, p=2, dim=-1, keepdim=True)
+    quat_norm = quat_result / norm.clamp(min=1e-8)
+
+    return quat_norm

@@ -16,11 +16,12 @@
 
 
 source train.env
-export CUDA_VISIBLE_DEVICES="0"
+export CUDA_VISIBLE_DEVICES="0,1"
 
-config_name="train_unitree_g1_21dof_teacher"
-motion_file="data/lmdb_datasets/lmdb_g1_21dof_test"
-num_envs=16
+config_name="train_ZJ-Humanoid-hi2_21dof_teacher_stage2"
+motion_file="your_lmdb_path"
+num_envs=32
+
 
 ${Train_CONDA_PREFIX}/bin/accelerate launch \
     --multi_gpu \
@@ -28,8 +29,10 @@ ${Train_CONDA_PREFIX}/bin/accelerate launch \
     --main_process_port=29501 \
     holomotion/src/training/train_motion_tracking.py \
     --config-name=training/motion_tracking/${config_name} \
+    project_name="HoloMotionDebug" \
     use_accelerate=true \
     num_envs=${num_envs} \
+    algo.algo.config.log_interval=10 \
     headless=true \
     experiment_name=${config_name} \
     motion_lmdb_path=${motion_file}

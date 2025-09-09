@@ -18,9 +18,11 @@
 source train.env
 export CUDA_VISIBLE_DEVICES=""
 
-retargeted_pkl_path="data/retargeted_datasets/waltz"
-dump_dir="data/lmdb_datasets/lmdb_g1_21dof_test"
-robot_config="unitree/G1/21dof/21dof_training"
+retargeted_pkl_path="assets/test_data/motion_retargeting/retargeted_datasets/phc_retargeted"
+dump_dir="data/lmdb_datasets/your_lmdb_path"
+
+
+robot_config="ZJ-Humanoid/hi2/21dof_training"
 
 ${Train_CONDA_PREFIX}/bin/python \
     holomotion/src/training/pack_lmdb.py \

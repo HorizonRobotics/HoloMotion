@@ -39,3 +39,7 @@ domain_rand:
   # control delay
   randomize_ctrl_delay: True
   ctrl_delay_step_range: [0, 2] # integer max real delay is 90ms
+
+  # joint default position
+  randomize_joint_default_pos: false
+  joint_default_pos_range: [-0.01, 0.01]  # radians, bias range for default joint positions

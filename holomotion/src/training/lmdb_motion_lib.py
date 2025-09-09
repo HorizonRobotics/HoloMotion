@@ -17,6 +17,7 @@
 import os
 import pickle
 import time
+import json
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Union
 
@@ -101,9 +102,7 @@ class OnlineMotionCache:
         This is faster than creating new tensors when frequently updating the
         cache.
         """
-        assert self.num_envs > 0, (
-            "num_envs must be set before resetting the cache"
-        )
+        assert self.num_envs > 0, "num_envs must be set before resetting the cache"
         # Define shape for each tensor
         shapes = {
             "global_body_translation": (
@@ -172,9 +171,7 @@ class OnlineMotionCache:
 
             # If tensor doesn't exist or shape has changed, create a new one
             if current_tensor is None or current_tensor.shape != shape:
-                setattr(
-                    self, tensor_name, torch.zeros(shape, device=self.device)
-                )
+                setattr(self, tensor_name, torch.zeros(shape, device=self.device))
             else:
                 # Otherwise, zero out the existing tensor in-place
                 current_tensor.zero_()
@@ -247,9 +244,7 @@ class OnlineMotionCache:
             if n_fut_frames > 1:
                 num_sparse_fut_frames = n_fut_frames - 1
 
-                effective_target_fps = (
-                    self.fps
-                )  # Default to continuous sampling
+                effective_target_fps = self.fps  # Default to continuous sampling
                 if target_fps is not None and target_fps > 0:
                     effective_target_fps = target_fps
 
@@ -303,26 +298,18 @@ class OnlineMotionCache:
         )
         # read_mask has shape [B, num_frames_to_fetch]
 
-        batch_indices = torch.arange(
-            bs, device=motion_ids.device
-        )  # Shape: [B]
-        batch_indices_expanded = batch_indices[:, None].expand(
-            -1, num_frames_to_fetch
-        )
+        batch_indices = torch.arange(bs, device=motion_ids.device)  # Shape: [B]
+        batch_indices_expanded = batch_indices[:, None].expand(-1, num_frames_to_fetch)
 
         dof_pos_out = torch.zeros(
             (bs, num_frames_to_fetch, self.num_dofs),
             device=self.device,
-            dtype=self.dof_pos.dtype
-            if self.dof_pos is not None
-            else torch.float32,
+            dtype=self.dof_pos.dtype if self.dof_pos is not None else torch.float32,
         )
         dof_vels_out = torch.zeros(
             (bs, num_frames_to_fetch, self.num_dofs),
             device=self.device,
-            dtype=self.dof_vels.dtype
-            if self.dof_vels is not None
-            else torch.float32,
+            dtype=self.dof_vels.dtype if self.dof_vels is not None else torch.float32,
         )
         global_body_translation_out = torch.zeros(
             (bs, num_frames_to_fetch, self.num_bodies, 3),
@@ -385,9 +372,7 @@ class OnlineMotionCache:
         frame_flag_out = torch.zeros(
             (bs, num_frames_to_fetch),
             device=self.device,
-            dtype=self.frame_flag.dtype
-            if self.frame_flag is not None
-            else torch.long,
+            dtype=self.frame_flag.dtype if self.frame_flag is not None else torch.long,
         )
 
         # --- Populate output tensors using the mask ---
@@ -406,16 +391,12 @@ class OnlineMotionCache:
             # Ensure source tensors are not None before indexing
             if self.dof_pos is not None:
                 dof_pos_out[tgt_batch_indices_flat, tgt_frame_indices_flat] = (
-                    self.dof_pos[
-                        src_batch_indices_flat, src_frame_indices_flat
-                    ]
+                    self.dof_pos[src_batch_indices_flat, src_frame_indices_flat]
                 )
             if self.dof_vels is not None:
-                dof_vels_out[
-                    tgt_batch_indices_flat, tgt_frame_indices_flat
-                ] = self.dof_vels[
-                    src_batch_indices_flat, src_frame_indices_flat
-                ]
+                dof_vels_out[tgt_batch_indices_flat, tgt_frame_indices_flat] = (
+                    self.dof_vels[src_batch_indices_flat, src_frame_indices_flat]
+                )
 
             if self.global_body_translation is not None:
                 global_body_translation_out[
@@ -468,19 +449,15 @@ class OnlineMotionCache:
                 ]
 
             if self.frame_flag is not None:
-                frame_flag_out[
-                    tgt_batch_indices_flat, tgt_frame_indices_flat
-                ] = self.frame_flag[
-                    src_batch_indices_flat, src_frame_indices_flat
-                ]
+                frame_flag_out[tgt_batch_indices_flat, tgt_frame_indices_flat] = (
+                    self.frame_flag[src_batch_indices_flat, src_frame_indices_flat]
+                )
 
         # Apply global offset if provided
         if global_offset is not None:
             # Offset shape: [B, 3]
             # Select offsets for valid batch entries: shape (N_valid, 3)
-            selected_offsets = global_offset.to(self.device)[
-                tgt_batch_indices_flat
-            ]
+            selected_offsets = global_offset.to(self.device)[tgt_batch_indices_flat]
 
             offset_for_body_tensors = selected_offsets[:, None, :]
 
@@ -497,9 +474,7 @@ class OnlineMotionCache:
         global_root_translation = global_body_translation_out[..., 0, :]
         global_root_rotation = global_body_rotation_out[..., 0, :]
         global_root_velocity = global_body_velocity_out[..., 0, :]
-        global_root_angular_velocity = global_body_angular_velocity_out[
-            ..., 0, :
-        ]
+        global_root_angular_velocity = global_body_angular_velocity_out[..., 0, :]
 
         # Construct and return the state dictionary
         return_dict = {
@@ -550,9 +525,7 @@ class OnlineMotionCache:
         else:
             cached_duration = global_end_frames - global_start_frames
             valid_duration = cached_duration - n_fut_frames - 1
-            rand_factors = torch.rand(
-                len(env_ids), device=global_start_frames.device
-            )
+            rand_factors = torch.rand(len(env_ids), device=global_start_frames.device)
             sampled_offset = torch.floor(rand_factors * valid_duration).long()
             sampled_global_start_frames = global_start_frames + sampled_offset
 
@@ -590,9 +563,7 @@ class OnlineMotionCache:
                 self.global_body_velocity.view(bs, ts, -1),  # NBx3
                 self.global_body_angular_velocity.view(bs, ts, -1),  # NBx3
                 self.global_body_velocity_extend.view(bs, ts, -1),  # (NB+NE)x3
-                self.global_body_angular_velocity_extend.view(
-                    bs, ts, -1
-                ),  # (NB+NE)x3
+                self.global_body_angular_velocity_extend.view(bs, ts, -1),  # (NB+NE)x3
                 self.dof_vels.view(bs, ts, -1),  # ND
                 self.dof_pos.view(bs, ts, -1),  # ND
             ],
@@ -618,30 +589,21 @@ class OnlineMotionCache:
 
         # Create sequence indices: shape (num_samples, seq_len)
         seq_indices = (
-            start_frames[:, None]
-            + torch.arange(seq_len, device=self.device)[None, :]
+            start_frames[:, None] + torch.arange(seq_len, device=self.device)[None, :]
         )
         motion_indices_expanded = sampled_local_motion_ids[:, None]
         # Slice out the sequences using advanced indexing
         dof_pos = self.dof_pos[motion_indices_expanded, seq_indices]
         dof_vels = self.dof_vels[motion_indices_expanded, seq_indices]
-        root_pos = self.global_body_translation[
-            motion_indices_expanded, seq_indices, 0
-        ]
-        root_rot = self.global_body_rotation[
-            motion_indices_expanded, seq_indices, 0
-        ]
-        root_vel = self.global_body_velocity[
-            motion_indices_expanded, seq_indices, 0
-        ]
+        root_pos = self.global_body_translation[motion_indices_expanded, seq_indices, 0]
+        root_rot = self.global_body_rotation[motion_indices_expanded, seq_indices, 0]
+        root_vel = self.global_body_velocity[motion_indices_expanded, seq_indices, 0]
         root_ang_vel = self.global_body_angular_velocity[
             motion_indices_expanded, seq_indices, 0
         ]
         key_body_pos = self.global_body_translation[
             motion_indices_expanded, seq_indices
-        ][
-            :, :, self.key_body_indices
-        ]  # (num_samples, seq_len, num_key_bodies, 3)
+        ][:, :, self.key_body_indices]  # (num_samples, seq_len, num_key_bodies, 3)
 
         # --- Start: Process key_body_pos ---
         # Calculate inverse heading rotation for each frame in the sequence
@@ -700,22 +662,15 @@ class OnlineMotionCache:
         ).long()
         # Create sequence indices: shape (num_samples, seq_len)
         seq_indices = (
-            start_frames[:, None]
-            + torch.arange(seq_len, device=self.device)[None, :]
+            start_frames[:, None] + torch.arange(seq_len, device=self.device)[None, :]
         )
         motion_indices_expanded = sampled_local_motion_ids[:, None]
         # Slice out the sequences using advanced indexing
         dof_pos = self.dof_pos[motion_indices_expanded, seq_indices]
         dof_vels = self.dof_vels[motion_indices_expanded, seq_indices]
-        root_pos = self.global_body_translation[
-            motion_indices_expanded, seq_indices, 0
-        ]
-        root_rot = self.global_body_rotation[
-            motion_indices_expanded, seq_indices, 0
-        ]
-        root_vel = self.global_body_velocity[
-            motion_indices_expanded, seq_indices, 0
-        ]
+        root_pos = self.global_body_translation[motion_indices_expanded, seq_indices, 0]
+        root_rot = self.global_body_rotation[motion_indices_expanded, seq_indices, 0]
+        root_vel = self.global_body_velocity[motion_indices_expanded, seq_indices, 0]
         root_ang_vel = self.global_body_angular_velocity[
             motion_indices_expanded, seq_indices, 0
         ]
@@ -742,6 +697,7 @@ class LmdbMotionLib:
         num_processes: int = 1,
     ):
         self.m_cfg = motion_lib_cfg
+
         self.min_frame_length = self.m_cfg.get("min_frame_length", 0)
         self._sim_fps = 1 / self.m_cfg.get("step_dt", 1 / 50)
         self.cache_device = cache_device
@@ -752,9 +708,8 @@ class LmdbMotionLib:
         self.handpicked_motion_names = set(
             self.m_cfg.get("handpicked_motion_names", [])
         )
-        self.excluded_motion_names = set(
-            self.m_cfg.get("excluded_motion_names", [])
-        )
+        self.excluded_motion_names = set(self.m_cfg.get("excluded_motion_names", []))
+
         raw_all_motion_keys = []
         try:
             with lmdb.open(
@@ -774,9 +729,17 @@ class LmdbMotionLib:
                         raw_all_motion_keys,
                         description="Filtering motions ...",
                     ):
+                        # --- Filter motions based on handpicked_motion_names ---
                         if self.handpicked_motion_names:
                             if key not in self.handpicked_motion_names:
                                 continue
+
+                        # --- Filter motions based on excluded_motion_names ---
+                        if key in self.excluded_motion_names:
+                            num_filtered_out += 1
+                            continue
+
+                        # --- Filter motions based on min_frame_length ---
                         metadata = pickle.loads(
                             txn.get(f"motion/{key}/metadata".encode())
                         )
@@ -787,14 +750,6 @@ class LmdbMotionLib:
                         filter_flag = False
                         if num_frames < self.min_frame_length:
                             filter_flag = True
-
-                        # --- Filter motions based on excluded_motion_names ---
-                        if key in self.excluded_motion_names:
-                            filter_flag = True
-                            logger.info(
-                                f"Filtering motion {key} due"
-                                "to excluded motion names."
-                            )
 
                         if not filter_flag:
                             self.all_motion_keys.append(key)
@@ -810,15 +765,10 @@ class LmdbMotionLib:
                     # --- Filter motions based on motion keys ---
 
                     # --- Statistics for filtered motions ---
+                    logger.info(f"Number of raw clips: {len(raw_all_motion_keys)}")
+                    logger.info(f"Number of filtered-out clips: {num_filtered_out}")
                     logger.info(
-                        f"Number of raw clips: {len(raw_all_motion_keys)}"
-                    )
-                    logger.info(
-                        f"Number of filtered-out clips: {num_filtered_out}"
-                    )
-                    logger.info(
-                        f"Number of remaining clips: "
-                        f"{len(self.all_motion_keys)}"
+                        f"Number of remaining clips: {len(self.all_motion_keys)}"
                     )
                     logger.info(
                         f"Total frame length after filtering: "
@@ -837,28 +787,18 @@ class LmdbMotionLib:
             raise
         logger.info(f"All motion keys: {self.all_motion_keys[:20]}")
         self.motion_id2key = {
-            motion_id: key
-            for motion_id, key in enumerate(self.all_motion_keys)
+            motion_id: key for motion_id, key in enumerate(self.all_motion_keys)
         }
         self.motion_key2id = {
-            key: motion_id
-            for motion_id, key in enumerate(self.all_motion_keys)
+            key: motion_id for motion_id, key in enumerate(self.all_motion_keys)
         }
         self.motion_ids = list(self.motion_id2key.keys())
-        # self.train_motion_ids = list(
-        #     [self.motion_key2id[key] for key in self.train_motion_keys]
-        # )
-        # self.val_motion_ids = list(
-        #     [self.motion_key2id[key] for key in self.val_motion_keys]
-        # )
 
         self.max_frame_length = self.m_cfg.get("max_frame_length", 500)
         self.n_fut_frames = self.m_cfg.get("n_fut_frames", 1)
         self.num_dofs = len(self.m_cfg.dof_names)
         self.num_bodies = len(self.m_cfg.body_names)
-        self.num_extended_bodies = self.num_bodies + len(
-            self.m_cfg.extend_config
-        )
+        self.num_extended_bodies = self.num_bodies + len(self.m_cfg.extend_config)
         self.key_bodies = self.m_cfg.get("key_bodies", [])
         self.body_names = self.m_cfg.body_names
         self.extended_body_names = self.body_names + [
@@ -874,18 +814,16 @@ class LmdbMotionLib:
                 f"processes ({self.num_processes}). Will replicate keys."
             )
             # Calculate how many times we need to repeat the keys
-            repeat_count = (
-                self.num_processes + len(self.all_motion_keys) - 1
-            ) // len(self.all_motion_keys)
+            repeat_count = (self.num_processes + len(self.all_motion_keys) - 1) // len(
+                self.all_motion_keys
+            )
             # Replicate the keys
             replicated_keys = []
             for _ in range(repeat_count):
                 replicated_keys.extend(self.all_motion_keys)
             # Take just what we need
             self.all_motion_keys = replicated_keys[: self.num_processes]
-            logger.info(
-                f"Replicated motion keys to have {len(self.all_motion_keys)}."
-            )
+            logger.info(f"Replicated motion keys to have {len(self.all_motion_keys)}.")
 
         num_motions_per_process = max(
             1, len(self.all_motion_keys) // self.num_processes
@@ -908,13 +846,9 @@ class LmdbMotionLib:
         elif len(self.eval_motion_keys) == 0:
             # This shouldn't happen with the replication, but just in case
             self.eval_motion_keys = [
-                self.all_motion_keys[
-                    self.process_id % len(self.all_motion_keys)
-                ]
+                self.all_motion_keys[self.process_id % len(self.all_motion_keys)]
             ]
-            logger.info(
-                f"Process {self.process_id} assigned replicated motion clip."
-            )
+            logger.info(f"Process {self.process_id} assigned replicated motion clip.")
 
         # Pre-calculate the evaluation motion clip allocation schedule
         self.eval_allocation_schedule: List[dict] = self._eval_preallocation()
@@ -933,6 +867,8 @@ class LmdbMotionLib:
             n_fut_frames=self.n_fut_frames,
             fps=self._sim_fps,
         )
+
+        logger.info("MotionLib initialized !")
 
     def __enter__(self):
         """Context manager entry - ensure handle is open."""
@@ -970,9 +906,7 @@ class LmdbMotionLib:
     def _num_unique_motions(self) -> int:
         return len(self.all_motion_keys)
 
-    def get_motion_wallclock_length(
-        self, motion_ids: torch.Tensor
-    ) -> torch.Tensor:
+    def get_motion_wallclock_length(self, motion_ids: torch.Tensor) -> torch.Tensor:
         # Use the property to get the handle for this process
         with self.lmdb_handle.begin() as txn:
             motion_lengths = []
@@ -1008,9 +942,7 @@ class LmdbMotionLib:
         truncate_time: float = None,
     ) -> torch.Tensor:
         motion_phase = torch.rand(len(motion_ids))
-        motion_len = (
-            self.get_motion_wallclock_length(motion_ids).clone().detach()
-        )
+        motion_len = self.get_motion_wallclock_length(motion_ids).clone().detach()
         if truncate_time is not None:
             assert truncate_time >= 0.0
             motion_len -= truncate_time
@@ -1032,9 +964,7 @@ class LmdbMotionLib:
             motion_global_num_frames_total - self.min_frame_length,
         )
         if eval:
-            motion_global_start_frames = torch.zeros(
-                len(motion_ids), dtype=torch.long
-            )
+            motion_global_start_frames = torch.zeros(len(motion_ids), dtype=torch.long)
         else:
             rand_factors = torch.rand(len(motion_ids))
             motion_global_start_frames = torch.floor(
@@ -1047,9 +977,7 @@ class LmdbMotionLib:
         self, num_samples: int, eval: bool = False
     ) -> torch.Tensor:
         start_time = time.time()
-        sampled_motion_ids = torch.randint(
-            0, len(self.motion_ids), (num_samples,)
-        )
+        sampled_motion_ids = torch.randint(0, len(self.motion_ids), (num_samples,))
         sampled_global_start_frames = self.sample_global_start_frames(
             sampled_motion_ids, eval=eval
         )
@@ -1081,15 +1009,14 @@ class LmdbMotionLib:
     ):
         motion_ids = cache_instance.cached_motion_ids
 
-        cache_instance["cached_motion_raw_num_frames"] = (
-            self.get_motion_num_frames(motion_ids).clone()
-        )
+        cache_instance["cached_motion_raw_num_frames"] = self.get_motion_num_frames(
+            motion_ids
+        ).clone()
         cache_instance["cached_motion_global_start_frames"] = (
             motion_global_start_frames.clone()
         )
         cache_instance["cached_motion_global_end_frames"] = (
-            cache_instance["cached_motion_global_start_frames"]
-            + self.max_frame_length
+            cache_instance["cached_motion_global_start_frames"] + self.max_frame_length
         ).clamp(max=cache_instance["cached_motion_raw_num_frames"])
 
         # Use context manager for the entire cache building process
@@ -1109,8 +1036,8 @@ class LmdbMotionLib:
                     "dof_pos",
                     slices=frame_slice,
                 )
-                cache_instance.dof_pos[i, :frame_slice_len, :] = (
-                    torch.from_numpy(dof_pos.copy())
+                cache_instance.dof_pos[i, :frame_slice_len, :] = torch.from_numpy(
+                    dof_pos.copy()
                 )
 
                 # Load and cache dof velocities
@@ -1120,8 +1047,8 @@ class LmdbMotionLib:
                     "dof_vels",
                     slices=frame_slice,
                 )
-                cache_instance.dof_vels[i, :frame_slice_len, :] = (
-                    torch.from_numpy(dof_vels.copy())
+                cache_instance.dof_vels[i, :frame_slice_len, :] = torch.from_numpy(
+                    dof_vels.copy()
                 )
 
                 # Load and cache body translations
@@ -1131,9 +1058,9 @@ class LmdbMotionLib:
                     "global_translation",
                     slices=frame_slice,
                 )
-                cache_instance.global_body_translation[
-                    i, :frame_slice_len, :
-                ] = torch.from_numpy(global_body_translation.copy())
+                cache_instance.global_body_translation[i, :frame_slice_len, :] = (
+                    torch.from_numpy(global_body_translation.copy())
+                )
 
                 # Load and cache body rotations
                 global_body_rotation = read_motion_array(
@@ -1164,9 +1091,9 @@ class LmdbMotionLib:
                     "global_angular_velocity",
                     slices=frame_slice,
                 )
-                cache_instance.global_body_angular_velocity[
-                    i, :frame_slice_len, :
-                ] = torch.from_numpy(global_body_angular_velocity.copy())
+                cache_instance.global_body_angular_velocity[i, :frame_slice_len, :] = (
+                    torch.from_numpy(global_body_angular_velocity.copy())
+                )
 
                 # Load and cache extended body translations
                 global_body_translation_extend = read_motion_array(
@@ -1211,16 +1138,14 @@ class LmdbMotionLib:
                     )
                     cache_instance.global_body_angular_velocity_extend[
                         i, :frame_slice_len, :
-                    ] = torch.from_numpy(
-                        global_body_angular_velocity_extend.copy()
-                    )
+                    ] = torch.from_numpy(global_body_angular_velocity_extend.copy())
 
                 frame_flag = np.ones(frame_slice_len).astype(np.int64)
                 frame_flag[0] = 0
                 frame_flag[-1] = 2
-                cache_instance.frame_flag[i, :frame_slice_len] = (
-                    torch.from_numpy(frame_flag.copy()).long()
-                )
+                cache_instance.frame_flag[i, :frame_slice_len] = torch.from_numpy(
+                    frame_flag.copy()
+                ).long()
 
                 # Load and cache local body rotations
                 local_body_rotation = read_motion_array(
@@ -1279,9 +1204,7 @@ class LmdbMotionLib:
         for motion_id in track(
             eval_motion_ids_list, description="Processing eval motions"
         ):
-            motion_key = self.motion_id2key.get(
-                motion_id
-            )  # Use .get for safety
+            motion_key = self.motion_id2key.get(motion_id)  # Use .get for safety
             if motion_key is None:
                 continue
 
@@ -1327,14 +1250,10 @@ class LmdbMotionLib:
 
         num_total_clips = len(self.eval_allocation_schedule)
         if num_envs_to_load <= 0:
-            logger.warning(
-                f"Requested to load {num_envs_to_load} envs. Skipping."
-            )
+            logger.warning(f"Requested to load {num_envs_to_load} envs. Skipping.")
             return False  # Cannot be the last batch if loading zero
 
-        is_last_batch = (
-            self.eval_schedule_idx + num_envs_to_load
-        ) >= num_total_clips
+        is_last_batch = (self.eval_schedule_idx + num_envs_to_load) >= num_total_clips
 
         # Ensure cache is reset before loading new data, but keep original size
         self.cache.reset()
@@ -1344,9 +1263,7 @@ class LmdbMotionLib:
             (self.eval_schedule_idx + i) % num_total_clips
             for i in range(num_envs_to_load)
         ]
-        selected_clips = [
-            self.eval_allocation_schedule[idx] for idx in indices_to_load
-        ]
+        selected_clips = [self.eval_allocation_schedule[idx] for idx in indices_to_load]
         self.cache.cached_clip_info = selected_clips
         # Prepare metadata tensors for the cache
         batch_motion_ids = torch.tensor(
@@ -1366,17 +1283,13 @@ class LmdbMotionLib:
 
         # Update cache metadata (use .clone() for safety)
         self.cache.cached_motion_ids = batch_motion_ids.clone()
-        self.cache.cached_motion_global_start_frames = (
-            batch_start_frames.clone()
-        )
+        self.cache.cached_motion_global_start_frames = batch_start_frames.clone()
         self.cache.cached_motion_global_end_frames = (
             self.cache.cached_motion_global_start_frames + batch_clip_lengths
         )
         # For eval, raw_num_frames in cache refers to the clip length loaded
         self.cache.cached_motion_raw_num_frames = batch_clip_lengths.clone()
-        self.cache.cached_motion_original_num_frames = (
-            original_num_frames.clone()
-        )
+        self.cache.cached_motion_original_num_frames = original_num_frames.clone()
 
         # Load motion data clip by clip
         with self.lmdb_handle.begin() as _:
@@ -1462,33 +1375,33 @@ class LmdbMotionLib:
                 # --- Fill cache tensors ---
                 # Make sure tensors are not None before filling
                 if dof_pos is not None:
-                    self.cache.dof_pos[i, :frame_slice_len, :] = (
-                        torch.from_numpy(dof_pos.copy())
+                    self.cache.dof_pos[i, :frame_slice_len, :] = torch.from_numpy(
+                        dof_pos.copy()
                     )
                 if dof_vels is not None:
-                    self.cache.dof_vels[i, :frame_slice_len, :] = (
-                        torch.from_numpy(dof_vels.copy())
+                    self.cache.dof_vels[i, :frame_slice_len, :] = torch.from_numpy(
+                        dof_vels.copy()
                     )
                 if global_body_translation is not None:
-                    self.cache.global_body_translation[
-                        i, :frame_slice_len, :, :
-                    ] = torch.from_numpy(global_body_translation.copy())
+                    self.cache.global_body_translation[i, :frame_slice_len, :, :] = (
+                        torch.from_numpy(global_body_translation.copy())
+                    )
                 if global_body_rotation is not None:
-                    self.cache.global_body_rotation[
-                        i, :frame_slice_len, :, :
-                    ] = torch.from_numpy(global_body_rotation.copy())
+                    self.cache.global_body_rotation[i, :frame_slice_len, :, :] = (
+                        torch.from_numpy(global_body_rotation.copy())
+                    )
                 if global_body_velocity is not None:
-                    self.cache.global_body_velocity[
-                        i, :frame_slice_len, :, :
-                    ] = torch.from_numpy(global_body_velocity.copy())
+                    self.cache.global_body_velocity[i, :frame_slice_len, :, :] = (
+                        torch.from_numpy(global_body_velocity.copy())
+                    )
                 if global_body_angular_velocity is not None:
                     self.cache.global_body_angular_velocity[
                         i, :frame_slice_len, :, :
                     ] = torch.from_numpy(global_body_angular_velocity.copy())
                 if local_body_rotation is not None:
-                    self.cache.local_body_rotation[
-                        i, :frame_slice_len, :, :
-                    ] = torch.from_numpy(local_body_rotation.copy())
+                    self.cache.local_body_rotation[i, :frame_slice_len, :, :] = (
+                        torch.from_numpy(local_body_rotation.copy())
+                    )
 
                 # Fill extended body data if available
                 if global_body_translation_extend is not None:
@@ -1506,9 +1419,7 @@ class LmdbMotionLib:
                 if global_body_angular_velocity_extend is not None:
                     self.cache.global_body_angular_velocity_extend[
                         i, :frame_slice_len, :, :
-                    ] = torch.from_numpy(
-                        global_body_angular_velocity_extend.copy()
-                    )
+                    ] = torch.from_numpy(global_body_angular_velocity_extend.copy())
 
                 # Build frame flag (0=start, 1=middle, 2=end of clip)
                 frame_flag = np.ones(frame_slice_len, dtype=np.int64)
@@ -1531,18 +1442,14 @@ class LmdbMotionLib:
 
     def export_motion_clip(self, motion_key: str) -> Dict[str, np.ndarray]:
         if motion_key not in self.motion_key2id:
-            logger.error(
-                f"Motion key {motion_key} not found in motion library."
-            )
+            logger.error(f"Motion key {motion_key} not found in motion library.")
             return {}
 
         with self.lmdb_handle.begin() as txn:
             # Get number of frames for the motion
             metadata_bytes = txn.get(f"motion/{motion_key}/metadata".encode())
             if metadata_bytes is None:
-                logger.error(
-                    f"Metadata not found for motion key {motion_key}."
-                )
+                logger.error(f"Metadata not found for motion key {motion_key}.")
                 return {}
             metadata = pickle.loads(metadata_bytes)
             num_frames = metadata["num_frames"]
@@ -1570,13 +1477,8 @@ class LmdbMotionLib:
                 array_data = read_motion_array(
                     self.lmdb_handle, motion_key, lmdb_key, slices=None
                 )
-                raw_motion_arrays[lmdb_key] = (
-                    array_data  # array_data can be None
-                )
-                if (
-                    array_data is not None
-                    and array_data.shape[0] != num_frames
-                ):
+                raw_motion_arrays[lmdb_key] = array_data  # array_data can be None
+                if array_data is not None and array_data.shape[0] != num_frames:
                     logger.warning(
                         f"Mismatch in frame count for {motion_key}/{lmdb_key}."
                         f"Expected {num_frames}, got {array_data.shape[0]}. "
@@ -1595,16 +1497,12 @@ class LmdbMotionLib:
                 output_dict["dof_vel"] = dof_vels_data
 
             # Root and Rigid Body (rb) data
-            global_translation_data = raw_motion_arrays.get(
-                "global_translation"
-            )
+            global_translation_data = raw_motion_arrays.get("global_translation")
             if global_translation_data is not None:
                 output_dict["rg_pos"] = global_translation_data
                 output_dict["root_pos"] = global_translation_data[:, 0, :]
 
-            global_rotation_data = raw_motion_arrays.get(
-                "global_rotation_quat"
-            )
+            global_rotation_data = raw_motion_arrays.get("global_rotation_quat")
             if global_rotation_data is not None:
                 output_dict["rb_rot"] = global_rotation_data
                 output_dict["root_rot"] = global_rotation_data[:, 0, :]
@@ -1619,20 +1517,14 @@ class LmdbMotionLib:
             )
             if global_angular_velocity_data is not None:
                 output_dict["body_ang_vel"] = global_angular_velocity_data
-                output_dict["root_ang_vel"] = global_angular_velocity_data[
-                    :, 0, :
-                ]
+                output_dict["root_ang_vel"] = global_angular_velocity_data[:, 0, :]
 
             # Extended Rigid Body (rg_pos_t, etc.) data
-            g_trans_ext_data = raw_motion_arrays.get(
-                "global_translation_extend"
-            )
+            g_trans_ext_data = raw_motion_arrays.get("global_translation_extend")
             if g_trans_ext_data is not None:
                 output_dict["rg_pos_t"] = g_trans_ext_data
 
-            g_rot_ext_data = raw_motion_arrays.get(
-                "global_rotation_quat_extend"
-            )
+            g_rot_ext_data = raw_motion_arrays.get("global_rotation_quat_extend")
             if g_rot_ext_data is not None:
                 output_dict["rg_rot_t"] = g_rot_ext_data
 
@@ -1640,9 +1532,7 @@ class LmdbMotionLib:
             if g_vel_ext_data is not None:
                 output_dict["body_vel_t"] = g_vel_ext_data
 
-            g_ang_vel_ext_data = raw_motion_arrays.get(
-                "global_angular_velocity_extend"
-            )
+            g_ang_vel_ext_data = raw_motion_arrays.get("global_angular_velocity_extend")
             if g_ang_vel_ext_data is not None:
                 output_dict["body_ang_vel_t"] = g_ang_vel_ext_data
 

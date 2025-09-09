@@ -7,6 +7,7 @@ defaults:
 
 project_name: HoloMotion_Eval
 experiment_name: eval_unitree_g1_21dof_isaacgym
+experiment_save_dir: ${experiment_dir}
 
 # Evaluation specific settings
 num_envs: 1  # Single environment for evaluation
@@ -15,6 +16,7 @@ use_accelerate: true
 
 # Export settings
 export_policy: true  # Whether to export policy to ONNX
+
 # noise settings
 obs:
   noise_scales:
@@ -52,6 +54,7 @@ obs:
 
 env:
   config:
+    align_marker_to_root: false
     termination:
       terminate_by_contact: False
 
@@ -61,6 +64,7 @@ env:
       terminate_when_motion_end: True
       terminate_when_motion_far: False
       terminate_when_motion_far_patience_steps: 1
+      terminate_when_ee_z_far: false
 
       terminate_when_joint_far: False
       terminate_when_joint_far_patience_steps: 1
@@ -79,10 +83,20 @@ env:
       root_ang_vel: 0.0
 robot:
   motion:
-    max_frame_length: 1000
+    max_frame_length: 2000
+    motion_file: ${motion_lmdb_path}
+    motion_log_dir: ${experiment_save_dir}/motion_log
   control:
     action_scale: 0.25
     action_clip_value: 100.0
-    clip_torques: True
+    clip_torques: false
+
+algo:
+  algo:
+    config:
+      teacher_actor_ckpt_path: null
+
 # Required checkpoint path (must be provided via command line)
 checkpoint: ???
+motion_lmdb_path: ???
+base_dir: logs

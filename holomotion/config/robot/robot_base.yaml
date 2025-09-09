@@ -21,6 +21,8 @@ robot:
 
   randomize_link_body_names: ???
 
+  base_link_name: "pelvis"
+
   control:
     # Can be "isaac_pd" or "P"/"V"/"T" for Proportional, Velocity, Torque control
     control_type: isaac_pd

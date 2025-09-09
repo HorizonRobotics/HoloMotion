@@ -7,21 +7,9 @@ obs:
   target_fps: 50
 
   obs_dict:
-    actor_obs: ${obs.obs_dict.critic_obs}
-
-    critic_obs:
-      - base_rpy
-      - rel_base_lin_vel
-      - rel_base_ang_vel
-      - dof_pos
-      - dof_vel
-      - actions
-      - rel_bodylink_pos_flat
-      - rel_bodylink_rot_tannorm_flat
-      - rel_bodylink_vel_flat
-      - rel_bodylink_ang_vel_flat
-      - rel_fut_ref_motion_state_flat
-      - domain_params
+    actor_obs: 
+      - priocep_with_fut_ref_v7_moe
+    critic_obs: ${obs.obs_dict.actor_obs}
 
   obs_auxiliary:
     history_actor: {}
@@ -58,6 +46,7 @@ obs:
     rel_bodylink_rot_tannorm_flat: 1.0
     rel_fut_ref_motion_state_flat: 1.0
     mogen_dof_pos: 1.0
+    priocep_with_fut_ref_v7_moe: 1.0
 
   noise_scales:
     base_rpy: 0.0
@@ -91,6 +80,7 @@ obs:
     rel_bodylink_rot_tannorm_flat: 0.0
     rel_fut_ref_motion_state_flat: 0.0
     mogen_dof_pos: 0.0
+    priocep_with_fut_ref_v7_moe: 0.0
 
   add_noise_currculum: False
   noise_initial_value: 0.0
@@ -130,4 +120,5 @@ obs:
     - rel_bodylink_ang_vel_flat: ${eval:'3 * (${robot.num_bodies} + ${robot.num_extend_bodies})'}
     - rel_bodylink_rot_tannorm_flat: ${eval:'6 * (${robot.num_bodies} + ${robot.num_extend_bodies})'}
     - rel_fut_ref_motion_state_flat: ${eval:'${obs.n_fut_frames} * (9 + (${robot.num_bodies} + ${robot.num_extend_bodies})*(3+6+3+3) + ${robot.dof_obs_size}*2)'}
+    - priocep_with_fut_ref_v7_moe: ${eval:'3 + 3 + 3 + ${robot.dof_obs_size}*3 + (${robot.num_bodies} + ${robot.num_extend_bodies})*(3+6+3+3) + 3 + len(${robot.randomize_link_body_names}) + 2 * ${robot.dof_obs_size} + 1 + 1 + 1 + ${robot.dof_obs_size} + ${obs.n_fut_frames} * (2 + 3 + 3 + (${robot.num_bodies} + ${robot.num_extend_bodies})*(3+6+3+3) + ${robot.dof_obs_size}*2)'}
   post_compute_config: {} # Will store values after preprocessing, don't put anything here

@@ -16,12 +16,13 @@
 
 
 source train.env
-export CUDA_VISIBLE_DEVICES="0"
+export CUDA_VISIBLE_DEVICES="0,1"
 
-config_name="train_unitree_g1_21dof_student"
-teacher_ckpt_path="logs/HoloMotion/xxxxxxxx_xxxxxx-train_unitree_g1_21dof_teacher/model_x.pt"
-motion_file="data/lmdb_datasets/lmdb_g1_21dof_test"
-num_envs=16
+
+config_name="train_ZJ-Humanoid-hi2_21dof_student"
+teacher_ckpt_path="your_teacher_ckpt_path"
+motion_file="your_lmdb_path"
+num_envs=2
 
 ${Train_CONDA_PREFIX}/bin/accelerate launch \
     --multi_gpu \

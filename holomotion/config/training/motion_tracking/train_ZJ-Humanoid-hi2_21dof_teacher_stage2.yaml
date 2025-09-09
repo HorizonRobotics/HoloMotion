@@ -1,0 +1,17 @@
+# @package _global_
+
+defaults:
+  - /training: train_base
+  - /simulator: isaacgym
+  - /algo: ppo
+  - /robot: ZJ-Humanoid/hi2/21dof_training
+  - /env: motion_tracking
+  - /env/observations: motion_tracking/obs_ppo_teacher
+  - /env/rewards: motion_tracking/rew_ZJ-Humanoid-hi2
+  - /env/domain_randomization: domain_rand_base
+  - /env/terrain: rough
+
+project_name: HoloMotion
+
+motion_lmdb_path: ???
+checkpoint: ???

@@ -58,22 +58,24 @@ def main(config: OmegaConf):
     setup_logging(accelerator)
     config = compile_config(config, accelerator)
 
+    log_dir = config.experiment_save_dir
+
     env_class = get_class(config.env._target_)
     env = env_class(
         config=config.env.config,
         device=accelerator.device,
+        log_dir=log_dir,
     )
 
     algo_class = get_class(config.algo.algo._target_)
     algo = algo_class(
         env=env,
         config=config.algo.algo.config,
-        log_dir=config.experiment_save_dir,
+        log_dir=log_dir,
         device=accelerator.device,
     )
     algo.setup()
-    if config.checkpoint is not None:
-        algo.load(config.checkpoint)
+    algo.load(config.checkpoint)
     algo.learn()
 
 

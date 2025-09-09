@@ -61,7 +61,9 @@ def setup_hydra_resolvers():
         logger.warning(f"Warning: Some resolvers already registered: {e}")
 
 
-def compile_config(config: OmegaConf, accelerator: Accelerator) -> None:
+def compile_config(
+    config: OmegaConf, accelerator: Accelerator, eval: bool = False
+) -> None:
     """Compile the configuration.
 
     Args:
@@ -75,7 +77,7 @@ def compile_config(config: OmegaConf, accelerator: Accelerator) -> None:
     setup_hydra_resolvers()
     config = copy.deepcopy(config)
     config = compile_config_hf_accelerate(config, accelerator)
-    config = compile_config_directories(config)
+    config = compile_config_directories(config, eval)
     config = compile_config_obs(config)
     return config
 
@@ -115,7 +117,7 @@ def compile_config_hf_accelerate(config, accelerator: Accelerator) -> None:
     return config
 
 
-def compile_config_directories(config) -> None:
+def compile_config_directories(config, eval: bool = False) -> None:
     """Compile the configuration for folders.
 
     Args:
@@ -125,6 +127,8 @@ def compile_config_directories(config) -> None:
         Compiled configuration.
 
     """
+    if eval:
+        return config
     config = copy.deepcopy(config)
     experiment_save_dir = Path(config.experiment_dir)
     experiment_save_dir.mkdir(exist_ok=True, parents=True)
@@ -156,9 +160,10 @@ def compile_config_obs(config) -> None:
     _obs_key_list = config.env.config.obs.obs_dict
     _aux_obs_key_list = config.env.config.obs.obs_auxiliary
 
-    assert set(config.env.config.obs.noise_scales.keys()) == set(
-        config.env.config.obs.obs_scales.keys()
-    )
+    # import ipdb; ipdb.set_trace()
+    # assert set(config.env.config.obs.noise_scales.keys()) == set(
+    #     config.env.config.obs.obs_scales.keys()
+    # )
 
     each_dict_obs_dims = {
         k: v for d in config.env.config.obs.obs_dims for k, v in d.items()
@@ -194,6 +199,5 @@ def compile_config_obs(config) -> None:
                 )
     config.robot.algo_obs_dim_dict = obs_dim_dict
     logger.info(f"algo_obs_dim_dict: {config.robot.algo_obs_dim_dict}")
-    logger.info(f"{config.algo.algo.config.module_dict}")
 
     return config

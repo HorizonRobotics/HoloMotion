@@ -12,18 +12,40 @@ import torch
 
 
 def to_torch(x, dtype=torch.float, device="cuda:0", requires_grad=False):
-    return torch.tensor(x, dtype=dtype, device=device, requires_grad=requires_grad)
+    return torch.tensor(
+        x, dtype=dtype, device=device, requires_grad=requires_grad
+    )
 
 
-@torch.jit.script
-def quat_mul(a, b):
+@torch.compile
+def quat_mul(
+    a: torch.Tensor, b: torch.Tensor, w_last: bool = True
+) -> torch.Tensor:
+    """Multiply two quaternions.
+
+    Args:
+        a (torch.Tensor): (..., 4) quaternion.
+        b (torch.Tensor): (..., 4) quaternion.
+        w_last (bool): Whether the scalar part w is the last element.
+                      If True, format is [x, y, z, w]; if False, format is [w, x, y, z].
+
+    Returns:
+        torch.Tensor: (..., 4) quaternion result of a * b.
+    """
     assert a.shape == b.shape
     shape = a.shape
     a = a.reshape(-1, 4)
     b = b.reshape(-1, 4)
 
-    x1, y1, z1, w1 = a[:, 0], a[:, 1], a[:, 2], a[:, 3]
-    x2, y2, z2, w2 = b[:, 0], b[:, 1], b[:, 2], b[:, 3]
+    if w_last:
+        # Format: [x, y, z, w]
+        x1, y1, z1, w1 = a[:, 0], a[:, 1], a[:, 2], a[:, 3]
+        x2, y2, z2, w2 = b[:, 0], b[:, 1], b[:, 2], b[:, 3]
+    else:
+        # Format: [w, x, y, z]
+        w1, x1, y1, z1 = a[:, 0], a[:, 1], a[:, 2], a[:, 3]
+        w2, x2, y2, z2 = b[:, 0], b[:, 1], b[:, 2], b[:, 3]
+
     ww = (z1 + x1) * (x2 + y2)
     yy = (w1 - y1) * (w2 + z2)
     zz = (w1 + y1) * (w2 - z2)
@@ -34,7 +56,10 @@ def quat_mul(a, b):
     y = qq - yy + (w1 - x1) * (y2 + z2)
     z = qq - zz + (z1 + y1) * (w2 - x2)
 
-    quat = torch.stack([x, y, z, w], dim=-1).view(shape)
+    if w_last:
+        quat = torch.stack([x, y, z, w], dim=-1).view(shape)
+    else:
+        quat = torch.stack([w, x, y, z], dim=-1).view(shape)
 
     return quat
 
@@ -63,7 +88,9 @@ def quat_rotate(q, v):
     b = torch.cross(q_vec, v, dim=-1) * q_w.unsqueeze(-1) * 2.0
     c = (
         q_vec
-        * torch.bmm(q_vec.view(shape[0], 1, 3), v.view(shape[0], 3, 1)).squeeze(-1)
+        * torch.bmm(
+            q_vec.view(shape[0], 1, 3), v.view(shape[0], 3, 1)
+        ).squeeze(-1)
         * 2.0
     )
     return a + b + c
@@ -78,7 +105,9 @@ def quat_rotate_inverse(q, v):
     b = torch.cross(q_vec, v, dim=-1) * q_w.unsqueeze(-1) * 2.0
     c = (
         q_vec
-        * torch.bmm(q_vec.view(shape[0], 1, 3), v.view(shape[0], 3, 1)).squeeze(-1)
+        * torch.bmm(
+            q_vec.view(shape[0], 1, 3), v.view(shape[0], 3, 1)
+        ).squeeze(-1)
         * 2.0
     )
     return a - b + c
@@ -138,7 +167,9 @@ def get_basis_vector(q, v):
 def get_axis_params(value, axis_idx, x_value=0.0, dtype=np.float64, n_dims=3):
     """Construct arguments to `Vec` according to axis index."""
     zs = np.zeros((n_dims,))
-    assert axis_idx < n_dims, "the axis dim should be within the vector dimensions"
+    assert axis_idx < n_dims, (
+        "the axis dim should be within the vector dimensions"
+    )
     zs[axis_idx] = 1.0
     params = np.where(zs == 1.0, value, zs)
     params[0] = x_value
@@ -200,7 +231,6 @@ def quat_from_euler_xyz(roll, pitch, yaw):
     qz = sy * cr * cp - cy * sr * sp
 
     return torch.stack([qx, qy, qz, qw], dim=-1)
-
 
 
 def torch_rand_float(lower, upper, shape, device):
@@ -291,7 +321,9 @@ def slerp(q0, q1, t):
 
     new_q = ratio_a * q0 + ratio_b * q1
 
-    new_q = torch.where(torch.abs(sin_half_theta) < 0.001, 0.5 * q0 + 0.5 * q1, new_q)
+    new_q = torch.where(
+        torch.abs(sin_half_theta) < 0.001, 0.5 * q0 + 0.5 * q1, new_q
+    )
     new_q = torch.where(torch.abs(cos_half_theta) >= 1, q0, new_q)
 
     return new_q
@@ -306,7 +338,9 @@ def my_quat_rotate(q, v):
     b = torch.cross(q_vec, v, dim=-1) * q_w.unsqueeze(-1) * 2.0
     c = (
         q_vec
-        * torch.bmm(q_vec.view(shape[0], 1, 3), v.view(shape[0], 3, 1)).squeeze(-1)
+        * torch.bmm(
+            q_vec.view(shape[0], 1, 3), v.view(shape[0], 3, 1)
+        ).squeeze(-1)
         * 2.0
     )
     return a + b + c
@@ -350,3 +384,122 @@ def calc_heading_quat_inv(q):
 
     heading_q = quat_from_angle_axis(-heading, axis)
     return heading_q
+
+
+@torch.compile
+def axis_angle_from_quat(
+    quat: torch.Tensor,
+    w_last: bool = True,
+) -> torch.Tensor:
+    """Compute axis-angle (log map) vector from a quaternion.
+
+    Args:
+        quat (torch.Tensor): (..., 4) quaternion. If `w_last` is True, format is [x, y, z, w]; otherwise [w, x, y, z].
+        w_last (bool): Whether the scalar part w is the last element.
+
+    Returns:
+        torch.Tensor: (..., 3) axis-angle vector (axis * angle), with angle in radians in [0, pi].
+
+    Notes:
+        - The quaternion is sign-adjusted to ensure w >= 0 and normalized to unit length for numerical stability.
+        - Uses a stable small-angle handling to avoid NaNs and gradient issues.
+    """
+    # Handle different quaternion formats
+    if w_last:
+        # Quaternion is [q_x, q_y, q_z, q_w]
+        quat_w_orig = quat[..., -1:]
+    else:
+        # Quaternion is [q_w, q_x, q_y, q_z]
+        quat_w_orig = quat[..., 0:1]
+
+    # Normalize quaternion to have w > 0
+    quat = quat * (1.0 - 2.0 * (quat_w_orig < 0.0))
+
+    # Ensure unit quaternion for stability
+    quat = quat / torch.linalg.norm(quat, dim=-1, keepdim=True).clamp_min(
+        1.0e-9
+    )
+
+    # Recompute quat_xyz and quat_w after potential sign flip
+    if w_last:
+        quat_w = quat[..., -1:]
+        quat_xyz = quat[..., :3]
+    else:
+        quat_w = quat[..., 0:1]
+        quat_xyz = quat[..., 1:4]
+
+    mag = torch.linalg.norm(quat_xyz, dim=-1)
+    half_angle = torch.atan2(mag, quat_w.squeeze(-1))
+    angle = 2.0 * half_angle
+    # check whether to apply Taylor approximation
+    use_taylor = angle.abs() <= 1.0e-6
+    # To prevent NaN gradients with torch.where, we compute both branches and blend
+    # based on the condition.
+    # See: https://pytorch.org/docs/1.9.0/generated/torch.where.html#torch-where
+    # "However, if you need the gradients to flow through the branches, please use torch.lerp"
+    # Although we are not using lerp, the principle of avoiding sharp branches is the same.
+    sin_half_angles_over_angles_approx = 0.5 - angle * angle / 48
+    # Clamp angle to avoid division by zero in the non-taylor branch when angle is exactly 0.
+    angle_safe = torch.where(use_taylor, torch.ones_like(angle), angle)
+    sin_half_angles_over_angles_exact = torch.sin(half_angle) / angle_safe
+
+    sin_half_angles_over_angles = torch.where(
+        use_taylor,
+        sin_half_angles_over_angles_approx,
+        sin_half_angles_over_angles_exact,
+    )
+    return quat_xyz / sin_half_angles_over_angles[..., None]
+
+
+@torch.compile
+def quat_box_minus(
+    q1: torch.Tensor,
+    q2: torch.Tensor,
+    w_last: bool = True,
+) -> torch.Tensor:
+    """Right-invariant quaternion difference mapped to so(3) via log map.
+
+    Computes log(q1 * q2^{-1}) using the shortest rotation convention.
+
+    Args:
+        q1 (torch.Tensor): (..., 4) quaternion. If `w_last` is True, format is [x, y, z, w]; otherwise [w, x, y, z].
+        q2 (torch.Tensor): (..., 4) quaternion with the same format as `q1`.
+        w_last (bool): Whether the scalar part w is the last element.
+
+    Returns:
+        torch.Tensor: (..., 3) axis-angle error vector.
+    """
+    if w_last:
+        q1_xyzw = q1
+        q2_xyzw = q2
+    else:
+        # Convert from (w, x, y, z) to (x, y, z, w)
+        q1_xyzw = torch.cat([q1[..., 1:4], q1[..., 0:1]], dim=-1)
+        q2_xyzw = torch.cat([q2[..., 1:4], q2[..., 0:1]], dim=-1)
+
+    quat_diff = quat_mul(
+        q1_xyzw,
+        quat_conjugate(q2_xyzw),
+        w_last=True,
+    )  # q1 * q2^-1
+    return axis_angle_from_quat(quat_diff, w_last=True)  # log(qd)
+
+
+@torch.compile
+def quat_error_magnitude(
+    q1: torch.Tensor,
+    q2: torch.Tensor,
+    w_last: bool = True,
+) -> torch.Tensor:
+    """Geodesic angle between two orientations given as quaternions.
+
+    Args:
+        q1 (torch.Tensor): (..., 4) quaternion. If `w_last` is True, format is [x, y, z, w]; otherwise [w, x, y, z].
+        q2 (torch.Tensor): (..., 4) quaternion with the same format as `q1`.
+        w_last (bool): Whether the scalar part w is the last element.
+
+    Returns:
+        torch.Tensor: (...,) rotation angle in radians in [0, pi].
+    """
+    axis_angle_error = quat_box_minus(q1, q2, w_last=w_last)
+    return torch.norm(axis_angle_error, dim=-1)

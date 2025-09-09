@@ -34,6 +34,7 @@ ruff
 pytest
 imageio>=2.9
 imageio-ffmpeg
+chumpy
 
 # human_body_prior 依赖
 human-body-prior

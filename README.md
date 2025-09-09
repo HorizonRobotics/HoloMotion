@@ -40,7 +40,7 @@ We envision HoloMotion as a general-purpose foundation for humanoid motion track
 
 | Version    | Target Capability | Description                                                                                           |
 | ---------- | ----------------- | ----------------------------------------------------------------------------------------------------- |
-| **v0.2.x** | 🧪 Alpha Preview  | Infrastructure for motion retargeting, training, and deployment to support future Any Pose capability |
+| **v0.4.x** | 🧪 Beta Preview  | Infrastructure for motion retargeting, training, and deployment to support future Any Pose capability |
 | **v1.0**   | 🔄 Any Pose       | Robust tracking and imitation of diverse whole-body human motions                                     |
 | **v2.0**   | ⏳ Any Command    | Language- and task-conditioned motion generation and control                                          |
 | **v3.0**   | ⏳ Any Terrain    | Adaptation to uneven, dynamic, and complex real-world environments                                    |
@@ -122,7 +122,7 @@ Deploy the exported ONNX model using our ROS2 package to run on real-world robot
   title = {HoloMotion: A Foundation Model for Whole-Body Humanoid Motion Tracking},
   year = {2025},
   month = july,
-  version = {0.2.3},
+  version = {0.4.0},
   url = {https://github.com/HorizonRobotics/HoloMotion},
   license = {Apache-2.0}
 }

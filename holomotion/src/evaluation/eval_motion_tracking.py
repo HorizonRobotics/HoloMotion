@@ -122,6 +122,7 @@ def export_policy_to_onnx(algo, checkpoint_path: str, device: str):
                 self.actor = ppo.actor.module.actor_module
             else:
                 self.actor = ppo.actor.actor_module
+            self.actor.eval()
 
         def forward(self, raw_obs):
             return self.actor(raw_obs)
@@ -135,10 +136,10 @@ def export_policy_to_onnx(algo, checkpoint_path: str, device: str):
     else:
         actor_module = algo.actor.actor_module
 
-    if "tf" in algo.actor_type.lower():
-        feature_dim = actor_module.obs_serializer.obs_flat_dim
-    else:
+    if algo.actor_type == "MoEMLP":
         feature_dim = actor_module.input_dim
+    else:
+        feature_dim = actor_module.obs_serializer.obs_flat_dim
 
     example_input = torch.randn(1, feature_dim, device=device)
 
@@ -180,7 +181,7 @@ def main(config: OmegaConf):
     setup_logging(accelerator)
 
     # Compile configuration
-    config = compile_config(config, accelerator)
+    config = compile_config(config, accelerator, eval=True)
 
     # Setup evaluation directories
     eval_log_dir = setup_eval_directories(config, config.checkpoint)

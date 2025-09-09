@@ -19,13 +19,3 @@ domain_rand:
   randomize_torque_rfi: False
 
   randomize_ctrl_delay: False
-
-  randomize_motion_ref_xyz: False # head only for now
-
-  motion_package_loss: False
-
-  born_offset: False
-  born_offset_curriculum: False
-
-  born_heading_curriculum: False
-  born_heading_randomization: False

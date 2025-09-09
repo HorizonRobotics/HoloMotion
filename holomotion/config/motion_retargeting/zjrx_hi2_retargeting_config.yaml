@@ -1,32 +1,30 @@
-robot:
-  humanoid_type: unitree/G1/21dof
+defaults:
+  - retargeting_base
 
-  fitted_shape_dump_path: "assets/robots/${robot.humanoid_type}/fitted_smpl_shape.pkl"
+robot:
+  humanoid_type: zjrx/hi2/21dof
 
   asset:
-    smpl_dir: "assets/smpl"
-    assetRoot: "./"
-    assetFileName: "assets/robots/${robot.humanoid_type}/retargeting_g1_21dof.xml"
-    training_mjcfName: "assets/robots/${robot.humanoid_type}/g1_21dof.xml"
-    
+    assetFileName: "assets/robots/${robot.humanoid_type}/retargeting_hi2_21dof.xml"
+
   extend_config:
     - joint_name: "left_hand_link"
       parent_name: "left_elbow_link"
-      pos: [0.25, 0.0, 0.0]
+      pos: [0.0, 0.0, -0.405]
       rot: [1.0, 0.0, 0.0, 0.0] # w x y z
     - joint_name: "right_hand_link"
       parent_name: "right_elbow_link"
-      pos: [0.25, 0.0, 0.0]
+      pos: [0.0, 0.0, -0.405]
       rot: [1.0, 0.0, 0.0, 0.0] # w x y z
     - joint_name: "head_link"
-      parent_name: "torso_link"
-      pos: [0.0, 0.0, 0.42]
+      parent_name: "base_link"
+      pos: [0.0, 0.0, 0.55]
       rot: [1.0, 0.0, 0.0, 0.0] # w x y z
 
-  base_link: "torso_link"
+  # base_link: "torso_link"
 
   joint_matches:
-    - ["pelvis", "Pelvis"]
+    - ["waist_link", "Pelvis"]
     - ["left_hip_pitch_link", "L_Hip"]
     - ["left_knee_link", "L_Knee"]
     - ["left_ankle_roll_link", "L_Ankle"]
@@ -40,3 +38,8 @@ robot:
     - ["right_elbow_link", "R_Elbow"]
     - ["right_hand_link", "R_Hand"]
     - ["head_link", "Head"]
+
+  smpl_pose_modifier:
+    - Pelvis: "[np.pi/2, 0, np.pi/2]"
+    - L_Shoulder: "[0, 0, -np.pi/2]"
+    - R_Shoulder: "[0, 0, np.pi/2]"

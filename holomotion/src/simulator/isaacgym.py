@@ -490,6 +490,13 @@ class IsaacGym(BaseSimulator):
             )
 
             for i in range(len(props)):
+                if self.robot_config.get("set_dof_armature", False):
+                    props["armature"][i] = self.robot_config.dof_armature_list[
+                        i
+                    ]
+                    logger.info(
+                        f"Armature of {self.dof_names[i]} set to {props['armature'][i]}"
+                    )
                 self.hard_dof_pos_limits[i, 0] = props["lower"][i].item()
                 self.hard_dof_pos_limits[i, 1] = props["upper"][i].item()
                 self.dof_pos_limits[i, 0] = props["lower"][i].item()
@@ -538,8 +545,8 @@ class IsaacGym(BaseSimulator):
                 torso_index = self._body_list.index("torso_link")
             except Exception:
                 torso_index = self._body_list.index(
-                    "pelvis"
-                )  # for fixed upper URDF we only have pelvis link
+                    self.robot_config.get("base_link_name", "pelvis")
+                )
             assert torso_index != -1
 
             com_x_bias = np.random.uniform(
@@ -586,7 +593,7 @@ class IsaacGym(BaseSimulator):
             rng = self.env_config.domain_rand.added_mass_range
             try:
                 base_index = self._body_list.index(
-                    "pelvis"
+                    self.robot_config.get("base_link_name", "pelvis")
                 )  # for fixed upper URDF we only have pelvis link
             except Exception:
                 base_index = self._body_list.index("torso_link")
@@ -876,10 +883,10 @@ class IsaacGym(BaseSimulator):
 
         sim_params = self.sim_params
         if sim_params.up_axis == gymapi.UP_AXIS_Z:
-            cam_pos = gymapi.Vec3(5.0, 5.0, 3.0)
-            cam_target = gymapi.Vec3(0.0, 0.0, 3.0)
+            cam_pos = gymapi.Vec3(-5.0, -3.0, 2.0)
+            cam_target = gymapi.Vec3(0.0, 0.0, 0.0)
         else:
-            cam_pos = gymapi.Vec3(20.0, 3.0, 25.0)
+            cam_pos = gymapi.Vec3(10.0, 0.0, 2.0)
             cam_target = gymapi.Vec3(10.0, 0.0, 15.0)
         self.gym.viewer_camera_look_at(self.viewer, None, cam_pos, cam_target)
 

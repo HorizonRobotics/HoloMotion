@@ -36,21 +36,20 @@ env:
 
     motion_far_type: "max" # "max" or "mean", when max, use torch.any to check termination, when mean, use torch.mean to check termination, in PHC codebase, max for training, mean for evaluation
     termination:
-      terminate_by_contact: False
-
       terminate_by_gravity: True
-      terminate_by_low_height: False
-
       terminate_when_motion_end: True
       terminate_when_motion_far: True
-      terminate_when_motion_far_patience_steps: 1
 
+      terminate_by_contact: False
+      terminate_by_low_height: False
       terminate_when_joint_far: False
-      terminate_when_joint_far_patience_steps: 1
 
       terminate_when_close_to_dof_pos_limit: False
       terminate_when_close_to_dof_vel_limit: False
       terminate_when_close_to_torque_limit: False
+
+      terminate_when_joint_far_patience_steps: 1
+      terminate_when_motion_far_patience_steps: 1
 
     termination_scales:
       eval_motion_far_threshold: 0.25

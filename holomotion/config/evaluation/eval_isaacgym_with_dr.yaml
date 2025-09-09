@@ -1,0 +1,101 @@
+# @package _global_
+
+defaults:
+  - /env/domain_randomization: domain_rand_base
+  - /env/terrain: rough
+  - _self_
+
+project_name: HoloMotion_Eval
+experiment_name: eval_unitree_g1_21dof_isaacgym
+
+# Evaluation specific settings
+num_envs: 1  # Single environment for evaluation
+headless: false
+use_accelerate: true
+
+# Export settings
+export_policy: true  # Whether to export policy to ONNX
+
+# noise settings
+obs:
+  noise_scales:
+    base_rpy: 0.0
+    base_height: 0.0
+    projected_gravity: 0.0
+    rel_base_lin_vel: 0.0
+    rel_base_ang_vel: 0.0
+    base_ang_vel: 0.0
+    dof_pos: 0.0
+    dof_vel: 0.0
+    actions: 0.0
+    local_body_pos_flat: 0.0
+    local_body_rot_quat_flat: 0.0
+    local_body_vel_flat: 0.0
+    local_body_ang_vel_flat: 0.0
+    limb_weight_params: 0.0
+    dif_local_rigid_body_pos_flat: 0.0
+    dif_local_rigid_body_rot_flat: 0.0
+    dif_local_rigid_body_vel_flat: 0.0
+    dif_local_rigid_body_ang_vel_flat: 0.0
+    local_ref_rigid_body_pos_flat: 0.0
+    local_ref_rigid_body_rot_flat: 0.0
+    history_actor: 0.0
+    history_critic: 0.0
+    amp_agent_seq: 0.0
+    local_key_pos: 0.0
+    domain_params: 0.0
+    rel_bodylink_pos_flat: 0.0
+    rel_bodylink_vel_flat: 0.0
+    rel_bodylink_ang_vel_flat: 0.0
+    rel_bodylink_rot_tannorm_flat: 0.0
+    rel_fut_ref_motion_state_flat: 0.0
+    mogen_dof_pos: 0.0
+
+env:
+  config:
+    align_marker_to_root: false
+    termination:
+      terminate_by_contact: False
+
+      terminate_by_gravity: False
+      terminate_by_low_height: False
+
+      terminate_when_motion_end: True
+      terminate_when_motion_far: False
+      terminate_when_motion_far_patience_steps: 1
+
+      terminate_when_joint_far: False
+      terminate_when_joint_far_patience_steps: 1
+
+      terminate_when_ee_z_far: false
+
+      terminate_when_close_to_dof_pos_limit: False
+      terminate_when_close_to_dof_vel_limit: False
+      terminate_when_close_to_torque_limit: False
+
+    noise_to_initial_level: 0
+    init_noise_scale:
+      dof_pos: 0.0
+      dof_vel: 0.0
+      root_pos: 0.0
+      root_rot: 0 # degree, * 3.14 / 180
+      root_vel: 0.0
+      root_ang_vel: 0.0
+robot:
+  motion:
+    max_frame_length: 1000
+    motion_file: ${motion_lmdb_path}
+  control:
+    action_scale: 0.25
+    action_clip_value: 100.0
+    clip_torques: True
+
+algo:
+  algo:
+    config:
+      teacher_actor_ckpt_path: null
+
+# Required checkpoint path (must be provided via command line)
+checkpoint: ???
+motion_lmdb_path: ???
+base_dir: logs
