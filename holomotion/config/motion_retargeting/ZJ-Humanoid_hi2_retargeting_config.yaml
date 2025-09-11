@@ -2,7 +2,7 @@ defaults:
   - retargeting_base
 
 robot:
-  humanoid_type: zjrx/hi2/21dof
+  humanoid_type: ZJ-Humanoid/hi2/21dof
 
   asset:
     assetFileName: "assets/robots/${robot.humanoid_type}/retargeting_hi2_21dof.xml"

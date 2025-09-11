@@ -1,7 +1,7 @@
 source train.env
 
-amass_dir="assets/test_data/motion_retargeting/Male2Walking_c3d"
-dump_dir="assets/test_data/motion_retargeting/retargeted_datasets/phc_retargeted" # path for testing
+amass_dir="assets/test_data/motion_retargeting/Male2Walking_c3d/"
+dump_dir="assets/test_data/motion_retargeting/retargeted_datasets/phc_retargeted/" # path for testing
 
 robot_config="ZJ-Humanoid_hi2_retargeting_config"
 

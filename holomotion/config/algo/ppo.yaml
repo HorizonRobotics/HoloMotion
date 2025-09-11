@@ -30,6 +30,7 @@ algo:
     schedule: adaptive
     desired_kl: 0.01
     init_noise_std: 0.8
+    donot_load_critic: false
     # ---
 
     # --- Dagger Related Settings ---
@@ -94,13 +95,13 @@ algo:
           action_scale: ${robot.control.action_scale}
           default_dof_pos_dict: ${robot.init_state.default_joint_angles}
           dof_order: ${robot.dof_names}
-        num_fine_experts: 3
+        num_fine_experts: 5
         num_shared_experts: 1
         top_k: 2
         load_balancing_loss_alpha: 0.01
         bound_loss_alpha: 10.0
-        projection_dim: 512
-        hidden_dim: 512
+        projection_dim: 2048
+        hidden_dim: 1024
 
       critic:
         type: MoEMLP
@@ -108,12 +109,12 @@ algo:
           - critic_obs
         output_dim:
           - 1
-        num_fine_experts: 3
+        num_fine_experts: 5
         num_shared_experts: 1
         top_k: 2
         load_balancing_loss_alpha: 0.01
-        projection_dim: 512
-        hidden_dim: 512
+        projection_dim: 2048
+        hidden_dim: 1024
 
       disc: {}
 

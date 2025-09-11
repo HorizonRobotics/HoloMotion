@@ -163,6 +163,7 @@ class PPO:
         else:
             self.teacher_obs_serializer = None
 
+        self.donot_load_critic = self.config.get("donot_load_critic", False)
         self.dagger_only = self.config.get("dagger_only", False)
 
         self.actor_type = self.config.module_dict.get("actor", {}).get(
@@ -793,6 +794,7 @@ class PPO:
                 )
                 if (
                     not self.dagger_only
+                    and not self.donot_load_critic
                     and "critic_model_state_dict" in loaded_dict
                 ):
                     self.accelerator.unwrap_model(self.critic).load_state_dict(
@@ -1269,10 +1271,6 @@ class PPO:
                             logger.info(
                                 f"🔗 Distributed Training Active: {world_size} processes synchronized"
                             )
-                        else:
-                            logger.warning(
-                                "⚠️  Single process detected in distributed mode!"
-                            )
                     else:
                         logger.warning(
                             "⚠️  PyTorch Distributed not initialized!"
@@ -1321,7 +1319,7 @@ class PPO:
                 self.tensorboard_writer.close()
 
     def _actor_rollout_step(self, obs_dict, policy_state_dict):
-        with torch.inference_mode():
+        with torch.no_grad():
             num_envs = obs_dict["actor_obs"].shape[0]
             use_teacher_mask = torch.zeros(
                 num_envs, dtype=torch.bool, device=self.device
@@ -1388,7 +1386,7 @@ class PPO:
         return policy_state_dict
 
     def _rollout_step(self, obs_dict):
-        with torch.inference_mode():
+        with torch.no_grad():
             for _ in range(self.num_steps_per_env):
                 policy_state_dict = {}
                 policy_state_dict = self._actor_rollout_step(
@@ -1421,7 +1419,7 @@ class PPO:
                     disc_r = torch.zeros(self.env.num_envs, device=self.device)
                     # calculate disc reward for amp
                     if valid_env_ids.any():
-                        with torch.inference_mode():
+                        with torch.no_grad():
                             if self.use_accelerate and hasattr(
                                 self.disc, "module"
                             ):
@@ -1446,7 +1444,7 @@ class PPO:
                     disc_r = disc_r * self.amp_rew_scale
 
                 if self.use_dagger:
-                    with torch.inference_mode():
+                    with torch.no_grad():
                         policy_state_dict["teacher_actions"] = (
                             self.teacher_actor.act_inference(
                                 obs_dict["teacher_obs"]
@@ -1520,7 +1518,7 @@ class PPO:
 
                 # Compute RND intrinsic rewards
                 if self.use_rnd:
-                    with torch.inference_mode():
+                    with torch.no_grad():
                         # Use actor observations for RND reward computation
                         rnd_obs = obs_dict["actor_obs"]
                         if self.use_accelerate and hasattr(
@@ -1866,7 +1864,7 @@ class PPO:
         )
 
         if self.desired_kl is not None and self.schedule == "adaptive":
-            with torch.inference_mode():
+            with torch.no_grad():
                 kl = torch.sum(
                     torch.log(sigma_batch / old_sigma_batch + 1.0e-5)
                     + (

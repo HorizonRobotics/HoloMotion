@@ -49,9 +49,25 @@ The LMDB database will be created at the specified `dump_dir`.
 
 ### 2. Train the Motion Tracking Model
 
-The training entry point is `holomotion/src/training/train_motion_tracking.py`, which uses the training config to start distributed training across multiple GPUs.
+```mermaid
+flowchart LR
 
-#### 2.1 Prepare the Training Config
+A[Teacher Stage 1] --> B[Teacher Stage 2]
+B --> C[Student Distillation]
+C --> D[ONNX Model]
+
+classDef dashed stroke-dasharray: 5 5, rx:10, ry:10, fill:#c9d9f5
+classDef normal fill:#c9d9f5, rx:10, ry:10
+class D dashed
+class A,B,C normal
+```
+
+The training entry point is `holomotion/src/training/train_motion_tracking.py`, which uses the training config to start distributed training across multiple GPUs. It is recommended to train with a three-stage procedure:
+1. Teacher training stage 1: train the teacher policy without domain randomization;
+2. Teacher training stage 2: load the stage1 checkpoint and train with domain randomization;
+3. Student training stage 3: load the teacher stage2 checkpoint and conduct distillation with domain randomization.
+
+#### 2.1 Explaining the Training Config
 
 Use the demo config at `holomotion/config/training/motion_tracking/exp_unitree_g1_21dof_teacher.yaml` as a template. Key configuration groups to modify (configs are located in the `holomotion/config/` directory):
 
@@ -80,17 +96,46 @@ defaults:
 project_name: HoloMotion
 ```
 
-#### 2.2 Prepare the Training Script for Teacher
+#### 2.2 Prepare the Training Scripts for Teacher (Stage 1 and 2)
 
 Review and modify the training script at `holomotion/scripts/training/train_motion_tracking_teacher.sh`. Ensure `config_name` and `motion_file` match your training config and LMDB database directory.
+
+Start training your teacher policy from stage1, where domain randomization is turned off.
 
 ```shell
 source train.env
 export CUDA_VISIBLE_DEVICES="0"
 
-config_name="exp_unitree_g1_21dof_teacher"
-motion_file="data/lmdb_datasets/lmdb_g1_21dof_test"
+config_name="train_your_robot_teacher_stage1"
+motion_file="data/lmdb_datasets/your_lmdb_path"
 num_envs=2048
+
+${Train_CONDA_PREFIX}/bin/accelerate launch \
+    --multi_gpu \
+    --mixed_precision=bf16 \
+    holomotion/src/training/train_motion_tracking.py \
+    --config-name=training/motion_tracking/${config_name} \
+    use_accelerate=True \
+    num_envs=${num_envs} \
+    headless=True \
+    experiment_name=${config_name} \
+    motion_lmdb_path=${motion_file}
+```
+
+```shell
+bash holomotion/scripts/training/train_motion_tracking_teacher_stage1.sh
+```
+
+After finishing your stage1 teacher training, you should start teacher stage2 training loading this checkpoint:
+```shell
+source train.env
+export CUDA_VISIBLE_DEVICES="0"
+
+config_name="train_your_robot_teacher_stage2"
+motion_file="data/lmdb_datasets/your_lmdb_path"
+num_envs=2048
+
+checkpoint="your_stage1_teacher_ckpt_path.pt"
 
 ${Train_CONDA_PREFIX}/bin/accelerate launch \
     --multi_gpu \
@@ -107,7 +152,7 @@ ${Train_CONDA_PREFIX}/bin/accelerate launch \
 Start training by running:
 
 ```shell
-bash holomotion/scripts/training/train_motion_tracking_teacher.sh
+bash holomotion/scripts/training/train_motion_tracking_teacher_stage2.sh
 ```
 
 #### 2.3 Prepare the Training Script for Student
@@ -120,10 +165,10 @@ To start the studnet training, you should specify the studnet training config na
 source train.env
 export CUDA_VISIBLE_DEVICES="0"
 
-config_name="train_unitree_g1_21dof_student"
-teacher_ckpt_path="logs/HoloMotion/xxxxxxxx_xxxxxx-train_unitree_g1_21dof_teacher/model_x.pt"
-motion_file="data/lmdb_datasets/lmdb_g1_21dof_test"
-num_envs=16
+config_name="train_your_robot_student"
+teacher_ckpt_path="your_teacher_stage2_ckpt_path.pt"
+motion_file="data/lmdb_datasets/your_lmdb_path"
+num_envs=2048
 
 ${Train_CONDA_PREFIX}/bin/accelerate launch \
     --multi_gpu \
@@ -171,6 +216,6 @@ You may want to have more or less frequent logging and model dumping intervals. 
 
 By default, the model checkpoint will be dumped into a folder named `logs/HoloMotion`. You can change this path by explictly setting `project_name=X`, which results in dumping the checkpoints into the `logs/X` directory.
 
-#### How to resume training from a checkpoint ?
+#### How to resume training or load pretrained model from a checkpoint ?
 
 To resume training from a pretrained checkpoint, you can find the checkpoint in the log directory, and then add the option like this: `checkpoint=logs/HoloMotion/20250728_214414-train_unitree_g1_21dof_teacher/model_X.pt`

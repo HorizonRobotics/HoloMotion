@@ -7,7 +7,7 @@ defaults:
   - /robot: ZJ-Humanoid/hi2/21dof_training
   - /env: motion_tracking
   - /env/observations: motion_tracking/obs_ppo_teacher
-  - /env/rewards: motion_tracking/rew_ZJ-Humanoid-hi2
+  - /env/rewards: motion_tracking/rew_ZJ-Humanoid-hi2_stage1
   - /env/domain_randomization: NO_domain_rand
   - /env/terrain: plane
 

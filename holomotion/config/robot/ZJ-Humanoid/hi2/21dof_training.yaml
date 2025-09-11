@@ -115,27 +115,103 @@ robot:
       "waist_joint",
     ]
   waist_dof_names: ["waist_joint"]
-  dof_pos_lower_limit_list: [-3.31, -0.1, -2.94, -2.09, 
-                             -3.31, -3.14, -2.94, -2.09,
-                             -0.523,
-                             -0.15, -0.436, -2.0, 0.3, -0.698, -0.331,
-                             -0.15, -0.436, -2.0, 0.3, -0.698, -0.331]
-  dof_pos_upper_limit_list: [1.22, 3.14, 2.94, -0.2,
-                             1.22, 0.1, 2.94, -0.2,
-                             0.523,
-                             0.15, 0.436, 0.436, 2.0, 0.525, 0.331,
-                             0.15, 0.436, 0.436, 2.0, 0.525, 0.331]
-  dof_vel_limit_list: [3.56, 3.56, 3.56, 3.66,
-                       3.56, 3.56, 3.56, 3.66,
-                       12.21,
-                       12.21, 10.47, 10.47, 10.47, 12.56, 12.56,
-                       12.2, 10.47, 10.47, 10.47, 12.56, 12.56]
+  dof_pos_lower_limit_list:
+    [
+      -3.31,
+      -0.1,
+      -2.94,
+      -2.09,
+      -3.31,
+      -3.14,
+      -2.94,
+      -2.09,
+      -0.523,
+      -0.15,
+      -0.436,
+      -2.0,
+      0.3,
+      -0.698,
+      -0.331,
+      -0.15,
+      -0.436,
+      -2.0,
+      0.3,
+      -0.698,
+      -0.331,
+    ]
+  dof_pos_upper_limit_list:
+    [
+      1.22,
+      3.14,
+      2.94,
+      -0.2,
+      1.22,
+      0.1,
+      2.94,
+      -0.2,
+      0.523,
+      0.15,
+      0.436,
+      0.436,
+      2.0,
+      0.525,
+      0.331,
+      0.15,
+      0.436,
+      0.436,
+      2.0,
+      0.525,
+      0.331,
+    ]
+  dof_vel_limit_list:
+    [
+      3.56,
+      3.56,
+      3.56,
+      3.66,
+      3.56,
+      3.56,
+      3.56,
+      3.66,
+      12.21,
+      12.21,
+      10.47,
+      10.47,
+      10.47,
+      12.56,
+      12.56,
+      12.2,
+      10.47,
+      10.47,
+      10.47,
+      12.56,
+      12.56,
+    ]
 
-  dof_effort_limit_list: [57.0, 57.0, 57.0, 31.0,
-                          57.0, 57.0, 57.0, 31.0,
-                          96.0,
-                          96.0, 216.0, 216.0, 216.0, 40.0, 40.0,
-                          96.0, 216.0, 216.0, 216.0, 40.0, 40.0]
+  dof_effort_limit_list:
+    [
+      57.0,
+      57.0,
+      57.0,
+      31.0,
+      57.0,
+      57.0,
+      57.0,
+      31.0,
+      96.0,
+      96.0,
+      216.0,
+      216.0,
+      216.0,
+      40.0,
+      40.0,
+      96.0,
+      216.0,
+      216.0,
+      216.0,
+      40.0,
+      40.0,
+    ]
   # only apply for isaacsim
   dof_armature_list:
     [
@@ -309,35 +385,30 @@ robot:
     control_type: P
 
     stiffness: # [N*m/rad]
-      shoulder_pitch: 100
-      shoulder_roll: 100
-      shoulder_yaw: 50
-      elbow: 50
-
-      waist: 100
-
       hip_yaw: 100
       hip_roll: 100
-      hip_pitch: 150
-      knee: 250
-      ankle_pitch: 50
-      ankle_roll: 15
-
+      hip_pitch: 100
+      knee: 200
+      ankle_pitch: 20
+      ankle_roll: 20
+      waist: 400
+      shoulder_pitch: 90
+      shoulder_roll: 60
+      shoulder_yaw: 20
+      elbow: 60
 
     damping: # [N*m/rad]  # [N*m*s/rad]
+      hip_yaw: 2.5
+      hip_roll: 2.5
+      hip_pitch: 2.5
+      knee: 5.0
+      ankle_pitch: 0.2
+      ankle_roll: 0.1
+      waist: 5.0
       shoulder_pitch: 2.0
-      shoulder_roll: 2.0
-      shoulder_yaw: 2.0
-      elbow: 2.0
-
-      waist: 2.0
-
-      hip_yaw: 2.0
-      hip_roll: 2.0
-      hip_pitch: 2.0
-      knee: 3.0
-      ankle_pitch: 1.0
-      ankle_roll: 0.2
+      shoulder_roll: 1.0
+      shoulder_yaw: 0.4
+      elbow: 1.0
 
     # action scale: target angle = actionScale * action + defaultAngle
     action_scale: 0.25
@@ -445,16 +516,16 @@ robot:
     extend_config:
       - joint_name: "left_hand_link"
         parent_name: "left_elbow_link"
-        pos: [ 0.0, 0.0, -0.405 ]
-        rot: [ 1.0, 0.0, 0.0, 0.0 ] # w x y z
+        pos: [0.0, 0.0, -0.405]
+        rot: [1.0, 0.0, 0.0, 0.0] # w x y z
       - joint_name: "right_hand_link"
         parent_name: "right_elbow_link"
-        pos: [ 0.0, 0.0, -0.405 ]
-        rot: [ 1.0, 0.0, 0.0, 0.0 ] # w x y z
+        pos: [0.0, 0.0, -0.405]
+        rot: [1.0, 0.0, 0.0, 0.0] # w x y z
       - joint_name: "head_link"
         parent_name: "base_link"
-        pos: [ 0.0, 0.0, 0.55 ]
-        rot: [ 1.0, 0.0, 0.0, 0.0 ] # w x y z
+        pos: [0.0, 0.0, 0.55]
+        rot: [1.0, 0.0, 0.0, 0.0] # w x y z
 
     motion_tracking_link:
       - "left_hand_link"

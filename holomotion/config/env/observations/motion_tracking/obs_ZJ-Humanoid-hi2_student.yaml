@@ -1,13 +1,15 @@
 # @package _global_
 
-# Be careful when using _raw, history
 obs:
+  actor_context_length: 47
   context_length: 0
   n_fut_frames: 1
   target_fps: 50
 
   obs_dict:
-    actor_obs: 
+    actor_obs:
+      - priocep_with_fut_ref_v7_student
+    teacher_obs:
       - base_rpy
       - rel_base_lin_vel
       - rel_base_ang_vel
@@ -20,10 +22,32 @@ obs:
       - rel_bodylink_ang_vel_flat
       - rel_fut_ref_motion_state_flat
       - domain_params
-    critic_obs: ${obs.obs_dict.actor_obs}
+    critic_obs: ${obs.obs_dict.teacher_obs}
+
+  serialization_schema:
+    - obs_name: student_actor_realworld_obs_seq
+      seq_len: ${eval:'${obs.actor_context_length} + 1'}
+      feat_dim: ${eval:'${robot.dof_obs_size}*3 + 6'}
+    - obs_name: fut_ref_motion_seq
+      seq_len: ${eval:'${obs.n_fut_frames}'}
+      feat_dim: ${eval:'2 + 3+ 3 + (${robot.num_bodies} + ${robot.num_extend_bodies})*(3+6+3+3) + ${robot.dof_obs_size}*2'}
+    - obs_name: fut_ref_valid_mask
+      seq_len: ${eval:'${obs.n_fut_frames}'}
+      feat_dim: 1
+
+  student_obs_noise_scales:
+    dof_pos: 0.01
+    dof_vel: 1.0
+    projected_gravity: 0.2
+    base_ang_vel: 0.3
 
   obs_auxiliary:
-    history_actor: {}
+    history_actor:
+      base_ang_vel: ${obs.actor_context_length}
+      projected_gravity: ${obs.actor_context_length}
+      dof_pos: ${obs.actor_context_length}
+      dof_vel: ${obs.actor_context_length}
+      actions: ${obs.actor_context_length}
 
   obs_scales:
     base_rpy: 1.0
@@ -58,6 +82,7 @@ obs:
     rel_fut_ref_motion_state_flat: 1.0
     mogen_dof_pos: 1.0
     priocep_with_fut_ref_v7_moe: 1.0
+    priocep_with_fut_ref_v7_student: 1.0
 
   noise_scales:
     base_rpy: 0.0
@@ -92,6 +117,7 @@ obs:
     rel_fut_ref_motion_state_flat: 0.0
     mogen_dof_pos: 0.0
     priocep_with_fut_ref_v7_moe: 0.0
+    priocep_with_fut_ref_v7_student: 0.0
 
   add_noise_currculum: False
   noise_initial_value: 0.0
@@ -132,4 +158,5 @@ obs:
     - rel_bodylink_rot_tannorm_flat: ${eval:'6 * (${robot.num_bodies} + ${robot.num_extend_bodies})'}
     - rel_fut_ref_motion_state_flat: ${eval:'${obs.n_fut_frames} * (9 + (${robot.num_bodies} + ${robot.num_extend_bodies})*(3+6+3+3) + ${robot.dof_obs_size}*2)'}
     - priocep_with_fut_ref_v7_moe: ${eval:'3 + 3 + 3 + ${robot.dof_obs_size}*3 + (${robot.num_bodies} + ${robot.num_extend_bodies})*(3+6+3+3) + 3 + len(${robot.randomize_link_body_names}) + 2 * ${robot.dof_obs_size} + 1 + 1 + 1 + ${robot.dof_obs_size} + ${obs.n_fut_frames} * (2 + 3 + 3 + (${robot.num_bodies} + ${robot.num_extend_bodies})*(3+6+3+3) + ${robot.dof_obs_size}*2)'}
+    - priocep_with_fut_ref_v7_student: ${eval:'${obs.serialization_schema[0].feat_dim} * ${obs.serialization_schema[0].seq_len} + ${obs.serialization_schema[1].feat_dim} * ${obs.serialization_schema[1].seq_len} + ${obs.serialization_schema[2].feat_dim} * ${obs.serialization_schema[2].seq_len}'}
   post_compute_config: {} # Will store values after preprocessing, don't put anything here

@@ -14,14 +14,15 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
+
 source train.env
 export CUDA_VISIBLE_DEVICES="0,1"
 
-config_name="train_ZJ-Humanoid-hi2_21dof_student"
+config_name="train_ZJ-Humanoid-hi2_21dof_teacher_stage2"
 motion_file="path/to/lmdb_path"
 num_envs=2048
 
-teacher_ckpt_path="path/to/teacher_stage2_ckpt.pt"
+stage1_ckpt_path="path/to/teacher_stage1_ckpt.pt"
 
 ${Train_CONDA_PREFIX}/bin/accelerate launch \
     --multi_gpu \
@@ -29,9 +30,11 @@ ${Train_CONDA_PREFIX}/bin/accelerate launch \
     --main_process_port=29501 \
     holomotion/src/training/train_motion_tracking.py \
     --config-name=training/motion_tracking/${config_name} \
+    project_name="HoloMotionDebug" \
     use_accelerate=true \
     num_envs=${num_envs} \
+    algo.algo.config.log_interval=10 \
     headless=true \
     experiment_name=${config_name} \
-    motion_lmdb_path=${motion_file} \
-    algo.algo.config.teacher_actor_ckpt_path=${teacher_ckpt_path}
+    checkpoint=${stage1_ckpt_path} \
+    motion_lmdb_path=${motion_file}

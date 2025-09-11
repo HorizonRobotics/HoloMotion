@@ -34,7 +34,7 @@ domain_rand:
   randomize_torque_rfi: True
   rfi_lim: 0.1
   randomize_rfi_lim: True
-  rfi_lim_range: [0.8, 1.2]
+  rfi_lim_range: [0.9, 1.1]
 
   # control delay
   randomize_ctrl_delay: True

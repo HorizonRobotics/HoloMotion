@@ -502,16 +502,17 @@ def main(cfg: DictConfig) -> None:
         None: Results are saved to the specified dump directory
     """
     if "amass_root" in cfg:
-        amass_root = cfg.amass_root
+        amass_root = os.path.normpath(cfg.amass_root)
     else:
         raise ValueError("amass_root is not specified in the config")
-    all_pkls = glob.glob(f"{amass_root}/**/*.npz", recursive=True)
-    split_len = len(amass_root.split("/"))
+    all_pkls = glob.glob(
+        os.path.join(amass_root, "**", "*.npz"), recursive=True
+    )
     key_name_to_pkls = {
         "0-"
-        + "_".join(data_path.split("/")[split_len:]).replace(
-            ".npz", ""
-        ): data_path
+        + os.path.relpath(data_path, amass_root)
+        .replace(os.sep, "_")
+        .replace(".npz", ""): data_path
         for data_path in all_pkls
     }
     key_names = list(key_name_to_pkls.keys())

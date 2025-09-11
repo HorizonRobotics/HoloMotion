@@ -18,9 +18,9 @@
 source train.env
 export CUDA_VISIBLE_DEVICES="0,1"
 
-config_name="train_ZJ-Humanoid-hi2_21dof_teacher_stage2"
-motion_file="your_lmdb_path"
-num_envs=32
+config_name="train_ZJ-Humanoid-hi2_21dof_teacher_stage1"
+motion_file="path/to/lmdb_path"
+num_envs=2048
 
 
 ${Train_CONDA_PREFIX}/bin/accelerate launch \

@@ -89,33 +89,33 @@ algo:
           action_scale: ${robot.control.action_scale}
           default_dof_pos_dict: ${robot.init_state.default_joint_angles}
           dof_order: ${robot.dof_names}
-        num_fine_experts: 3
+        num_fine_experts: 5
         num_shared_experts: 1
         top_k: 2
         load_balancing_loss_alpha: 0.01
         bound_loss_alpha: 10.0
-        projection_dim: 512
-        hidden_dim: 512
+        projection_dim: 2048
+        hidden_dim: 1024
 
       actor:
-        type: MLP
+        type: MoEMLP
+        predict_local_body_pos: ${algo.algo.config.predict_local_body_pos}
+        pred_local_body_pos_dim:
+          ${eval:'(${algo.algo.config.num_rigid_bodies} + ${algo.algo.config.num_extended_bodies})
+          * 3'}
+        predict_local_body_vel: ${algo.algo.config.predict_local_body_vel}
+        pred_local_body_vel_dim:
+          ${eval:'(${algo.algo.config.num_rigid_bodies} + ${algo.algo.config.num_extended_bodies})
+          * 3'}
+        predict_root_lin_vel: ${algo.algo.config.predict_root_lin_vel}
         fix_sigma: true
+        use_layernorm: false
         input_dim:
           - actor_obs
         output_dim:
           - robot_action_dim
-        predict_local_body_pos: false
-        predict_local_body_vel: false
-        predict_root_lin_vel: false
-        layer_config:
-          hidden_dims:
-            - 2048
-            - 1024
-            - 512
-            - 256
-          activation: SiLU
-          use_layernorm: false
-
+        max_sigma: 1.2
+        min_sigma: 0.2
         clamp_output:
           enabled: true
           raw_lower_bound: ${robot.dof_pos_lower_limit_list}
@@ -123,6 +123,14 @@ algo:
           action_scale: ${robot.control.action_scale}
           default_dof_pos_dict: ${robot.init_state.default_joint_angles}
           dof_order: ${robot.dof_names}
+        num_fine_experts: 5
+        num_shared_experts: 1
+        top_k: 2
+        load_balancing_loss_alpha: 0.01
+        bound_loss_alpha: 10.0
+        projection_dim: 2048
+        hidden_dim: 1024
+
 
       critic: {}
 

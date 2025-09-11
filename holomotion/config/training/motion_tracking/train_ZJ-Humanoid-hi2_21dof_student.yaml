@@ -6,10 +6,10 @@ defaults:
   - /algo: dagger
   - /robot: ZJ-Humanoid/hi2/21dof_training
   - /env: motion_tracking
-  - /env/observations: motion_tracking/obs_unitree_g1_23dof_ppo_student
-  - /env/rewards: motion_tracking/rew_ZJ-Humanoid-hi2
+  - /env/observations: motion_tracking/obs_ppo_student
+  - /env/rewards: motion_tracking/rew_ZJ-Humanoid-hi2_stage2
   - /env/domain_randomization: domain_rand_base
-  - /env/terrain: rough
+  - /env/terrain: plane
 
 project_name: HoloMotion
 

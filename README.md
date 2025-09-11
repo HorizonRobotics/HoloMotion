@@ -8,6 +8,7 @@
 [![Python](https://img.shields.io/badge/Python3.8-3776AB?logo=python&logoColor=fff)](#)
 [![Ubuntu](https://img.shields.io/badge/Ubuntu22.04-E95420?logo=ubuntu&logoColor=white)](#)
 [![License](https://img.shields.io/badge/License-Apache_2.0-green?logo=apache&logoColor=white)](./LICENSE)
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/HorizonRobotics/HoloMotion)
 
 <!-- [![arXiv](https://img.shields.io/badge/arXiv-2025.00000-red?logo=arxiv&logoColor=white)](https://arxiv.org/abs/2025.00000) -->
 <!-- [![arXiv](https://img.shields.io/badge/arXiv-2025.00000-red?logo=arxiv&logoColor=white)](https://arxiv.org/abs/2025.00000) -->
@@ -121,8 +122,8 @@ Deploy the exported ONNX model using our ROS2 package to run on real-world robot
   author = {Maiyue Chen, Kaihui Wang, Bo Zhang, Yi Ren, Zihao Zhu, Yucheng Wang, Zhizhong Su},
   title = {HoloMotion: A Foundation Model for Whole-Body Humanoid Motion Tracking},
   year = {2025},
-  month = july,
-  version = {0.4.0},
+  month = september,
+  version = {0.4.1},
   url = {https://github.com/HorizonRobotics/HoloMotion},
   license = {Apache-2.0}
 }
