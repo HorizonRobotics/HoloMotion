@@ -6,7 +6,7 @@ defaults:
   - /algo: dagger
   - /robot: ZJ-Humanoid/hi2/21dof_training
   - /env: motion_tracking
-  - /env/observations: motion_tracking/obs_ppo_student
+  - /env/observations: motion_tracking/obs_ppo_tf_student
   - /env/rewards: motion_tracking/rew_ZJ-Humanoid-hi2_stage2
   - /env/domain_randomization: domain_rand_base
   - /env/terrain: plane

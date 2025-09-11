@@ -19,7 +19,7 @@ export CUDA_VISIBLE_DEVICES="0,1"
 
 config_name="train_ZJ-Humanoid-hi2_21dof_student"
 motion_file="path/to/lmdb_path"
-num_envs=2048
+num_envs=1024
 
 teacher_ckpt_path="path/to/teacher_stage2_ckpt.pt"
 
