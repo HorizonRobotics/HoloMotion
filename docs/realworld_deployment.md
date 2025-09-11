@@ -4,7 +4,12 @@ This guide describes how to set up the deployment environment and run the traine
 
 ![G1 Robot Demo](../assets/media/g1_demo.gif)
 
+## Robot Configuration for 21 DOF
 
+The 21 DOF configuration includes:
+- 12 leg joints (6 per leg)
+- 1 waist joint (yaw) 
+- 8 arm joints (4 per arm)
 ---
 
 ### Quick Environment Setup
@@ -26,7 +31,7 @@ Ensure the following are installed before proceeding:
 cd holomotion/deployment
 chmod +x deploy_environment.sh
 ./deploy_environment.sh
-````
+```
 
 This script will:
 
@@ -252,6 +257,124 @@ flowchart LR
     class N emergency
     class prepPhase preparationFrame
     class prepPhase2 preparationFrame
+```
+
+---
+
+## Robot Configuration for 23 DOF
+
+The 23DOF configuration includes:
+- 12 leg joints (6 per leg)
+- 3 waist joints (yaw, roll, pitch) - **unlocked and controlled**
+- 8 arm joints (4 per arm)
+
+
+To upgrade your G1 robot from the standard 21DOF to 23DOF configuration, for detailed instructions, see the [Unitree G1 Developer FAQ](https://support.unitree.com/home/en/G1_developer/FAQ) section on "G1-29 DOF device, after unlocking the waist fixator (APP synchronously closes the waist lock switch), report the joint out-of-limit position error"
+
+
+---
+### Deploy on G1 Robot with 23 DOF
+
+Steps 1–3 can follow the 21 DOF setup; update the corresponding files under `holomotion/deployment/unitree_g1_ros2_23dof` accordingly.
+
+### Step 4: Launch the Policy Controller
+
+```bash
+cd holomotion/deployment/unitree_g1_ros2_23dof
+bash launch_holomotion_23dof.sh
+```
+
+> **Success indicator**: On startup, the robot joints should remain in zero torque state and feel free to move.
+
+#### Move to Default Pose
+
+While the robot is in zero torque mode, press the **Start** button on the remote controller.
+The robot will smoothly move to its **default joint position**.
+This step ensures that the robot starts from a consistent and safe posture before executing any motions.
+
+#### Motion Control Mode
+
+After moving to the default pose, press **A** on the controller to enter motion control mode.
+In this mode, the trained policy will take over and generate actions for the robot.
+You can then use the controller to trigger different predefined behaviors.
+
+The following mapping summarizes the available actions:
+
+
+| Button | Action |
+| ------ | ------ |
+| Start  | Move to default position (from zero torque) |
+| A      | Enter squat-stand policy (enable control) |
+| B      | Stand up |
+| Y      | Switch to dance policy |
+| Up     | Previous action |
+| Down   | Next action |
+| Left   | Last action |
+| Right  | First action |
+| R1     | Switch back to squat-stand policy |
+| X      | Squat |
+| Select | Emergency Stop |
+
+
+
+The robot only responds to button presses in the correct sequence shown in the flowchart. 
+Ignoring the order may result in no response, which is expected.
+
+Here is the robot control flowchart:
+
+```mermaid
+flowchart LR
+    subgraph prepPhase ["Setup Phase"]
+        direction TB
+        A[Set Robot to Squat Pose] --> B[Power On & Zero torque mode]
+        B --> C[L2+R2: Enter Debug Mode]
+    end
+
+    %% Main flow
+    prepPhase --> D[Start Program]
+    D --> E[Start: Default Position]
+    E --> F[A: Enter Squat-Stand Policy]
+    F --> G[B: Stand Up]
+
+    %% Switch to dance policy
+    G --> H[Y: Switch to Dance Policy]
+    H --> I[Dance Control]
+
+    %% Dance navigation (directional)
+    I --> I1[Up: Previous Action]
+    I --> I2[Down: Next Action]
+    I --> I3[Right: First Action]
+    I --> I4[Left: Last Action]
+
+    %% Return to squat-stand policy
+    I --> J[R1: Switch back to Squat-Stand Policy]
+    J --> K[Squat-Stand Control]
+    K --> L[X: Squat]
+    L --> G
+
+    %% Emergency stop
+    D --> N[Select: Emergency Stop]
+    E --> N
+    F --> N
+    G --> N
+    H --> N
+    I --> N
+    J --> N
+    K --> N
+    L --> N
+    N --> O[Close Program]
+
+    classDef startEnd fill:#e1f5fe,stroke:#01579b,stroke-width:2px
+    classDef control fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
+    classDef movement fill:#e8f5e8,stroke:#1b5e20,stroke-width:2px
+    classDef emergency fill:#ffebee,stroke:#b71c1c,stroke-width:2px,stroke-dasharray: 5 5
+    classDef preparationFrame fill:#f9f9f9,stroke:#666,stroke-width:2px,stroke-dasharray: 5 5
+
+    class A,O startEnd
+    class B,C,D,E,F,G,H,I,J,K,L control
+    class I1,I2,I3,I4 movement
+    class N emergency
+    class prepPhase preparationFrame
 ```
 
 ---
