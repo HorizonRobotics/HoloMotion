@@ -10,6 +10,16 @@ The 21 DOF configuration includes:
 - 12 leg joints (6 per leg)
 - 1 waist joint (yaw) 
 - 8 arm joints (4 per arm)
+
+### Model Configuration for 21 DOF
+
+**Important**: Pre-trained model files are not included in this repository. For 21 DOF deployment:
+
+- Place the ONNX model file in `unitree_g1_ros2/src/models/`
+- Update the `policy_path` parameter in `unitree_g1_ros2/src/config/g1_21dof_holomotion.yaml`
+
+> **Note**: The model file should be compatible with the 21 DOF configuration and trained using the HoloMotion framework.
+
 ---
 
 ### Quick Environment Setup
@@ -22,6 +32,7 @@ Ensure the following are installed before proceeding:
 * ROS 2 Humble installed at `/opt/ros/humble`
 * MCAP for efficient ROS 2 data recording
 * Unitree ROS 2 SDK installed at `~/unitree_ros2/`
+
 
 
 
@@ -268,6 +279,15 @@ The 23DOF configuration includes:
 - 3 waist joints (yaw, roll, pitch) - **unlocked and controlled**
 - 8 arm joints (4 per arm)
 
+### Model Configuration for 23 DOF
+
+**Important**: Pre-trained model files are not included in this repository. For 23 DOF deployment with dual-policy support:
+
+- Place the squat-stand ONNX model in `unitree_g1_ros2_23dof/src/models/` and update `new_policy_path`
+- Place the dance motion ONNX model in `unitree_g1_ros2_23dof/src/models/` and update `policy_path`
+- Configure both model paths in `unitree_g1_ros2_23dof/src/config/holomotion_23dof.yaml`
+
+> **Note**: The model files should be compatible with the 23 DOF configuration and trained using the HoloMotion framework.
 
 To upgrade your G1 robot from the standard 21DOF to 23DOF configuration, for detailed instructions, see the [Unitree G1 Developer FAQ](https://support.unitree.com/home/en/G1_developer/FAQ) section on "G1-29 DOF device, after unlocking the waist fixator (APP synchronously closes the waist lock switch), report the joint out-of-limit position error"
 

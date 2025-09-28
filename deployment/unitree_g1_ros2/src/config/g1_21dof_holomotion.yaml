@@ -26,7 +26,7 @@ lowstate_topic: "/lowstate"
 action_topic: "/humanoid/action"
 
 
-policy_path: "squat_stand_perform13_model_291000.onnx"
+policy_path: "your_model.onnx"
 motion_file: "squat2stand.pkl" # Stand up
 motion_file_3: "stand2squat.pkl" # squat down
 

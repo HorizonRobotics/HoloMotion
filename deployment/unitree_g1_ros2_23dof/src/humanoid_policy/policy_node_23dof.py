@@ -1,4 +1,4 @@
-#! /home/unitree/miniconda3/envs/holomotion_deploy/bin/python
+#! /home/unitree/miniconda3/envs/humanoid_deploy/bin/python
 """
 HoloMotion Policy Node
 
@@ -65,6 +65,47 @@ from humanoid_policy.utils.rotations import (
 )
 
 from typing import List
+@torch.compile
+def quaternion_to_matrix(
+    quaternions: torch.Tensor,
+    w_last: bool = True,
+) -> torch.Tensor:
+    """Convert rotations given as quaternions to rotation matrices.
+
+    Args:
+        quaternions: quaternions as tensor of shape (..., 4).
+            If w_last=True (default): real part last (x, y, z, w)
+            If w_last=False: real part first (w, x, y, z)
+        w_last: If True, quaternion format is (x, y, z, w).
+                If False, quaternion format is (w, x, y, z). Default: True.
+
+    Returns:
+        Rotation matrices as tensor of shape (..., 3, 3).
+
+    """
+    if w_last:
+        i, j, k, r = torch.unbind(quaternions, -1)
+    else:
+        r, i, j, k = torch.unbind(quaternions, -1)
+
+    two_s = 2.0 / (quaternions * quaternions).sum(-1)
+
+    o = torch.stack(
+        (
+            1 - two_s * (j * j + k * k),
+            two_s * (i * j - k * r),
+            two_s * (i * k + j * r),
+            two_s * (i * j + k * r),
+            1 - two_s * (i * i + k * k),
+            two_s * (j * k - i * r),
+            two_s * (i * k - j * r),
+            two_s * (j * k + i * r),
+            1 - two_s * (i * i + j * j),
+        ),
+        -1,
+    )
+    return o.reshape(quaternions.shape[:-1] + (3, 3))
+
 
 
 @torch.compile
@@ -90,112 +131,6 @@ def quat_to_tan_norm(q: torch.Tensor, w_last: bool) -> torch.Tensor:
     norm_tan = torch.cat([tan, norm], dim=len(tan.shape) - 1)
     return norm_tan
 
-@torch.compile
-def remove_yaw_component(
-    quat_raw,
-    quat_init,
-    w_last: bool = True,
-):
-    """Remove yaw component from quaternion while keeping roll and pitch.
-
-    This function extracts the yaw component from the initial quaternion and uses
-    it to normalize the raw quaternion, effectively removing the initial heading
-    offset while preserving roll and pitch components.
-
-    Args:
-        quat_raw: Current quaternion from IMU, shape (..., 4)
-        quat_init: Initial quaternion (contains the yaw to be removed), shape (..., 4)
-        w_last: If True, quaternion format is (x, y, z, w).
-                If False, quaternion format is (w, x, y, z). Default: True.
-
-    Returns:
-        Quaternion with initial yaw component removed, same shape as input.
-        The resulting quaternion represents roll and pitch relative to the
-        heading-aligned coordinate frame.
-
-    Example:
-        >>> # Initial robot orientation (roll=0°, pitch=0°, yaw=45°)
-        >>> quat_init = quat_from_euler_xyz(
-        ...     torch.tensor(0.0), torch.tensor(0.0), torch.tensor(0.7854)
-        ... )
-        >>> # Current IMU reading (roll=10°, pitch=20°, yaw=60°)
-        >>> quat_raw = quat_from_euler_xyz(
-        ...     torch.tensor(0.1745),
-        ...     torch.tensor(0.3491),
-        ...     torch.tensor(1.0472),
-        ... )
-        >>> quat_norm = remove_yaw_component(quat_raw, quat_init)
-        >>> # quat_norm contains roll=10°, pitch=20°, with initial yaw offset removed
-    """
-    # Extract quaternion components based on format
-    if w_last:
-        q_w = quat_init[..., -1]
-        q_vec = quat_init[..., :3]
-    else:
-        q_w = quat_init[..., 0]
-        q_vec = quat_init[..., 1:]
-
-    # Calculate heading by rotating x-axis with quaternion
-    # ref_dir = [1, 0, 0] (x-axis)
-    ref_dir = torch.zeros_like(q_vec)
-    ref_dir[..., 0] = 1.0
-
-    # Quaternion rotation: v' = v + 2 * w * (q_vec × v) + 2 * q_vec × (q_vec × v)
-    cross1 = torch.cross(q_vec, ref_dir, dim=-1)
-    cross2 = torch.cross(q_vec, cross1, dim=-1)
-    rot_dir = ref_dir + 2.0 * q_w.unsqueeze(-1) * cross1 + 2.0 * cross2
-
-    # Extract heading angle from rotated x-axis
-    heading = torch.atan2(rot_dir[..., 1], rot_dir[..., 0])
-
-    # Create inverse heading quaternion (rotation about negative z-axis)
-    half_heading = (-heading) * 0.5
-    heading_q_inv = torch.zeros_like(quat_init)
-
-    if w_last:
-        heading_q_inv[..., 0] = 0.0  # x
-        heading_q_inv[..., 1] = 0.0  # y
-        heading_q_inv[..., 2] = torch.sin(half_heading)  # z
-        heading_q_inv[..., 3] = torch.cos(half_heading)  # w
-    else:
-        heading_q_inv[..., 0] = torch.cos(half_heading)  # w
-        heading_q_inv[..., 1] = 0.0  # x
-        heading_q_inv[..., 2] = 0.0  # y
-        heading_q_inv[..., 3] = torch.sin(half_heading)  # z
-
-    # Quaternion multiplication: heading_q_inv * quat_raw
-    shape = quat_raw.shape
-    a = heading_q_inv.reshape(-1, 4)
-    b = quat_raw.reshape(-1, 4)
-
-    if w_last:
-        x1, y1, z1, w1 = a[..., 0], a[..., 1], a[..., 2], a[..., 3]
-        x2, y2, z2, w2 = b[..., 0], b[..., 1], b[..., 2], b[..., 3]
-    else:
-        w1, x1, y1, z1 = a[..., 0], a[..., 1], a[..., 2], a[..., 3]
-        w2, x2, y2, z2 = b[..., 0], b[..., 1], b[..., 2], b[..., 3]
-
-    # Quaternion multiplication formula
-    ww = (z1 + x1) * (x2 + y2)
-    yy = (w1 - y1) * (w2 + z2)
-    zz = (w1 + y1) * (w2 - z2)
-    xx = ww + yy + zz
-    qq = 0.5 * (xx + (z1 - x1) * (x2 - y2))
-    w = qq - ww + (z1 - y1) * (y2 - z2)
-    x = qq - xx + (x1 + w1) * (x2 + w2)
-    y = qq - yy + (w1 - x1) * (y2 + z2)
-    z = qq - zz + (z1 + y1) * (w2 - x2)
-
-    if w_last:
-        quat_result = torch.stack([x, y, z, w], dim=-1).view(shape)
-    else:
-        quat_result = torch.stack([w, x, y, z], dim=-1).view(shape)
-
-    # Normalize the result quaternion
-    norm = torch.norm(quat_result, p=2, dim=-1, keepdim=True)
-    quat_norm = quat_result / norm.clamp(min=1e-8)
-
-    return quat_norm
 
 class ObsSeqSerializer:
     def __init__(self, schema_list: List[dict]):
@@ -305,8 +240,6 @@ class PolicyNodeJustDance(Node):
         self.current_dance_index = 0  # Current dance motion index
         self.state_mode = 0  # 0: standby, 1: start dance
         
-        # Initialize motion initial quaternion (will be set from low state in __init__)
-        self.cur_motion_init_quat = None
 
         # Safety check related flags
         self.policy_enabled = False  # Controls whether policy is enabled
@@ -340,15 +273,7 @@ class PolicyNodeJustDance(Node):
         # Publish initial motion type (default is motion_file)
         self._publish_motion_type(0)
         
-        # Set initial motion quaternion from low state if available
-        if self.low_state_buffer_ is not None:
-            self.cur_motion_init_quat = self.low_state_buffer_.imu_state.quaternion
-            self.get_logger().info("Set initial motion quaternion from low state")
-        else:
-            self.cur_motion_init_quat = [1.0, 0.0, 0.0, 0.0]  # Identity quaternion as fallback
-            self.get_logger().warn("No low state available, set initial motion quaternion to identity quaternion")
 
-        # Music playback removed
 
     def _setup_data(self):
         """Initialize data structures and parameters for observation processing.
@@ -368,6 +293,9 @@ class PolicyNodeJustDance(Node):
         self.default_dof_pos = np.array(
             [self.config.default_joint_angles[dof_name] for dof_name in self.config.policy_dof_order]
         )
+        self.default_dof_pos_tensor = torch.tensor(self.default_dof_pos, dtype=torch.float32)[
+            None, None, :
+        ]  # [1, 1, num_dofs]
         self.control_decimation = self.config.control_decimation
         self.vx, self.vy, self.vyaw = 0.0, 0.0, 0.0
         self.hist_valid_queue = np.zeros(self.max_context_length, dtype=bool)
@@ -599,7 +527,7 @@ class PolicyNodeJustDance(Node):
 
         self.get_logger().info(f"Successfully loaded {len(self.dance_motions)} dance motions")
 
-    # Music helpers removed
+
 
     def _setup_subscribers(self):
         """Set up ROS2 subscribers for robot state and remote controller input."""
@@ -753,8 +681,6 @@ class PolicyNodeJustDance(Node):
         if self.remote_controller.button[KeyMap.A] == 1 and (not self.on_action) and self.robot_state_ready:
             # if self.remote_controller.button[KeyMap.A] == 1:
             # self.on_action = True
-            if self.low_state_buffer_ is not None:
-                self.cur_motion_init_quat = self.low_state_buffer_.imu_state.quaternion
             self.policy_enabled = True
             self.stand_completed = False  # Reset stand state
             self.squat_state = True  # Reset squat state
@@ -897,12 +823,6 @@ class PolicyNodeJustDance(Node):
         
         self._reset_counter()
 
-        # Update motion initial quaternion when starting new motion
-        if self.low_state_buffer_ is not None:
-            self.cur_motion_init_quat = self.low_state_buffer_.imu_state.quaternion
-            self.get_logger().info(f"Updated motion initial quaternion for motion {motion_index}")
-        else:
-            self.get_logger().warn("No low state buffer available, cannot update motion initial quaternion")
 
         # Publish total frames when starting new motion
         total_frames_msg = Int32()
@@ -911,8 +831,6 @@ class PolicyNodeJustDance(Node):
 
         # Publish motion type based on motion index
         self._publish_motion_type(motion_index)
-
-        # Music playback removed
 
     def _publish_motion_type(self, motion_index: int):
         """Publish motion type based on motion index.
@@ -997,166 +915,156 @@ class PolicyNodeJustDance(Node):
         )  # [hist_len + 1, num_dofs]
         return action_seq  # [hist_len + 1, num_dofs]
 
-    def _get_obs_fut_ref_root_rel_teacher_v2(self, motion_init_quat):
-        """
-        This observation is used for obtaining the future reference motion state
-        for training the teacher policy. Notice that the future bodylink properties
-        are expressed in the **current** root reference frame.
-
-        - Root roll and pitch: in future per-frame heading-aligned frame
-        - Root linear and angular velocity: in the **current** root reference frame
-        - DoF position and velocity: in the absolute frame
-        - Bodylink position, rotation, linear and angular velocity: in the **current** root reference frame
-        """
-        NB = self.num_bodies_extend
-        FT = self.num_fut_frames
+    def _get_obs_fut_ref_v12(self):
         target_ref_frame_id = self.counter + 1
         max_target_ref_frame = self.num_motion_frames - self.num_fut_frames
         if target_ref_frame_id > max_target_ref_frame:
             target_ref_frame_id = max_target_ref_frame
 
-        quat_raw = self.low_state_buffer_.imu_state.quaternion
-        quat_raw = torch.tensor(quat_raw, dtype=torch.float32)
-        quat_raw = quat_raw[..., [1, 2, 3, 0]]  # wxyz -> xyzw
-        motion_init_quat = torch.tensor(motion_init_quat, dtype=torch.float32)
-        motion_init_quat = motion_init_quat[..., [1, 2, 3, 0]]  # wxyz -> xyzw
-        quat = remove_yaw_component(quat_raw, motion_init_quat, w_last=True)
+        num_bodies = self.num_bodies_extend
+        num_fut_timesteps = self.num_fut_frames
 
-        raw_roll, raw_pitch, raw_yaw = get_euler_xyz(quat_raw[None, :], w_last=True)
-        normed_roll, normed_pitch, normed_yaw = get_euler_xyz(quat[None, :], w_last=True)
-        motion_init_roll, motion_init_pitch, motion_init_yaw = get_euler_xyz(motion_init_quat[None, :], w_last=True)
-
-        cur_root_quat = quat
-
-        # cur_root_quat = torch.tensor(quat, dtype=torch.float32)
-        # wxyz -> xyzw
-        # cur_root_quat = cur_root_quat[..., [1, 2, 3, 0]]
-        cur_root_quat_inv = quat_inverse(cur_root_quat, w_last=True)
-        cur_root_quat_inv_fut_flat = cur_root_quat_inv[None, :].repeat(FT, 1).view(-1, 4)  # [T, 4]
-
-        ref_fut_base_rot_quat = self.motion_data["root_rot"][
+        fut_ref_root_rot_quat = self.motion_data["root_rot"][
             target_ref_frame_id : target_ref_frame_id + self.num_fut_frames, :
-        ]  # [T, 4]
-        ref_fut_root_global_lin_vel = self.motion_data["root_vel"][
-            target_ref_frame_id : target_ref_frame_id + self.num_fut_frames, :
-        ]  # [T, 3]
-        ref_fut_root_global_ang_vel = self.motion_data["root_ang_vel"][
-            target_ref_frame_id : target_ref_frame_id + self.num_fut_frames, :
-        ]  # [T, 3]
-        ref_fut_dof_pos = self.motion_data["dof_pos"][
-            target_ref_frame_id : target_ref_frame_id + self.num_fut_frames, :
-        ]  # [T, num_actions]
-        ref_fut_dof_vel = self.motion_data["dof_vel"][
-            target_ref_frame_id : target_ref_frame_id + self.num_fut_frames, :
-        ]  # [T, num_actions]
-        ref_fut_bodylink_pos = self.motion_data["rg_pos_t"][
-            target_ref_frame_id : target_ref_frame_id + self.num_fut_frames, :
-        ]  # [T, num_bodies_extend, 3]
-        ref_fut_bodylink_rot = self.motion_data["rg_rot_t"][
-            target_ref_frame_id : target_ref_frame_id + self.num_fut_frames, :
-        ]  # [T, num_bodies_extend, 4]
-        ref_fut_bodylink_vel = self.motion_data["body_vel_t"][
-            target_ref_frame_id : target_ref_frame_id + self.num_fut_frames, :
-        ]  # [T, num_bodies_extend, 3]
-        ref_fut_bodylink_ang_vel = self.motion_data["body_ang_vel_t"][
-            target_ref_frame_id : target_ref_frame_id + self.num_fut_frames, :
-        ]  # [T, num_bodies_extend, 3]
-        ref_cur_root_pos = self.motion_data["root_pos"][
-            target_ref_frame_id : target_ref_frame_id + self.num_fut_frames, :
-        ]  # [T, 3]
+        ][None, ...]  # [B, T, 4]
+        fut_ref_root_rot_quat_inv = quat_inverse(
+            fut_ref_root_rot_quat, w_last=True
+        )  # [B, T, 4]
+        fut_ref_root_rot_quat_body_flat = (
+            fut_ref_root_rot_quat[:, :, None, :]
+            .repeat(1, 1, num_bodies, 1)
+            .reshape(-1, 4)
+        )
+        fut_ref_root_rot_quat_body_flat_inv = quat_inverse(
+            fut_ref_root_rot_quat_body_flat, w_last=True
+        )
 
         ref_fut_heading_quat_inv = calc_heading_quat_inv(
-            ref_fut_base_rot_quat,
+            fut_ref_root_rot_quat.reshape(-1, 4),
             w_last=True,
-        )  # [T, 4]
+        )  # [B*T, 4]
         ref_fut_quat_rp = quat_mul(
             ref_fut_heading_quat_inv,
-            ref_fut_base_rot_quat,
+            fut_ref_root_rot_quat.reshape(-1, 4),
             w_last=True,
-        )  # [T, 4]
+        )  # [B*T, 4]
 
         # --- calculate the global roll and pitch of the future heading-aligned frame ---
         ref_fut_roll, ref_fut_pitch, _ = get_euler_xyz(
             ref_fut_quat_rp,
             w_last=True,
         )
-        ref_fut_roll = wrap_to_pi(ref_fut_roll)  # [T, 1]
-        ref_fut_pitch = wrap_to_pi(ref_fut_pitch)  # [T, 1]
-        ref_fut_rp = torch.cat([ref_fut_roll, ref_fut_pitch], dim=-1)  # [T, 2]
-        ref_fut_rp_flat = ref_fut_rp.reshape(-1)  # [T * 2]
+        ref_fut_roll = wrap_to_pi(ref_fut_roll).reshape(
+            1, num_fut_timesteps, -1
+        )  # [B, T, 1]
+        ref_fut_pitch = wrap_to_pi(ref_fut_pitch).reshape(
+            1, num_fut_timesteps, -1
+        )  # [B, T, 1]
+        ref_fut_rp = torch.cat([ref_fut_roll, ref_fut_pitch], dim=-1)  # [B, T, 2]
+        ref_fut_rp_flat = ref_fut_rp.reshape(1, -1)  # [B, T * 2]
         # ---
 
         # --- calculate the relative root linear and angular velocity to the current root ---
+        ref_fut_root_global_lin_vel = self.motion_data["root_vel"][
+            target_ref_frame_id : target_ref_frame_id + self.num_fut_frames, :
+        ]  # [T, 3]
+        ref_fut_root_global_ang_vel = self.motion_data["root_ang_vel"][
+            target_ref_frame_id : target_ref_frame_id + self.num_fut_frames, :
+        ]  # [T, 3]
+
         fut_ref_cur_root_rel_base_lin_vel = quat_rotate(
-            cur_root_quat_inv_fut_flat,  # [T, 4]
-            ref_fut_root_global_lin_vel,  # [T, 3]
+            fut_ref_root_rot_quat_inv.reshape(-1, 4),  # [B*T, 4]
+            ref_fut_root_global_lin_vel.reshape(-1, 3),  # [B*T, 3]
             w_last=True,
-        ).reshape(-1)  # [T * 3]
+        ).reshape(1, -1)  # [B, num_fut_timesteps * 3]
         fut_ref_cur_root_rel_base_ang_vel = quat_rotate(
-            cur_root_quat_inv_fut_flat,  # [T, 4]
-            ref_fut_root_global_ang_vel,  # [T, 3]
+            fut_ref_root_rot_quat_inv.reshape(-1, 4),  # [B*T, 4]
+            ref_fut_root_global_ang_vel.reshape(-1, 3),  # [B*T, 3]
             w_last=True,
-        ).reshape(-1)  # [T * 3]
+        ).reshape(1, -1)  # [B, num_fut_timesteps * 3]
         # ---
 
         # --- calculate the absolute DoF position and velocity ---
-        fut_ref_rel_dof_pos_flat = ref_fut_dof_pos.reshape(-1)  # [T * num_actions]
-        fut_ref_rel_dof_vel_flat = ref_fut_dof_vel.reshape(-1)  # [T * num_actions]
+        ref_fut_dof_pos = self.motion_data["dof_pos"][
+            target_ref_frame_id : target_ref_frame_id + self.num_fut_frames, :
+        ][None, ...]  # [B, T, num_actions]
+        ref_fut_dof_vel = self.motion_data["dof_vel"][
+            target_ref_frame_id : target_ref_frame_id + self.num_fut_frames, :
+        ][None, ...]  # [B, T, num_actions]
+        # Subtract default DOF positions like in the reference implementation
+        fut_ref_dof_pos_flat = (ref_fut_dof_pos - self.default_dof_pos_tensor).reshape(
+            1, -1
+        )
+        fut_ref_dof_vel_flat = ref_fut_dof_vel.reshape(1, -1)
         # ---
 
-        # --- calculate the relative bodylink pos in the current root reference frame ---
-        ref_fut_cur_root_quat_inv_body_flat = (
-            cur_root_quat_inv_fut_flat[:, None, :].repeat(1, NB, 1).reshape(-1, 4)
-        )  # [T * NB, 4]
+        # --- calculate the future per frame bodylink position and rotation ---
+        fut_ref_global_bodylink_pos = self.motion_data["rg_pos_t"][
+            target_ref_frame_id : target_ref_frame_id + self.num_fut_frames, :
+        ][None, ...]  # [B, T, num_bodies, 3]
+        fut_ref_global_bodylink_rot = self.motion_data["rg_rot_t"][
+            target_ref_frame_id : target_ref_frame_id + self.num_fut_frames, :
+        ][None, ...]  # [B, T, num_bodies, 4]
 
-        fut_root_rel_ref_bodylink_pos_flat = quat_rotate(
-            ref_fut_cur_root_quat_inv_body_flat,
-            (ref_fut_bodylink_pos - ref_cur_root_pos[None, None, :]).reshape(-1, 3),
+        # get root-relative bodylink position
+        fut_ref_root_rel_bodylink_pos = quat_rotate(
+            fut_ref_root_rot_quat_body_flat_inv,
+            (
+                fut_ref_global_bodylink_pos - fut_ref_global_bodylink_pos[:, :, 0:1, :]
+            ).reshape(-1, 3),
             w_last=True,
-        ).reshape(-1)  # [T * NB * 3]
-        fut_root_rel_ref_bodylink_rot_tannorm = quat_mul(
-            ref_fut_cur_root_quat_inv_body_flat,
-            ref_fut_bodylink_rot.reshape(-1, 4),
+        ).reshape(
+            1, num_fut_timesteps, num_bodies, -1
+        )  # [B, num_fut_timesteps, num_bodies, 3]
+
+        # get root-relative bodylink rotation
+        fut_ref_root_rel_bodylink_rot = quat_mul(
+            fut_ref_root_rot_quat_body_flat_inv,
+            fut_ref_global_bodylink_rot.reshape(-1, 4),
             w_last=True,
-        ).reshape(-1, 4)  # [T * NB * 4]
-        fut_root_rel_ref_bodylink_rot_tannorm_flat = quat_to_tan_norm(
-            fut_root_rel_ref_bodylink_rot_tannorm,
+        )
+        fut_ref_root_rel_bodylink_rot_mat = quaternion_to_matrix(
+            fut_ref_root_rel_bodylink_rot,
             w_last=True,
-        ).reshape(-1)  # [T * NB * 6]
-        fut_root_rel_ref_bodylink_vel_flat = quat_rotate(
-            ref_fut_cur_root_quat_inv_body_flat,
-            ref_fut_bodylink_vel.reshape(-1, 3),
-            w_last=True,
-        ).reshape(-1)  # [T * NB * 3]
-        fut_root_rel_ref_bodylink_ang_vel_flat = quat_rotate(
-            ref_fut_cur_root_quat_inv_body_flat,
-            ref_fut_bodylink_ang_vel.reshape(-1, 3),
-            w_last=True,
-        ).reshape(-1)  # [T * NB * 3]
-        # ---
+        )[:, :, :2].reshape(
+            1, num_fut_timesteps, num_bodies, -1
+        )  # [B, num_fut_timesteps, num_bodies, 6]
+
         rel_fut_ref_motion_state_seq = torch.cat(
             [
-                ref_fut_rp_flat.reshape(FT, -1),  # [T, 2]
-                fut_ref_cur_root_rel_base_lin_vel.reshape(FT, -1),  # [T, 3]
-                fut_ref_cur_root_rel_base_ang_vel.reshape(FT, -1),  # [T, 3]
-                fut_ref_rel_dof_pos_flat.reshape(FT, -1),  # [T, num_dofs]
-                fut_ref_rel_dof_vel_flat.reshape(FT, -1),  # [T, num_dofs]
-                fut_root_rel_ref_bodylink_pos_flat.reshape(FT, -1),  # [T, num_bodies_extend * 3]
-                fut_root_rel_ref_bodylink_rot_tannorm_flat.reshape(FT, -1),  # [T, num_bodies_extend * 6]
-                fut_root_rel_ref_bodylink_vel_flat.reshape(FT, -1),  # [T, num_bodies_extend * 3]
-                fut_root_rel_ref_bodylink_ang_vel_flat.reshape(FT, -1),  # [T, num_bodies_extend * 3]
+                ref_fut_rp_flat.reshape(1, num_fut_timesteps, -1),  # [B, T, 2]
+                fut_ref_cur_root_rel_base_lin_vel.reshape(
+                    1, num_fut_timesteps, -1
+                ),  # [B, T, 3]
+                fut_ref_cur_root_rel_base_ang_vel.reshape(
+                    1, num_fut_timesteps, -1
+                ),  # [B, T, 3]
+                fut_ref_dof_pos_flat.reshape(
+                    1, num_fut_timesteps, -1
+                ),  # [B, T, num_dofs]
+                fut_ref_dof_vel_flat.reshape(
+                    1, num_fut_timesteps, -1
+                ),  # [B, T, num_dofs]
+                fut_ref_root_rel_bodylink_pos.reshape(
+                    1, num_fut_timesteps, -1
+                ),  # [B, T, num_bodies*3]
+                fut_ref_root_rel_bodylink_rot_mat.reshape(
+                    1, num_fut_timesteps, -1
+                ),  # [B, T, num_bodies*6]
             ],
             dim=-1,
-        )  # [T, 2 + 3 + 3 + num_dofs * 2 + num_bodies_extend * (3 + 6 + 3 + 3)]
+        )  # [B, T, 2 + 3 + 3 + num_dofs * 2 + num_bodies * (3 + 6)]
         return rel_fut_ref_motion_state_seq.flatten()
 
-    def _get_obs_priocep_with_fut_ref_v7_student(self):
+    def _get_obs_priocep_with_fut_ref_v9_student(self):
         target_ref_frame_id = int(self.counter / self.control_decimation) + 1
         max_target_ref_frame = self.num_motion_frames - self.num_fut_frames
         if target_ref_frame_id > max_target_ref_frame:
             target_ref_frame_id = max_target_ref_frame
 
-        valid_frames_left = min(self.num_motion_frames - target_ref_frame_id, self.num_fut_frames)
+        valid_frames_left = min(
+            self.num_motion_frames - target_ref_frame_id, self.num_fut_frames
+        )
         ref_fut_valid_mask = torch.zeros(self.num_fut_frames)
         ref_fut_valid_mask[:valid_frames_left] = 1
         ref_fut_valid_mask = ref_fut_valid_mask.flatten()
@@ -1167,8 +1075,7 @@ class PolicyNodeJustDance(Node):
 
         hist_seq = torch.cat([dof_seq, imu_seq, action_seq], dim=-1)
 
-        # Pass the motion initial quaternion to teacher_v2 function
-        fut_ref = self._get_obs_fut_ref_root_rel_teacher_v2(self.cur_motion_init_quat)
+        fut_ref = self._get_obs_fut_ref_v12()
         fut_ref_valid_mask = ref_fut_valid_mask[:, None]
         fut_ref = fut_ref * fut_ref_valid_mask.float()
 
@@ -1201,7 +1108,7 @@ class PolicyNodeJustDance(Node):
         """
         if self.low_state_buffer_ is None:
             return None
-        self.latest_obs = self._get_obs_priocep_with_fut_ref_v7_student()
+        self.latest_obs = self._get_obs_priocep_with_fut_ref_v9_student()
         self._update_obs_queue()
 
     def run(self):

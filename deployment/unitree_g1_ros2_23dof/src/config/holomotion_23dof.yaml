@@ -9,8 +9,8 @@ lowstate_topic: "/lowstate"
 action_topic: "/humanoid/action"
 
 
-new_policy_path: "stand_squat_model.onnx"  # default model for stand and squat
-policy_path: "horizon_holomotion_model_23dof.onnx"  # motion model
+new_policy_path: "your_stand_squat_model.onnx"  # default model for stand and squat
+policy_path: "your_motion_model_23dof.onnx"  # motion model
 
 # Basic motion files for squat and stand actions
 # motion_file_squat2stand: B button (stand up)
@@ -56,7 +56,7 @@ serialization_schema:
     feat_dim: 75
   - obs_name: fut_ref_motion_seq
     seq_len: 1
-    feat_dim: 459
+    feat_dim: 297
   - obs_name: fut_ref_valid_mask
     seq_len: 1
     feat_dim: 1
@@ -183,74 +183,73 @@ control_params:
     left_hip_pitch_joint: 100.0
     left_hip_roll_joint: 100.0
     left_hip_yaw_joint: 100.0
-    left_knee_joint: 150.0
-    left_ankle_pitch_joint: 40.0
-    left_ankle_roll_joint: 40.0
+    left_knee_joint: 200.0
+    left_ankle_pitch_joint: 20.0
+    left_ankle_roll_joint: 20.0
 
     right_hip_pitch_joint: 100.0
     right_hip_roll_joint: 100.0
     right_hip_yaw_joint: 100.0
-    right_knee_joint: 150.0
-    right_ankle_pitch_joint: 40.0
-    right_ankle_roll_joint: 40.0
+    right_knee_joint: 200.0
+    right_ankle_pitch_joint: 20.0
+    right_ankle_roll_joint: 20.0
 
     waist_yaw_joint: 400.0
     waist_roll_joint: 400.0
     waist_pitch_joint: 400.0
 
-    left_shoulder_pitch_joint: 100.0
-    left_shoulder_roll_joint: 100.0
-    left_shoulder_yaw_joint: 50.0
-    left_elbow_joint: 50.0
-
+    left_shoulder_pitch_joint: 90.0
+    left_shoulder_roll_joint: 60.0
+    left_shoulder_yaw_joint: 20.0
+    left_elbow_joint: 60.0
     left_wrist_roll_joint: 10.0
     left_wrist_pitch_joint: 10.0
     left_wrist_yaw_joint: 10.0
 
-    right_shoulder_pitch_joint: 100.0
-    right_shoulder_roll_joint: 100.0
-    right_shoulder_yaw_joint: 50.0
-    right_elbow_joint: 50.0
-
+    right_shoulder_pitch_joint: 90.0
+    right_shoulder_roll_joint: 60.0
+    right_shoulder_yaw_joint: 20.0
+    right_elbow_joint: 60.0
     right_wrist_roll_joint: 10.0
     right_wrist_pitch_joint: 10.0
     right_wrist_yaw_joint: 10.0
 
   damping:
-    left_hip_pitch_joint: 2.0
-    left_hip_roll_joint: 2.0
-    left_hip_yaw_joint: 2.0
-    left_knee_joint: 4.0
-    left_ankle_pitch_joint: 2.0
-    left_ankle_roll_joint: 2.0
+    left_hip_pitch_joint: 2.5
+    left_hip_roll_joint: 2.5
+    left_hip_yaw_joint: 2.5
+    left_knee_joint: 5.0
+    left_ankle_pitch_joint: 0.2
+    left_ankle_roll_joint: 0.1
 
-    right_hip_pitch_joint: 2.0
-    right_hip_roll_joint: 2.0
-    right_hip_yaw_joint: 2.0
-    right_knee_joint: 4.0
-    right_ankle_pitch_joint: 2.0
-    right_ankle_roll_joint: 2.0
+    right_hip_pitch_joint: 2.5
+    right_hip_roll_joint: 2.5
+    right_hip_yaw_joint: 2.5
+    right_knee_joint: 5.0
+    right_ankle_pitch_joint: 0.2
+    right_ankle_roll_joint: 0.1
 
     waist_yaw_joint: 5.0
     waist_roll_joint: 5.0
     waist_pitch_joint: 5.0
 
     left_shoulder_pitch_joint: 2.0
-    left_shoulder_roll_joint: 2.0
-    left_shoulder_yaw_joint: 2.0
-    left_elbow_joint: 2.0
+    left_shoulder_roll_joint: 1.0
+    left_shoulder_yaw_joint: 0.4
+    left_elbow_joint: 1.0
     left_wrist_roll_joint: 0.1
     left_wrist_pitch_joint: 0.1
     left_wrist_yaw_joint: 0.1
 
     right_shoulder_pitch_joint: 2.0
-    right_shoulder_roll_joint: 2.0
-    right_shoulder_yaw_joint: 2.0
-    right_elbow_joint: 2.0
+    right_shoulder_roll_joint: 1.0
+    right_shoulder_yaw_joint: 0.4
+    right_elbow_joint: 1.0
     right_wrist_roll_joint: 0.1
     right_wrist_pitch_joint: 0.1
     right_wrist_yaw_joint: 0.1
 
+# 
 default_joint_angles:
   left_hip_pitch_joint: -0.1
   left_hip_roll_joint: 0.0
@@ -270,21 +269,22 @@ default_joint_angles:
   waist_roll_joint: 0.0
   waist_pitch_joint: 0.0
 
-  left_shoulder_pitch_joint: 0.2
-  left_shoulder_roll_joint: 0.2
+  left_shoulder_pitch_joint: 0.0
+  left_shoulder_roll_joint: 0.0
   left_shoulder_yaw_joint: 0.0
-  left_elbow_joint: 0.9
+  left_elbow_joint: 0.0
   left_wrist_roll_joint: 0.0
   left_wrist_pitch_joint: 0.0
   left_wrist_yaw_joint: 0.0
 
-  right_shoulder_pitch_joint: 0.2
-  right_shoulder_roll_joint: -0.2
+  right_shoulder_pitch_joint: 0.0
+  right_shoulder_roll_joint: 0.0
   right_shoulder_yaw_joint: 0.0
-  right_elbow_joint: 0.9
+  right_elbow_joint: 0.0
   right_wrist_roll_joint: 0.0
   right_wrist_pitch_joint: 0.0
   right_wrist_yaw_joint: 0.0
+
 
 default_joint_angles_squat:
   left_hip_pitch_joint: -2.5
