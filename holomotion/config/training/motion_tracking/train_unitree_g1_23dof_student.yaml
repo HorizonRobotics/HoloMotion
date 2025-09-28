@@ -14,4 +14,9 @@ defaults:
 project_name: HoloMotion
 
 motion_lmdb_path: ???
-checkpoint: ???
+# checkpoint: ???
+
+algo:
+  algo:
+    config:
+      teacher_actor_ckpt_path: ???

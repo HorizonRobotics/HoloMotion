@@ -12,3 +12,6 @@ defaults:
   - /env/terrain: plane
 
 project_name: HoloMotion
+
+motion_lmdb_path: ???
+# checkpoint: ???

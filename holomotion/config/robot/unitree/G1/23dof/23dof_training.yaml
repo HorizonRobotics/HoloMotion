@@ -363,34 +363,7 @@ robot:
     rot: [0.0, 0.929, 0.341, 0.298] # x,y,z,w [quat]
     lin_vel: [0.0, 0.0, 0.0] # x,y,z [m/s]
     ang_vel: [0.0, 0.0, 0.0] # x,y,z [rad/s]
-    default_joint_angles: # = target angles [rad] when action = 0.0
-      left_hip_pitch_joint: -0.1
-      left_hip_roll_joint: 0.0
-      left_hip_yaw_joint: 0.0
-      left_knee_joint: 0.3
-      left_ankle_pitch_joint: -0.2
-      left_ankle_roll_joint: 0.0
-
-      right_hip_pitch_joint: -0.1
-      right_hip_roll_joint: 0.0
-      right_hip_yaw_joint: 0.0
-      right_knee_joint: 0.3
-      right_ankle_pitch_joint: -0.2
-      right_ankle_roll_joint: 0.0
-
-      waist_yaw_joint: 0.
-      waist_roll_joint: 0.
-      waist_pitch_joint: 0.
-
-      left_shoulder_pitch_joint: 0.
-      left_shoulder_roll_joint: 0.
-      left_shoulder_yaw_joint: 0.
-      left_elbow_joint: 0.
-
-      right_shoulder_pitch_joint: 0.
-      right_shoulder_roll_joint: 0.
-      right_shoulder_yaw_joint: 0.
-      right_elbow_joint: 0.
+    default_joint_angles: ${robot.default_poses.HoloMotion}
 
   randomize_link_body_names:
     [
@@ -408,37 +381,8 @@ robot:
   control:
     actuator_network_path: null
     control_type: P
-    # PD Drive parameters:
-    stiffness: # [N*m/rad]
-      hip_yaw: 100
-      hip_roll: 100
-      hip_pitch: 100
-      knee: 200
-      ankle_pitch: 20
-      ankle_roll: 20
-      waist_yaw: 400
-      waist_roll: 400
-      waist_pitch: 400
-      shoulder_pitch: 90
-      shoulder_roll: 60
-      shoulder_yaw: 20
-      elbow: 60
-
-    damping: # [N*m/rad]  # [N*m*s/rad]
-      hip_yaw: 2.5
-      hip_roll: 2.5
-      hip_pitch: 2.5
-      knee: 5.0
-      ankle_pitch: 0.2
-      ankle_roll: 0.1
-      waist_yaw: 5.0
-      waist_roll: 5.0
-      waist_pitch: 5.0
-      shoulder_pitch: 2.0
-      shoulder_roll: 1.0
-      shoulder_yaw: 0.4
-      elbow: 1.0
-
+    stiffness: ${robot.pd_params.HoloMotion.stiffness}
+    damping: ${robot.pd_params.HoloMotion.damping}
     action_scale: 0.25
     action_clip_value: 100.0
     clip_torques: False
@@ -689,3 +633,115 @@ robot:
         - [0.929, 0.341, 0.298] # right_elbow_joint_extend
         - [0.929, 0.341, 0.298] # head_link
 
+
+  pd_params:
+    HoloMotion:
+      stiffness:
+        hip_yaw: 100
+        hip_roll: 100
+        hip_pitch: 100
+        knee: 200
+        ankle_pitch: 20
+        ankle_roll: 20
+        waist_yaw: 400
+        waist_roll: 400
+        waist_pitch: 400
+        shoulder_pitch: 90
+        shoulder_roll: 60
+        shoulder_yaw: 20
+        elbow: 60
+      damping:
+        hip_yaw: 2.5
+        hip_roll: 2.5
+        hip_pitch: 2.5
+        knee: 5.0
+        ankle_pitch: 0.2
+        ankle_roll: 0.1
+        waist_yaw: 5.0
+        waist_roll: 5.0
+        waist_pitch: 5.0
+        shoulder_pitch: 2.0
+        shoulder_roll: 1.0
+        shoulder_yaw: 0.4
+        elbow: 1.0
+
+    PBHC:
+      stiffness:
+        hip_yaw: 100
+        hip_roll: 100
+        hip_pitch: 100
+        knee: 150
+        ankle_pitch: 40
+        ankle_roll: 40
+        waist_yaw: 400
+        waist_roll: 400
+        waist_pitch: 400
+        shoulder_pitch: 100
+        shoulder_roll: 100
+        shoulder_yaw: 50
+        elbow: 50
+      damping:
+        hip_yaw: 2.0
+        hip_roll: 2.0
+        hip_pitch: 2.0
+        knee: 4.0
+        ankle_pitch: 2.0
+        ankle_roll: 2.0
+        waist_yaw: 5.0
+        waist_roll: 5.0
+        waist_pitch: 5.0
+        shoulder_pitch: 2.0
+        shoulder_roll: 2.0
+        shoulder_yaw: 2.0
+        elbow: 2.0
+
+  default_poses:
+    HoloMotion:
+      left_hip_pitch_joint: -0.1
+      left_hip_roll_joint: 0.0
+      left_hip_yaw_joint: 0.0
+      left_knee_joint: 0.3
+      left_ankle_pitch_joint: -0.2
+      left_ankle_roll_joint: 0.0
+      right_hip_pitch_joint: -0.1
+      right_hip_roll_joint: 0.0
+      right_hip_yaw_joint: 0.0
+      right_knee_joint: 0.3
+      right_ankle_pitch_joint: -0.2
+      right_ankle_roll_joint: 0.0
+      waist_yaw_joint: 0.0
+      waist_roll_joint: 0.0
+      waist_pitch_joint: 0.0
+      left_shoulder_pitch_joint: 0.0
+      left_shoulder_roll_joint: 0.0
+      left_shoulder_yaw_joint: 0.0
+      left_elbow_joint: 0.0
+      right_shoulder_pitch_joint: 0.0
+      right_shoulder_roll_joint: 0.0
+      right_shoulder_yaw_joint: 0.0
+      right_elbow_joint: 0.0
+
+    PBHC: 
+      left_hip_pitch_joint: -0.1
+      left_hip_roll_joint: 0.0
+      left_hip_yaw_joint: 0.0
+      left_knee_joint: 0.3
+      left_ankle_pitch_joint: -0.2
+      left_ankle_roll_joint: 0.0
+      right_hip_pitch_joint: -0.1
+      right_hip_roll_joint: 0.0
+      right_hip_yaw_joint: 0.0
+      right_knee_joint: 0.3
+      right_ankle_pitch_joint: -0.2
+      right_ankle_roll_joint: 0.0
+      waist_yaw_joint: 0.0
+      waist_roll_joint: 0.0
+      waist_pitch_joint: 0.0
+      left_shoulder_pitch_joint: 0.2
+      left_shoulder_roll_joint: 0.2
+      left_shoulder_yaw_joint: 0.0
+      left_elbow_joint: 0.9
+      right_shoulder_pitch_joint: 0.2
+      right_shoulder_roll_joint: -0.2
+      right_shoulder_yaw_joint: 0.0
+      right_elbow_joint: 0.9

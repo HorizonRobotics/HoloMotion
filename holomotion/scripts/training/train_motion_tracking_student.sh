@@ -17,7 +17,7 @@
 source train.env
 export CUDA_VISIBLE_DEVICES="0,1"
 
-config_name="train_ZJ-Humanoid-hi2_21dof_student"
+config_name="train_unitree_g1_23dof_student"
 motion_file="path/to/lmdb_path"
 num_envs=1024
 

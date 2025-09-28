@@ -8,7 +8,7 @@ obs:
 
   obs_dict:
     actor_obs:
-      - priocep_with_fut_ref_v7_student
+      - priocep_with_fut_ref_v9_student
     teacher_obs:
       - priocep_with_fut_ref_v7_moe
     critic_obs: ${obs.obs_dict.teacher_obs}
@@ -19,7 +19,7 @@ obs:
       feat_dim: ${eval:'${robot.dof_obs_size}*3 + 6'}
     - obs_name: fut_ref_motion_seq
       seq_len: ${eval:'${obs.n_fut_frames}'}
-      feat_dim: ${eval:'2 + 3+ 3 + (${robot.num_bodies} + ${robot.num_extend_bodies})*(3+6+3+3) + ${robot.dof_obs_size}*2'}
+      feat_dim: ${eval:'2 + 3+ 3 + (${robot.num_bodies} + ${robot.num_extend_bodies})*(3+6) + ${robot.dof_obs_size}*2'}
     - obs_name: fut_ref_valid_mask
       seq_len: ${eval:'${obs.n_fut_frames}'}
       feat_dim: 1
@@ -71,7 +71,7 @@ obs:
     rel_fut_ref_motion_state_flat: 1.0
     mogen_dof_pos: 1.0
     priocep_with_fut_ref_v7_moe: 1.0
-    priocep_with_fut_ref_v7_student: 1.0
+    priocep_with_fut_ref_v9_student: 1.0
 
   noise_scales:
     base_rpy: 0.0
@@ -106,7 +106,7 @@ obs:
     rel_fut_ref_motion_state_flat: 0.0
     mogen_dof_pos: 0.0
     priocep_with_fut_ref_v7_moe: 0.0
-    priocep_with_fut_ref_v7_student: 0.0
+    priocep_with_fut_ref_v9_student: 0.0
 
   add_noise_currculum: False
   noise_initial_value: 0.0
@@ -147,5 +147,5 @@ obs:
     - root_rel_bodylink_rot_tannorm_flat: ${eval:'6 * (${robot.num_bodies} + ${robot.num_extend_bodies})'}
     - rel_fut_ref_motion_state_flat: ${eval:'${obs.n_fut_frames} * (9 + (${robot.num_bodies} + ${robot.num_extend_bodies})*(3+6+3+3) + ${robot.dof_obs_size}*2)'}
     - priocep_with_fut_ref_v7_moe: ${eval:'3 + 3 + 3 + ${robot.dof_obs_size}*3 + (${robot.num_bodies} + ${robot.num_extend_bodies})*(3+6+3+3) + 3 + len(${robot.randomize_link_body_names}) + 2 * ${robot.dof_obs_size} + 1 + 1 + 1 + ${robot.dof_obs_size} + ${obs.n_fut_frames} * (2 + 3 + 3 + (${robot.num_bodies} + ${robot.num_extend_bodies})*(3+6+3+3) + ${robot.dof_obs_size}*2)'}
-    - priocep_with_fut_ref_v7_student: ${eval:'${obs.serialization_schema[0].feat_dim} * ${obs.serialization_schema[0].seq_len} + ${obs.serialization_schema[1].feat_dim} * ${obs.serialization_schema[1].seq_len} + ${obs.serialization_schema[2].feat_dim} * ${obs.serialization_schema[2].seq_len}'}
+    - priocep_with_fut_ref_v9_student: ${eval:'${obs.serialization_schema[0].feat_dim} * ${obs.serialization_schema[0].seq_len} + ${obs.serialization_schema[1].feat_dim} * ${obs.serialization_schema[1].seq_len} + ${obs.serialization_schema[2].feat_dim} * ${obs.serialization_schema[2].seq_len}'}
   post_compute_config: {} # Will store values after preprocessing, don't put anything here
