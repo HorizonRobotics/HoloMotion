@@ -1,6 +1,8 @@
 defaults:
   - retargeting_base
 
+show_markers: False
+
 robot:
   humanoid_type: ZJ-Humanoid/hi2/21dof
 

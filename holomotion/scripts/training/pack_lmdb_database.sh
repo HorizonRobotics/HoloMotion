@@ -21,8 +21,8 @@ export CUDA_VISIBLE_DEVICES=""
 retargeted_pkl_path="assets/test_data/motion_retargeting/retargeted_datasets/phc_retargeted"
 dump_dir="data/lmdb_datasets/your_lmdb_path"
 
-
 robot_config="ZJ-Humanoid/hi2/21dof_training"
+# robot_config="unitree/G1/23dof/23dof_training"
 
 ${Train_CONDA_PREFIX}/bin/python \
     holomotion/src/training/pack_lmdb.py \

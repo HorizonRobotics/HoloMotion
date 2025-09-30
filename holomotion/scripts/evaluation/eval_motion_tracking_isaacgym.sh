@@ -2,8 +2,8 @@
 source train.env
 export CUDA_VISIBLE_DEVICES="0"
 
-eval_config="eval_isaacgym"  # use this for ideal eval
-# eval_config="eval_isaacgym_with_dr"  # use this for domain randomization eval
+# eval_config="eval_isaacgym"  # use this for ideal eval
+# # eval_config="eval_isaacgym_with_dr"  # use this for domain randomization eval
 
 checkpoint_path="your_ckpt_path.pt
 lmdb_path="your_lmdb_path"

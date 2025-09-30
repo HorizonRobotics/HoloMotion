@@ -72,7 +72,7 @@
           rgba="0.698039215686274 0.698039215686274 0.698039215686274 1" />
       </material>
     </visual>
-     <collision>
+     <!-- <collision>
       <origin
         xyz="0 0 0"
         rpy="0 0 0" />
@@ -80,7 +80,7 @@
         <mesh
           filename="../meshes/SCAPULA_L.STL" />
       </geometry>
-    </collision>
+    </collision> -->
   </link>
   <joint name="left_shoulder_pitch_joint" type="revolute">
     <origin
@@ -121,7 +121,7 @@
           rgba="0.898039215686275 0.917647058823529 0.929411764705882 1" />
       </material>
     </visual>
-     <collision>
+     <!-- <collision>
       <origin
         xyz="0 0 0"
         rpy="0 0 0" />
@@ -129,7 +129,7 @@
         <mesh
           filename="../meshes/SHOULDER_L.STL" />
       </geometry>
-    </collision>
+    </collision> -->
   </link>
   <joint name="left_shoulder_roll_joint" type="revolute">
     <origin
@@ -418,7 +418,7 @@
           rgba="0.698039215686274 0.698039215686274 0.698039215686274 1" />
       </material>
     </visual>
-     <collision>
+     <!-- <collision>
       <origin
         xyz="0 0 0"
         rpy="0 0 0" />
@@ -426,7 +426,7 @@
         <mesh
           filename="../meshes/SCAPULA_R.STL" />
       </geometry>
-    </collision>
+    </collision> -->
   </link>
   <joint name="right_shoulder_pitch_joint" type="revolute">
     <origin
@@ -467,7 +467,7 @@
           rgba="0.698039215686274 0.698039215686274 0.698039215686274 1" />
       </material>
     </visual>
-     <collision>
+     <!-- <collision>
       <origin
         xyz="0 0 0"
         rpy="0 0 0" />
@@ -475,7 +475,7 @@
         <mesh
           filename="../meshes/SHOULDER_R.STL" />
       </geometry>
-    </collision>
+    </collision> -->
   </link>
   <joint name="right_shoulder_roll_joint" type="revolute">
     <origin

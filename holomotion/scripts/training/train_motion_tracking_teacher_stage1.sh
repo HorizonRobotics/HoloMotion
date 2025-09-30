@@ -16,10 +16,10 @@
 
 
 source train.env
-export CUDA_VISIBLE_DEVICES="0,1"
+export CUDA_VISIBLE_DEVICES="0"
 
 config_name="train_ZJ-Humanoid-hi2_21dof_teacher_stage1"
-motion_file="path/to/lmdb_path"
+motion_file="path_to_lmdb"
 num_envs=2048
 
 

@@ -4895,6 +4895,18 @@ class MotionTrackingEnvironment(BaseEnvironment):
         return r_headhand_pos
 
     @torch.compile
+    def _reward_l2_rel_tracking_foothand_pos(self):
+        foot_hand_pos_diff = self.dif_local_body_pos_t[
+            :, self.foot_hand_body_indices, :
+        ]
+        error = (foot_hand_pos_diff.square()).mean(dim=-1).mean(dim=-1)
+        sigma = self.config.rewards.reward_tracking_sigma.get(
+            "l2_rel_tracking_foothand_pos", 0.01
+        )
+        r_foothand_pos = torch.exp(-error / sigma)
+        return r_foothand_pos
+
+    @torch.compile
     def _reward_l1_rel_tracking_headhand_pos(self):
         head_hand_pos_diff = self.dif_local_body_pos_t[
             :, self.head_hand_body_indices, :
@@ -5549,6 +5561,12 @@ class MotionTrackingEnvironment(BaseEnvironment):
         )
         r_keybody_pos = torch.exp(-error / sigma)
         return r_keybody_pos
+    
+    @torch.compile
+    def _reward_penalty_undesired_contacts(self, threshold=1.0):
+        net_contact_forces = self.simulator.contact_forces
+        is_contact =  torch.norm(net_contact_forces[:, self.penalised_contact_indices, :3], dim=-1) > threshold
+        return torch.sum(is_contact, dim=1)
 
 
 @torch.compile

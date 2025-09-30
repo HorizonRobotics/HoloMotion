@@ -6,7 +6,8 @@ defaults:
   - _self_
 
 project_name: HoloMotion_Eval
-experiment_name: eval_unitree_g1_21dof_isaacgym
+# experiment_name: eval_unitree_g1_21dof_isaacgym
+experiment_name: eval_ZJHumanoid_hi2_21dof_isaacgym
 experiment_save_dir: ${experiment_dir}
 
 # Evaluation specific settings
@@ -90,6 +91,8 @@ robot:
     action_scale: 0.25
     action_clip_value: 100.0
     clip_torques: false
+  asset:
+    self_collisions: 1 # 1 to disable, 0 to enable self collisions
 
 algo:
   algo:

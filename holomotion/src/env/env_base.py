@@ -2144,6 +2144,12 @@ class BaseEnvironment:
                 for name in self.config.robot.head_hand_bodies
             ]
 
+        if self.config.robot.get("foot_hand_bodies", []):
+            self.foot_hand_body_indices = [
+                self.simulator.find_rigid_body_indice(name)
+                for name in self.config.robot.foot_hand_bodies
+            ]
+
         if self.config.robot.get("reset_bodies", []):
             self.reset_body_indices = [
                 self.simulator.find_rigid_body_indice(name)

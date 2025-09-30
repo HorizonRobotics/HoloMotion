@@ -65,7 +65,7 @@ def fix_trans_height(pose_aa, trans, humanoid_fk, fix_height_mode):
     with torch.no_grad():
         mesh_obj = humanoid_fk.mesh_fk(pose_aa[None, :1], trans[None, :1])
         height_diff = np.asarray(mesh_obj.vertices)[..., 2].min()
-        trans[..., 2] -= height_diff
+        # trans[..., 2] -= height_diff
 
         return trans, height_diff
 

@@ -1,9 +1,9 @@
 # @package _global_
 
 rewards:
-  set_reward: Maiyue
-  set_reward_date: 20250519
-  only_positive_rewards: False
+  set_reward: Bo
+  set_reward_date: 20250928
+  only_positive_rewards: false
   reward_scales:
     l2_tracking_root_rpy: 2.0
     l2_rel_tracking_root_lin_vel: 2.0
@@ -11,26 +11,22 @@ rewards:
     l2_rel_tracking_keybody_pos: 2.0
     l2_tracking_joint_position: 2.0
     l2_feet_vel: 2.0
-    # l1_root_rel_tracking_headhand_pos: 2.0
-
     termination: -200.0
     falldown: -200.0
-
     penalty_action_rate: -0.5
     penalty_action_smooth: -0.5
-    penalty_power: -1.0e-3
+    penalty_power: -0.001
     penalty_torques: -1.0e-06
     penalty_slippage: -1.0
+    limits_dof_pos: -2.0
+    limits_dof_vel: -1.0
+    limits_torque: -1.0
 
-    limits_dof_pos: -10.0
-    limits_dof_vel: -5.0
-    limits_torque: -5.0
-
-  l2_rel_tracking_keybody_pos_upper_weight: 0.5
+  l2_rel_tracking_keybody_pos_upper_weight: 1.5
   l2_rel_tracking_keybody_pos_lower_weight: 0.5
-  l2_tracking_joint_pos_upper_weight: 0.5
+  l2_tracking_joint_pos_upper_weight: 1.5
   l2_tracking_joint_pos_lower_weight: 0.5
-  l2_tracking_joint_vel_upper_weight: 0.5
+  l2_tracking_joint_vel_upper_weight: 1.5
   l2_tracking_joint_vel_lower_weight: 0.5
 
   reward_tracking_sigma:
