@@ -75,23 +75,48 @@ Download and extract the datasets into the `data/` folder as follows:
 ### 2. Convert Optional Datasets to AMASS Format (optional)
 
 Skip this step if you only use amass dataset.
-Run the provided script to convert all available datasets to AMASS `.npz` files:
 
-```bash
-bash holomotion/scripts/data_curation/convert_to_amass.sh
-```
+Step:
 
-This script reads from `data/{dataset}/` and writes to `data/amass_compatible_datasets/{dataset}/`.
+1. Initialize Submodules:
+    Some datasets require external repositories or models for proper conversion. These are included as **submodules** under:
+    ```
+    thirdparties/
+    ```
+    Initialize them with:
+    ```bash
+    git submodule update --init --recursive
+    ```
+    If you need to modify or update these submodules, refer to their individual `README` files.
 
----
 
-Some datasets require external repositories or models to convert properly. These are already included as submodules in `thirdparties\`. To initialize them, run:
+2. Download SMPL Model:
+    - Download `SMPL_NEUTRAL.npz` from the [SMPL official website](https://smpl.is.tue.mpg.de/download.php).
+    - Place the file into:
+    ```
+    ./assets/smpl/
+    ```
 
-```bash
-git submodule update --init --recursive
-```
+3. Modify `thirdparties/joints2smpl/src/customloss.py`:
+    Before running the pipeline, make sure to modify the `body_fitting_loss_3d` function in `thirdparties/joints2smpl/src/customloss.py` to include the following change:
+    ```python
+    joint3d_loss = (joint_loss_weight ** 2) * joint3d_loss_part.sum(dim=-1)
+    ```
 
-If you need to modify or update them, refer to their individual README files.
+4. Modify `thirdparties/joints2smpl/src/smplify.py`:
+    Next, ensure the following modification in the `__call__` function of `SMPLify3D` inside `thirdparties/joints2smpl/src/smplify.py`:
+    ```python
+    init_cam_t = guess_init_3d(model_joints, j3d, self.joints_category).unsqueeze(1).detach()
+    ```
+
+5. Start Conversion:
+    Run the provided script to convert all available datasets to AMASS `.npz` files:
+
+    ```bash
+    bash holomotion/scripts/data_curation/convert_to_amass.sh
+    ```
+
+    This script reads from `data/{dataset}/` and writes to `data/amass_compatible_datasets/{dataset}/`.
 
 ---
 

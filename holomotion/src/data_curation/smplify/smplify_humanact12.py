@@ -27,7 +27,7 @@ from tqdm import tqdm
 from thirdparties.joints2smpl.src import config
 from thirdparties.joints2smpl.src.smplify import SMPLify3D
 
-SMPL_MODEL_DIR = "./data/smpl_model"
+SMPL_MODEL_DIR = "./assets/smpl/"
 
 device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
 # device = torch.device("cpu")
@@ -63,7 +63,7 @@ def joints2smpl(file_name, data_dir, save_dir):
 
     smplmodel = smplx.create(
         SMPL_MODEL_DIR,
-        model_type="smplx",
+        model_type="smpl",
         gender="neutral",
         ext="npz",
         batch_size=batch_size,
