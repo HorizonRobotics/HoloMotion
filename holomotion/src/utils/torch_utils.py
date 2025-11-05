@@ -503,3 +503,17 @@ def quat_error_magnitude(
     """
     axis_angle_error = quat_box_minus(q1, q2, w_last=w_last)
     return torch.norm(axis_angle_error, dim=-1)
+
+
+@torch.compile
+def subtract_frame_transforms(
+    t01: torch.Tensor,
+    q01: torch.Tensor,
+    t02: torch.Tensor,
+    q02: torch.Tensor,
+):
+    # always assume w_last=True !!
+    q10 = quat_conjugate(q01)
+    q12 = quat_mul(q10, q02, w_last=True)
+    t12 = quat_apply(q10, t02 - t01)
+    return t12, q12

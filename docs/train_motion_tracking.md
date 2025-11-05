@@ -6,7 +6,7 @@ After completing motion retargeting, you can train a motion tracking model with 
 
 ```mermaid
 flowchart LR
-A[Motion Retargeting] --> B[LMDB Database]
+A[Motion Retargeting] --> B[HDF5 Database]
 B --> C[Training Config]
 C --> D[Training Entry]
 D --> E[Distributed PPO Training]
@@ -17,187 +17,60 @@ class A dashed
 class B,C,D,E normal
 ```
 
-### 1. Pack the LMDB Training Dataset
+### 1. Train the Motion Tracking Model
 
-For efficient distributed training, HoloMotion uses the [LMDB](https://www.symas.com/mdb) database, which provides high-performance memory-mapped data loading.
+The training entry point is `holomotion/src/training/train.py`, which uses the training config to start distributed training across multiple GPUs.
 
-Assuming your retargeted motion files are saved in `data/retargeted_datasets/g1_21dof_test`, modify the database packing script at `holomotion/scripts/training/pack_lmdb_database.sh`:
+#### 2.1 Prepare the Training Config
 
-```shell
-source train.env
-export CUDA_VISIBLE_DEVICES=""
+Use the demo config at `holomotion/config/training/motion_tracking/train_g1_29dof_motion_tracking.yaml` as a template. Key configuration groups to modify (configs are located in the `holomotion/config/` directory):
 
-retargeted_pkl_path="data/retargeted_datasets/g1_21dof_test"
-dump_dir="data/lmdb_datasets/lmdb_g1_21dof_test"
-robot_config="unitree/G1/21dof/21dof_training"
-
-${Train_CONDA_PREFIX}/bin/python \
-    holomotion/src/training/pack_lmdb.py \
-    robot=$robot_config \
-    retargeted_pkl_path=$retargeted_pkl_path \
-    lmdb_save_dir=$dump_dir \
-    num_jobs=4
-```
-
-Ensure the input/output paths are correct and the robot config matches your requirements. Then run:
-
-```shell
-bash holomotion/scripts/training/pack_lmdb_database.sh
-```
-
-The LMDB database will be created at the specified `dump_dir`.
-
-### 2. Train the Motion Tracking Model
-
-```mermaid
-flowchart LR
-
-A[Teacher Stage 1] --> B[Teacher Stage 2]
-B --> C[Student Distillation]
-C --> D[ONNX Model]
-
-classDef dashed stroke-dasharray: 5 5, rx:10, ry:10, fill:#c9d9f5
-classDef normal fill:#c9d9f5, rx:10, ry:10
-class D dashed
-class A,B,C normal
-```
-
-The training entry point is `holomotion/src/training/train_motion_tracking.py`, which uses the training config to start distributed training across multiple GPUs. It is recommended to train with a three-stage procedure:
-1. Teacher training stage 1: train the teacher policy without domain randomization;
-2. Teacher training stage 2: load the stage1 checkpoint and train with domain randomization;
-3. Student training stage 3: load the teacher stage2 checkpoint and conduct distillation with domain randomization.
-
-#### 2.1 Explaining the Training Config
-
-Use the demo config at `holomotion/config/training/motion_tracking/exp_unitree_g1_21dof_teacher.yaml` as a template. Key configuration groups to modify (configs are located in the `holomotion/config/` directory):
-
-- **`/algo`**: Algorithm settings (PPO/Dagger/AMP) and network configurations
+- **`/algo`**: Algorithm settings (PPO) and network configurations
 - **`/robot`**: Robot-specific config including DOF, body links, and control parameters
 - **`/env`**: Environment settings including motion sampling and curriculum learning
 - **`/env/observations`**: Observation dimensions, noise, and scaling for the policy
 - **`/env/rewards`**: Reward function definitions
 - **`/env/domain_randomization`**: Domain randomization settings (start with `NO_domain_rand`)
-- **`/env/terrain`**: Terrain configuration (start with `plane` for flat terrain)
+- **`/env/terrain`**: Terrain configuration
 
 ```yaml
 # @package _global_
 
 defaults:
   - /training: train_base
-  - /simulator: isaacgym
   - /algo: ppo
-  - /robot: unitree/G1/21dof/21dof_training
+  - /robot: unitree/G1/29dof/29dof_training_isaaclab
   - /env: motion_tracking
-  - /env/observations: motion_tracking/obs_ppo_teacher
-  - /env/rewards: motion_tracking/relative_tracking
-  - /env/domain_randomization: NO_domain_rand
-  - /env/terrain: plane
+  - /env/terminations: termination_motion_tracking
+  - /env/observations: motion_tracking/obs_motion_tracking
+  - /env/rewards: motion_tracking/rew_motion_tracking
+  - /env/domain_randomization: domain_rand_small
+  - /env/terrain: isaaclab_plane
 
 project_name: HoloMotion
 ```
 
-#### 2.2 Prepare the Training Scripts for Teacher (Stage 1 and 2)
+#### 2.2 Train your Policy
 
-Review and modify the training script at `holomotion/scripts/training/train_motion_tracking_teacher.sh`. Ensure `config_name` and `motion_file` match your training config and LMDB database directory.
-
-Start training your teacher policy from stage1, where domain randomization is turned off.
-
-```shell
-source train.env
-export CUDA_VISIBLE_DEVICES="0"
-
-config_name="train_your_robot_teacher_stage1"
-motion_file="data/lmdb_datasets/your_lmdb_path"
-num_envs=2048
-
-${Train_CONDA_PREFIX}/bin/accelerate launch \
-    --multi_gpu \
-    --mixed_precision=bf16 \
-    holomotion/src/training/train_motion_tracking.py \
-    --config-name=training/motion_tracking/${config_name} \
-    use_accelerate=True \
-    num_envs=${num_envs} \
-    headless=True \
-    experiment_name=${config_name} \
-    motion_lmdb_path=${motion_file}
-```
-
-```shell
-bash holomotion/scripts/training/train_motion_tracking_teacher_stage1.sh
-```
-
-After finishing your stage1 teacher training, you should start teacher stage2 training loading this checkpoint:
-```shell
-source train.env
-export CUDA_VISIBLE_DEVICES="0"
-
-config_name="train_your_robot_teacher_stage2"
-motion_file="data/lmdb_datasets/your_lmdb_path"
-num_envs=2048
-
-checkpoint="your_stage1_teacher_ckpt_path.pt"
-
-${Train_CONDA_PREFIX}/bin/accelerate launch \
-    --multi_gpu \
-    --mixed_precision=bf16 \
-    holomotion/src/training/train_motion_tracking.py \
-    --config-name=training/motion_tracking/${config_name} \
-    use_accelerate=True \
-    num_envs=${num_envs} \
-    headless=True \
-    experiment_name=${config_name} \
-    motion_lmdb_path=${motion_file}
-```
+Review and modify the training script at `holomotion/scripts/training/train_motion_tracking.sh`. Ensure `config_name` match your training config and LMDB database directory.
 
 Start training by running:
 
 ```shell
-bash holomotion/scripts/training/train_motion_tracking_teacher_stage2.sh
+bash holomotion/scripts/training/train_motion_tracking.sh
+
+# or
+
+bash holomotion/scripts/training/train_velocity_tracking.sh
 ```
 
-#### 2.3 Prepare the Training Script for Student
-
-The above step lets you train a teacher policy with access to priveliged information in the simulator. But to obtain a deployable policy in the realworld, you need to perform policy distillation through the DAgger process, which is essentially online imiation learining with a querable expert (our teacher policy).
-
-To start the studnet training, you should specify the studnet training config name as well as the pretrained teacher policy ckpt path:
-
-```shell
-source train.env
-export CUDA_VISIBLE_DEVICES="0"
-
-config_name="train_your_robot_student"
-teacher_ckpt_path="your_teacher_stage2_ckpt_path.pt"
-motion_file="data/lmdb_datasets/your_lmdb_path"
-num_envs=2048
-
-${Train_CONDA_PREFIX}/bin/accelerate launch \
-    --multi_gpu \
-    --mixed_precision=bf16 \
-    --main_process_port=29501 \
-    holomotion/src/training/train_motion_tracking.py \
-    --config-name=training/motion_tracking/${config_name} \
-    use_accelerate=true \
-    num_envs=${num_envs} \
-    headless=true \
-    experiment_name=${config_name} \
-    motion_lmdb_path=${motion_file} \
-    algo.algo.config.teacher_actor_ckpt_path=${teacher_ckpt_path}
-```
-
-Start training by running:
-
-```shell
-bash holomotion/scripts/training/train_motion_tracking_student.sh
-```
-
+Note that IsaacLab relies on internet connections to pull assets from Nvidia's cloud storage. If you encountered stuck at scene creation, it is very likely that you can't access the cloud-hosted assets. Turn on your proxy and try again can solve the issue.
 
 ### Training Tips
 
 #### How to use less GPU ?
 
 Training requires significant GPU memory. Reduce `num_envs` if your GPU has limited GRAM. This will reduce both the rollout burden and the PPO training consumption, at the risk of significantly less stable policy optimization process.
-
-Another way to reduce GRAM usage, is to explicity set the `num_mini_batches` to a higher number, which will result in smaller batches to be used by the PPO policy optimization stage. To add this option to your training entry, just set `algo.algo.config.num_mini_batches=X` in the bash script.
 
 #### How to start multiple training session ?
 
@@ -216,6 +89,6 @@ You may want to have more or less frequent logging and model dumping intervals. 
 
 By default, the model checkpoint will be dumped into a folder named `logs/HoloMotion`. You can change this path by explictly setting `project_name=X`, which results in dumping the checkpoints into the `logs/X` directory.
 
-#### How to resume training or load pretrained model from a checkpoint ?
+#### How to resume training from a checkpoint ?
 
 To resume training from a pretrained checkpoint, you can find the checkpoint in the log directory, and then add the option like this: `checkpoint=logs/HoloMotion/20250728_214414-train_unitree_g1_21dof_teacher/model_X.pt`

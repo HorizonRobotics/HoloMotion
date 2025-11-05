@@ -1,0 +1,13 @@
+# @package _global_
+
+# Simple infinite plane terrain for flat surface training
+# Robots spawn on a grid with spacing controlled by scene.env_spacing
+terrain:
+  terrain_type: plane
+  prim_path: /World/ground
+  static_friction: 1.0
+  dynamic_friction: 1.0
+  restitution: 0.0
+  friction_combine_mode: multiply
+  restitution_combine_mode: multiply
+  debug_vis: false

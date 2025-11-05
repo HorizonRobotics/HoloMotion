@@ -117,7 +117,7 @@ if [ ! -f "$HOME/unitree_ros2/setup.sh" ]; then
 fi
 
 echo "🔧 Compiling ROS2 workspace..."
-cd "$PROJECT_ROOT/holomotion/deployment/unitree_g1_ros2"
+cd "$PROJECT_ROOT/holomotion/deployment/unitree_g1_ros2_29dof"
 
 # Clean previous build
 rm -rf build install log
@@ -148,7 +148,7 @@ echo "1. Activate the conda environment:"
 echo "   conda activate $ENV_NAME"
 echo ""
 echo "2. Launch the system:"
-echo "   cd $PROJECT_ROOT/holomotion/deployment/unitree_g1_ros2"
+echo "   cd $PROJECT_ROOT/holomotion/deployment/unitree_g1_ros2_29dof"
 echo "   bash launch_holomotion.sh"
 echo ""
 echo "✅ Environment '$ENV_NAME' setup complete!"

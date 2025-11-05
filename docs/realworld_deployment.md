@@ -2,26 +2,15 @@
 
 This guide describes how to set up the deployment environment and run the trained policy on a physical Unitree G1 robot.
 
-![G1 Robot Demo](../assets/media/g1_demo.gif)
 
-## Robot Configuration for 21 DOF
+## Robot Configuration for 29 DOF
 
-The 21 DOF configuration includes:
+The 29 DOF configuration includes:
 - 12 leg joints (6 per leg)
-- 1 waist joint (yaw) 
-- 8 arm joints (4 per arm)
-
-### Model Configuration for 21 DOF
-
-**Important**: Pre-trained model files are not included in this repository. For 21 DOF deployment:
-
-- Place the ONNX model file in `unitree_g1_ros2/src/models/`
-- Update the `policy_path` parameter in `unitree_g1_ros2/src/config/g1_21dof_holomotion.yaml`
-
-> **Note**: The model file should be compatible with the 21 DOF configuration and trained using the HoloMotion framework.
+- 3 waist joints (yaw, roll, pitch) 
+- 14 arm joints (7 per arm) 
 
 ---
-
 ### Quick Environment Setup
 
 #### Prerequisites
@@ -32,7 +21,6 @@ Ensure the following are installed before proceeding:
 * ROS 2 Humble installed at `/opt/ros/humble`
 * MCAP for efficient ROS 2 data recording
 * Unitree ROS 2 SDK installed at `~/unitree_ros2/`
-
 
 
 
@@ -49,7 +37,7 @@ This script will:
 * Create a new conda environment (with CUDA support if available)
 * Install Python packages from `requirements/requirements_deploy.txt`
 * Install Unitree SDK Python bindings
-* Build the ROS 2 workspace under `unitree_g1_ros2/`
+* Build the ROS 2 workspace under `unitree_g1_ros2_29dof/`
 
 ---
 
@@ -134,7 +122,7 @@ nmcli con down "$CON_NAME" && nmcli con up "$CON_NAME"
 2. **Update the launch configuration**:
    ```bash
    # Edit the launch file
-   nano unitree_g1_ros2/src/launch/holomotion.launch.py
+   nano unitree_g1_ros2_29dof/src/launch/holomotion_29dof_launch.py
    ```
    Find and update the `network_interface` parameter with your actual interface name.
 
@@ -143,18 +131,18 @@ nmcli con down "$CON_NAME" && nmcli con up "$CON_NAME"
 3. **Verify conda environment path** in the launch script:
    ```bash
    # Edit the launch script
-   nano unitree_g1_ros2/launch_holomotion.sh
+   nano unitree_g1_ros2_29dof/launch_holomotion_29dof.sh
    ```
    Make sure the `CONDA_PREFIX` matches your conda environment path (default: `holomotion_deploy`).
 
-4. **Verify Python Environment Configuration**: Check that the `policy_node.py` uses the correct Python interpreter path:
+4. **Verify Python Environment Configuration**: Check that the `policy_node_29dof.py` uses the correct Python interpreter path:
 
    ```bash
    # Navigate to the policy node directory
-   cd unitree_g1_ros2/src/humanoid_policy/
+   cd unitree_g1_ros2_29dof/src/humanoid_policy/
 
    # Check the current shebang line
-   head -1 policy_node.py
+   head -1 policy_node_29dof.py
    ```
 
    The first line should point to your `holomotion_deploy` environment:
@@ -170,208 +158,85 @@ nmcli con down "$CON_NAME" && nmcli con up "$CON_NAME"
 
 > **Do this every time** you want to run the robot.
 
-#### Robot Initialization Sequence:
+#### Robot Initialization Sequence for 29 DOF:
 
-1. **Power on the robot** - Start the robot in the squatting position
+1. **Power on the robot** - Start the robot in the **hanging position**
 2. **Wait for zero torque mode** - The robot will automatically enter zero torque mode (joints feel loose)
 3. **Connect your computer** - Use the same Ethernet cable to connect to the robot's LAN port
-4. **Enter debugging mode** - On the remote controller, press `L2 + R2` simultaneously
+4. **Enter debugging mode (Optional, recommended)** - On the remote controller, press `L2 + R2` simultaneously. Note: the new deployment automatically enters this mode on startup, so manual entry is usually not required.
 
-> **Ready indicator**: When the robot is in debugging mode, the joints should feel free to move (damped state).
 
 ---
 
+
 ### Step 4: Launch the Policy Controller
 
-> **Do this every time** to start controlling the robot.
+#### Step 4 Preflight Checklist
 
-#### Launch the Control System:
+Before running, ensure the following are ready. 
+
+- Model folders configured in `g1_29dof_holomotion.yaml` exist
+  - `motion_tracking_model_folder`: under `src/models/`
+  - `velocity_tracking_model_folder`: under `src/models/`
+- Motion data directory exists and contains .npz files (retargeted results)
+  - `dance_motions_dir`: under `src/motion_data/`
+- Config file path used by launch is correct
+
+
+#### One-click start
 
 ```bash
-cd holomotion/deployment/unitree_g1_ros2
-bash launch_holomotion.sh
+cd holomotion/deployment/unitree_g1_ros2_29dof
+bash launch_holomotion_29dof.sh
 ```
 
 > **Success indicator**: On startup, the robot joints should remain in zero torque state and feel free to move.
 
-#### Move to Default Pose
-
-While the robot is in zero torque mode, press the **Start** button on the remote controller.
-The robot will smoothly move to its **default joint position**.
-This step ensures that the robot starts from a consistent and safe posture before executing any motions.
-
-#### Motion Control Mode
-
-After moving to the default pose, press **A** on the controller to enter motion control mode.
-In this mode, the trained policy will take over and generate actions for the robot.
-You can then use the controller to trigger different predefined behaviors.
-
-The following mapping summarizes the available actions:
-
-
-| Button | Action               |
-| ------ | -------------------- |
-| A      | Enable policy control |
-| B      | Stand up             |
-| X      | Squat                |
-| Up     | Jog in place         |
-| Down   | Boxing               |
-| Left   | Bow                  |
-| Right  | Stretch              |
-| Select | Emergency Stop |
 
 
 
-The robot only responds to button presses in the correct sequence shown in the flowchart. 
-Ignoring the order may result in no response, which is expected.
+#### Motion Control Modes
 
-Here is the robot control flowchart:
+The 29 DOF robot operates in two main modes:
+
+| Mode | How to Enter | Controls | Switch |
+|------|--------------|----------|--------|
+| Walking | 1) Press Start to stand up, then press A<br/>2) From dancing: press Y | Left stick: move (vx, vy)<br/>Right stick: rotate (yaw)<br/>D-Pad: select dance (Left=first, Right=last, Up=prev, Down=next) | B: enter dancing |
+| Dancing | Press B | Executes selected dance automatically | Y: back to walking |
+
+#### Control Flow
+
+Here is the robot control flowchart for 29 DOF:
 
 ```mermaid
-flowchart LR
+flowchart TD
     subgraph prepPhase ["Setup Phase"]
         direction TB
-        A[Set Robot to Squat Pose] --> B[Power On & Zero torque mode]
+        A[Set Robot<br/>to Hanging Position] --> B[Power On and<br/>Zero Torque Mode]
         B --> C[L2+R2: Enter Debug Mode]
+        C --> D[Launch Program]
     end
     
-    prepPhase --> D[Start Program]
-    D --> E[Start: Default Position]
-    E --> F[A: Enable Policy Control]
-    F --> G[B: Stand Up]
-    G --> H[Movement Controls]
-    H --> I[X: Squat]
-    I --> G
-    
-    %% Movement options
-    H --> J[Up: Jog in Place]
-    H --> K[Down: Boxing]
-    H --> L[Left: Bow]
-    H --> M[Right: Stretch]
-    
-    %% Emergency stop
-    D --> N[Select: Emergency Stop]
-    F --> N
-    G --> N
-    H --> N
-    N --> O[Close Program]
-    
-    classDef startEnd fill:#e1f5fe,stroke:#01579b,stroke-width:2px
-    classDef control fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
-    classDef movement fill:#e8f5e8,stroke:#1b5e20,stroke-width:2px
-    classDef emergency fill:#ffebee,stroke:#b71c1c,stroke-width:2px,stroke-dasharray: 5 5
-    classDef preparationFrame fill:#f9f9f9,stroke:#666,stroke-width:2px,stroke-dasharray: 5 5
-    
-    class A,O startEnd
-    class B,C,D,E,F,G control
-    class H,I,J,K,L,M movement
-    class N emergency
-    class prepPhase preparationFrame
-    class prepPhase2 preparationFrame
-```
-
----
-
-## Robot Configuration for 23 DOF
-
-The 23DOF configuration includes:
-- 12 leg joints (6 per leg)
-- 3 waist joints (yaw, roll, pitch) - **unlocked and controlled**
-- 8 arm joints (4 per arm)
-
-### Model Configuration for 23 DOF
-
-**Important**: Pre-trained model files are not included in this repository. For 23 DOF deployment with dual-policy support:
-
-- Place the squat-stand ONNX model in `unitree_g1_ros2_23dof/src/models/` and update `new_policy_path`
-- Place the dance motion ONNX model in `unitree_g1_ros2_23dof/src/models/` and update `policy_path`
-- Configure both model paths in `unitree_g1_ros2_23dof/src/config/holomotion_23dof.yaml`
-
-> **Note**: The model files should be compatible with the 23 DOF configuration and trained using the HoloMotion framework.
-
-To upgrade your G1 robot from the standard 21DOF to 23DOF configuration, for detailed instructions, see the [Unitree G1 Developer FAQ](https://support.unitree.com/home/en/G1_developer/FAQ) section on "G1-29 DOF device, after unlocking the waist fixator (APP synchronously closes the waist lock switch), report the joint out-of-limit position error"
-
-
----
-### Deploy on G1 Robot with 23 DOF
-
-Steps 1–3 can follow the 21 DOF setup; update the corresponding files under `holomotion/deployment/unitree_g1_ros2_23dof` accordingly.
-
-### Step 4: Launch the Policy Controller
-
-```bash
-cd holomotion/deployment/unitree_g1_ros2_23dof
-bash launch_holomotion_23dof.sh
-```
-
-> **Success indicator**: On startup, the robot joints should remain in zero torque state and feel free to move.
-
-#### Move to Default Pose
-
-While the robot is in zero torque mode, press the **Start** button on the remote controller.
-The robot will smoothly move to its **default joint position**.
-This step ensures that the robot starts from a consistent and safe posture before executing any motions.
-
-#### Motion Control Mode
-
-After moving to the default pose, press **A** on the controller to enter motion control mode.
-In this mode, the trained policy will take over and generate actions for the robot.
-You can then use the controller to trigger different predefined behaviors.
-
-The following mapping summarizes the available actions:
-
-
-| Button | Action |
-| ------ | ------ |
-| Start  | Move to default position (from zero torque) |
-| A      | Enter squat-stand policy (enable control) |
-| B      | Stand up |
-| Y      | Switch to dance policy |
-| Up     | Previous action |
-| Down   | Next action |
-| Left   | Last action |
-| Right  | First action |
-| R1     | Switch back to squat-stand policy |
-| X      | Squat |
-| Select | Emergency Stop |
-
-
-
-The robot only responds to button presses in the correct sequence shown in the flowchart. 
-Ignoring the order may result in no response, which is expected.
-
-Here is the robot control flowchart:
-
-```mermaid
-flowchart LR
-    subgraph prepPhase ["Setup Phase"]
-        direction TB
-        A[Set Robot to Squat Pose] --> B[Power On & Zero torque mode]
-        B --> C[L2+R2: Enter Debug Mode]
-    end
-
     %% Main flow
-    prepPhase --> D[Start Program]
-    D --> E[Start: Default Position]
-    E --> F[A: Enter Squat-Stand Policy]
-    F --> G[B: Stand Up]
-
-    %% Switch to dance policy
-    G --> H[Y: Switch to Dance Policy]
-    H --> I[Dance Control]
-
-    %% Dance navigation (directional)
-    I --> I1[Up: Previous Action]
-    I --> I2[Down: Next Action]
-    I --> I3[Right: First Action]
-    I --> I4[Left: Last Action]
-
-    %% Return to squat-stand policy
-    I --> J[R1: Switch back to Squat-Stand Policy]
-    J --> K[Squat-Stand Control]
-    K --> L[X: Squat]
-    L --> G
-
+    prepPhase --> E[Start: Stand Up]
+    E --> F[Lower Robot to Ground]
+    F --> G[A: Enter Walking Mode]
+    
+    %% Walking mode controls
+    G --> H[Walking Mode]
+    H --> H1[Left Stick: Move]
+    H --> H2[Right Stick: Rotate]
+    H --> H3[D-Pad: Select Dance]
+    H --> H4[B: Enter Dancing Mode]
+    
+    %% Dancing mode
+    H4 --> I[Dancing Mode]
+    I --> I1[Execute Selected Dance]
+    I --> I2[Y: Back to Walking]
+    
+    %% Mode switching
+    I2 --> H
+    
     %% Emergency stop
     D --> N[Select: Emergency Stop]
     E --> N
@@ -379,22 +244,45 @@ flowchart LR
     G --> N
     H --> N
     I --> N
-    J --> N
-    K --> N
-    L --> N
     N --> O[Close Program]
-
+    
     classDef startEnd fill:#e1f5fe,stroke:#01579b,stroke-width:2px
     classDef control fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
-    classDef movement fill:#e8f5e8,stroke:#1b5e20,stroke-width:2px
+    classDef walking fill:#e8f5e8,stroke:#1b5e20,stroke-width:2px
+    classDef dancing fill:#fff3e0,stroke:#e65100,stroke-width:2px
     classDef emergency fill:#ffebee,stroke:#b71c1c,stroke-width:2px,stroke-dasharray: 5 5
     classDef preparationFrame fill:#f9f9f9,stroke:#666,stroke-width:2px,stroke-dasharray: 5 5
-
+    
     class A,O startEnd
-    class B,C,D,E,F,G,H,I,J,K,L control
-    class I1,I2,I3,I4 movement
+    class B,C,D,E,F,G control
+    class H,H1,H2,H3,H4 walking
+    class I,I1,I2 dancing
     class N emergency
     class prepPhase preparationFrame
+```
+
+#### Configuration Files (used by Step 4)
+
+**System Configuration**
+- File: `holomotion/deployment/unitree_g1_ros2_29dof/src/config/g1_29dof_holomotion.yaml`
+- Key parameters:
+  - `motion_tracking_model_folder`: dance model folder under `models/`
+  - `velocity_tracking_model_folder`: walking model folder under `models/`
+  - `dance_motions_dir`: dance motion data folder under `src/`
+
+
+**Adding New Dance Models**
+1. Create a new folder under `models/` based on the following example model folder structure (e.g., `models/your_model_dir_name/`) 
+2.  Update `motion_tracking_model_folder` in the config file
+3. Ensure the dance motion data files are in the `dance_motions_dir`
+
+Example model folder structure (motion model):
+
+```bash
+holomotion/deployment/unitree_g1_ros2_29dof/src/models/your_model_dir_name
+├── config.yaml
+├── exported
+    └── your_model_name.onnx
 ```
 
 ---

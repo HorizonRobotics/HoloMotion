@@ -1,0 +1,69 @@
+# @package _global_
+
+rewards:
+  root_pos_xy_tracking_exp:
+    weight: 1.0
+    params:
+      std: 0.2
+
+  root_rot_tracking_exp:
+    weight: 1.0
+    params:
+      std: 0.3
+
+  root_lin_vel_tracking_l2_exp:
+    weight: 1.0
+    params:
+      std: 1.0
+
+  root_ang_vel_tracking_l2_exp:
+    weight: 1.0
+    params:
+      std: 3.14
+
+  root_rel_keybodylink_pos_tracking_l2_exp:
+    weight: 1.0
+    params:
+      keybody_names: ${robot.key_bodies}
+      std: 0.10
+
+  root_rel_keybodylink_rot_tracking_l2_exp:
+    weight: 1.0
+    params:
+      keybody_names: ${robot.key_bodies}
+      std: 0.3
+
+  root_rel_keybodylink_lin_vel_tracking_l2_exp:
+    weight: 1.0
+    params:
+      keybody_names: ${robot.key_bodies}
+      std: 1.0
+
+  root_rel_keybodylink_ang_vel_tracking_l2_exp:
+    weight: 1.0
+    params:
+      keybody_names: ${robot.key_bodies}
+      std: 3.14
+
+  action_rate_l2:
+    weight: -0.1
+    params: {}
+
+  joint_pos_limits:
+    weight: -10.0
+    params:
+      asset_cfg:
+        _target_: isaaclab.managers.scene_entity_cfg.SceneEntityCfg
+        name: robot
+        joint_names:
+          - ".*"
+
+  undesired_contacts:
+    weight: -0.1
+    params:
+      threshold: 1.0
+      sensor_cfg:
+        _target_: isaaclab.managers.scene_entity_cfg.SceneEntityCfg
+        name: contact_forces
+        body_names:
+          - ${robot.undesired_contacts_regrex}

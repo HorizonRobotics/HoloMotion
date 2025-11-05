@@ -1,16 +1,14 @@
 source train.env
 
+# export MUJOCO_GL="egl"
 export MUJOCO_GL="osmesa"
 
-motion_pkl_root="assets/test_data/motion_retargeting/retargeted_datasets/phc_retargeted"
+motion_npz_root="data/holomotion_retargeted/AMASS_test"
 
-# "all" for default 
-motion_name="all"
+# "all" for visualizing all motions, or set a specific motion name
+export motion_name="all"
+# export motion_name="your_motion_name"
 
-# robot_config="unitree_g1_23dof_retargeting_config"
-robot_config="ZJ-Humanoid_hi2_retargeting_config"
-
-${Train_CONDA_PREFIX}/bin/python holomotion/src/motion_retargeting/utils/visualize_with_mujoco.py \
-    --config-name=${robot_config} \
-    motion_pkl_root=${motion_pkl_root} \
-    motion_name=${motion_name}
+$Train_CONDA_PREFIX/bin/python holomotion/src/motion_retargeting/utils/visualize_with_mujoco.py \
+    +motion_npz_root=${motion_npz_root} \
+    +motion_name='${oc.env:motion_name}'

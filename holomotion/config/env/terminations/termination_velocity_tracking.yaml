@@ -1,0 +1,13 @@
+# @package _global_
+
+terminations:
+  time_out:
+    time_out: true
+
+  root_height_below_minimum:
+    params:
+      minimum_height: 0.2
+
+  bad_orientation:
+    params:
+      limit_angle: 0.8

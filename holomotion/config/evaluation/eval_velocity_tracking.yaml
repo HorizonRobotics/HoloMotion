@@ -1,0 +1,46 @@
+# @package _global_
+
+defaults:
+  - /robot: unitree/G1/29dof/29dof_training_isaaclab
+  - /env: velocity_tracking
+  - /env/terrain: isaaclab_plane
+  - /env/terminations: NO_termination
+  - /env/domain_randomization: NO_domain_rand
+
+project_name: ???
+experiment_name: ???
+
+num_envs: ???
+headless: ???
+
+motion_h5_path: null
+checkpoint: null
+
+num_processes: ???
+main_process: ???
+process_id: ???
+
+timestamp: ${now:%Y%m%d_%H%M%S}
+base_dir: logs
+experiment_dir: ${base_dir}/${project_name}/${timestamp}-${experiment_name}
+save_dir: ${experiment_dir}/.hydra
+output_dir: ${experiment_dir}/output
+experiment_save_dir: ???
+
+dump_npzs: false
+export_policy: true
+
+env:
+  config:
+    simulation:
+      episode_length_s: 3600
+
+robot:
+  motion:
+    cache_max_num_clips: ${num_envs}
+    max_frame_length: 10000
+    min_frame_length: 0
+    hdf5_root: ${motion_h5_path}
+    val_hdf5_root: ${motion_h5_path}
+    dataloader:
+      num_workers: 1

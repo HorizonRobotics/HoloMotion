@@ -1,0 +1,11 @@
+# @package _global_
+
+defaults:
+  - unitree/G1/29dof/29dof_training_isaaclab
+
+robot:
+  asset:
+    urdf_file: "assets/robots/${robot.humanoid_type}/g1_29dof_rev_1_0_s100.urdf"
+
+
+

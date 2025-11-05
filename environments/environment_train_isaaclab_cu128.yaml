@@ -1,0 +1,11 @@
+name: holomotion_train
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  - mesalib
+  - pip:
+      - -r requirements_torch_cu128.txt
+      - -r requirements_base.txt
+      - -e ../

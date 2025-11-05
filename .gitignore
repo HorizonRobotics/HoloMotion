@@ -3,9 +3,8 @@ logs/
 logs_eval/
 data/
 outputs/
-
-thirdparties/isaacgym/
-thirdparties/smpl_models/
+.archive/
+tmp/
 
 # ignore deployment bag_record, install, log
 deployment/unitree_g1_ros2/bag_record/
@@ -19,6 +18,8 @@ outputs/
 build/
 .DS_Store/
 **.egg-info/
+**.log
+**.LOG
 
 # ignore large files
 *.log
@@ -47,7 +48,10 @@ __pycache__/
 
 .*_cache/
 
+**/usd/
+assets/isaac/
 
+thirdparties/smpl_models/
 
 # allow certain files
 !deployment/unitree_g1_ros2/src/models/*.onnx

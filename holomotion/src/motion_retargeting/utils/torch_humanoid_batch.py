@@ -42,6 +42,8 @@ from omegaconf import DictConfig
 from scipy.spatial.transform import Rotation as sRot
 from tqdm import tqdm
 
+# from loguru import logger
+
 # Configure logging
 logging.basicConfig(
     level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s"
@@ -80,6 +82,7 @@ class HumanoidBatch:
 
         self.mjcf_data = mjcf_data = self.from_mjcf(self.mjcf_file)
         self.body_names = copy.deepcopy(mjcf_data["node_names"])
+        # logger.info(f"Body names from {self.mjcf_file}: {self.body_names}")
         self._parents = mjcf_data["parent_indices"]
         self.body_names_augment = copy.deepcopy(mjcf_data["node_names"])
         self._proper_kinematic_structure = copy.deepcopy(
@@ -549,7 +552,7 @@ class HumanoidBatch:
         mesh_dict = {}
         # mesh_parent_dict = {}  # Unused variable
 
-        for mesh_file_node in tqdm(all_mesh):
+        for mesh_file_node in all_mesh:
             mesh_name = mesh_file_node.attrib["name"]
             mesh_file = mesh_file_node.attrib["file"]
             mesh_full_file = osp.join(mesh_base, mesh_file)
@@ -560,7 +563,7 @@ class HumanoidBatch:
 
         body_to_mesh = defaultdict(set)
         mesh_to_body = {}
-        for geom_node in tqdm(geoms):
+        for geom_node in geoms:
             if "mesh" in geom_node.attrib:
                 parent = find_parent(xml_doc_root, geom_node)
                 body_to_mesh[parent.attrib["name"]].add(

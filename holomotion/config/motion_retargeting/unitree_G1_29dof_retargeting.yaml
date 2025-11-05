@@ -1,0 +1,13 @@
+robot:
+  humanoid_type: unitree/G1/29dof
+
+  asset:
+    smpl_dir: "assets/smpl"
+    assetRoot: "./"
+    assetFileName: "assets/robots/${robot.humanoid_type}/g1_29dof_rev_1_0.xml"
+    training_mjcfName: "assets/robots/${robot.humanoid_type}/g1_29dof_rev_1_0.xml"
+
+video_dir: ${motion_npz_root}/video_rendering
+skip_frames: 3 # when skip frames=1, it means 30hz, when skip frames=2, it means 15hz, etc.
+show_markers: False
+max_workers: 12

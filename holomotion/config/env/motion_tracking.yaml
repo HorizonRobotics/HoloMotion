@@ -1,11 +1,13 @@
 # @package _global_
 
 env:
-  _target_: holomotion.src.env.motion_tracking.MotionTrackingEnvironment
+  _target_: holomotion.src.env.motion_tracking.MotionTrackingEnv
   _recursive_: False
   config:
     experiment_name: ${experiment_name}
     num_envs: ${num_envs}
+    env_spacing: 2.5 # meters
+    replicate_physics: true
     headless: ${headless}
     num_processes: ${num_processes}
     main_process: ${main_process}
@@ -20,87 +22,76 @@ env:
     rewards: ${rewards}
     terrain: ${terrain}
     obs: ${obs}
-    simulator: ${simulator}
-    domain_params: ${domain_rand}
+    terminations: ${terminations}
 
-    env_spacing: 5.0
+    simulation:
+      episode_length_s: 10 # Long episodes for fluid motion-based termination
+      sim_freq: 200
+      control_decimation: 4
+      physx:
+        bounce_threshold_velocity: 0.5
+        gpu_max_rigid_patch_count: 327680 # 10 * 2**15
+
+    scene:
+      terrain: ${terrain}
+      lighting:
+        distant_light_intensity: 3000.0
+        dome_light_intensity: 1000.0
+      contact_sensor:
+        history_length: 3
+        force_threshold: 10.0
+        track_air_time: true
+        debug_vis: false
+
+    actions:
+      dof_pos:
+        type: joint_position
+        params:
+          asset_name: robot
+          joint_names:
+            - ".*"
+          use_default_offset: true
+          scale: ${robot.actuators.action_scale}
+
+    commands:
+      ref_motion:
+        type: MotionCommandCfg
+        params:
+          command_obs_name: bydmmc_ref_motion
+          motion_lib_cfg: ${robot.motion}
+          urdf_dof_names: ${robot.dof_names}
+          urdf_body_names: ${robot.body_names}
+          arm_dof_names: ${robot.arm_dof_names}
+          torso_dof_names: ${robot.torso_dof_names}
+          leg_dof_names: ${robot.leg_dof_names}
+          arm_body_names: ${robot.arm_body_names}
+          torso_body_names: ${robot.torso_body_names}
+          leg_body_names: ${robot.leg_body_names}
+          anchor_bodylink_name: ${robot.anchor_body}
+          asset_name: robot
+          debug_vis: true
+          root_pose_perturb_range:
+            x: [-0.05, 0.05]
+            y: [-0.05, 0.05]
+            z: [-0.01, 0.01]
+            roll: [-0.1, 0.1]
+            pitch: [-0.1, 0.1]
+            yaw: [-0.2, 0.2]
+          root_vel_perturb_range:
+            x: [-0.3, 0.3]
+            y: [-0.3, 0.3]
+            z: [-0.1, 0.1]
+            roll: [-0.3, 0.3]
+            pitch: [-0.3, 0.3]
+            yaw: [-0.4, 0.4]
+          dof_pos_perturb_range: [-0.1, 0.1]
+          dof_vel_perturb_range: [-1.0, 1.0]
+          resample_time_interval_s: 100
+          n_fut_frames: ${obs.n_fut_frames}
+          target_fps: 50
 
     normalization:
       clip_actions: 100.0
       clip_observations: 100.0
 
     resample_motion_when_training: True
-    resample_time_interval_s: 100
-    max_episode_length_s: 250
-    amp_context_length: 10
-
-    motion_far_type: "max" # "max" or "mean", when max, use torch.any to check termination, when mean, use torch.mean to check termination, in PHC codebase, max for training, mean for evaluation
-    termination:
-      terminate_by_gravity: True
-      terminate_when_motion_end: True
-      terminate_when_motion_far: True
-
-      terminate_by_contact: False
-      terminate_by_low_height: False
-      terminate_when_joint_far: False
-
-      terminate_when_close_to_dof_pos_limit: False
-      terminate_when_close_to_dof_vel_limit: False
-      terminate_when_close_to_torque_limit: False
-
-      terminate_when_joint_far_patience_steps: 1
-      terminate_when_motion_far_patience_steps: 1
-
-    termination_scales:
-      eval_motion_far_threshold: 0.25
-      termination_min_base_height: 0.3
-      termination_gravity_x: 0.7
-      termination_gravity_y: 0.7
-      termination_motion_far_threshold: 1.0
-      terminate_when_joint_far_threshold: 0.5
-      termination_close_to_dof_pos_limit: 0.98
-      termination_close_to_dof_vel_limit: 0.98
-      termination_close_to_torque_limit: 0.98
-
-    termination_probality:
-      terminate_when_close_to_dof_pos_limit: 0.25
-      terminate_when_close_to_dof_vel_limit: 0.25
-      terminate_when_close_to_torque_limit: 0.25
-
-    termination_curriculum:
-      terminate_when_motion_far_curriculum: False
-      terminate_when_motion_far_initial_threshold: 1.5
-      terminate_when_motion_far_threshold_max: 2.0
-      terminate_when_motion_far_threshold_min: 0.25
-      terminate_when_motion_far_curriculum_degree: 0.0000025
-      terminate_when_motion_far_curriculum_level_down_threshold: 40
-      terminate_when_motion_far_curriculum_level_up_threshold: 42
-
-      terminate_when_joint_far_curriculum: False
-      terminate_when_joint_far_initial_threshold: 1.0
-      terminate_when_joint_far_threshold_max: 1.0
-      terminate_when_joint_far_threshold_min: 0.01
-      terminate_when_joint_far_curriculum_degree: 0.0000025
-      terminate_when_joint_far_curriculum_level_down_threshold: 40
-      terminate_when_joint_far_curriculum_level_up_threshold: 42
-
-    init_entropy_coef: ${algo.algo.config.entropy_coef}
-    entropy_curriculum:
-      enable_entropy_curriculum: True
-      entropy_curriculum_threshold: 50
-      entropy_curriculum_degree: 5.0e-7
-      entropy_curriculum_threshold_min: 1.0e-5
-      entropy_curriculum_threshold_max: 1.0e-1
-
-    noise_to_initial_level: 0
-    init_noise_scale:
-      dof_pos: 0.1
-      dof_vel: 0.15
-      root_pos: 0.05
-      root_rot: 10 # degree, * 3.14 / 180
-      root_vel: 0.01
-      root_ang_vel: 0.01
-
-    enforce_randomize_motion_start_eval: False
-    enforce_zero_motion_start_train: False
-    align_marker_to_root: False

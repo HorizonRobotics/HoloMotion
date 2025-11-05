@@ -1,0 +1,23 @@
+# @package _global_
+
+terminations:
+
+  time_out:
+    time_out: true
+
+  anchor_ref_z_far:
+    params:
+      threshold: 0.25
+
+  ref_gravity_projection_far:
+    params:
+      threshold: 0.8
+
+  keybody_ref_z_far:
+    params:
+      threshold: 0.25
+      keybody_names:
+        - left_ankle_roll_link
+        - right_ankle_roll_link
+        - left_wrist_yaw_link
+        - right_wrist_yaw_link

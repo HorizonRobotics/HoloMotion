@@ -1,0 +1,104 @@
+# @package _global_
+
+obs:
+  context_length: 10
+  n_fut_frames: 0
+  target_fps: 50
+
+  obs_groups:
+    policy:
+      atomic_obs_list:
+        - ref_motion_states:
+            history_length: ${obs.context_length}
+            flatten_history_dim: true
+        - projected_gravity:
+            history_length: ${obs.context_length}
+            flatten_history_dim: true
+            noise:
+              type: AdditiveUniformNoiseCfg
+              params:
+                n_min: -0.1
+                n_max: 0.1
+        - rel_robot_root_ang_vel:
+            history_length: ${obs.context_length}
+            flatten_history_dim: true
+            noise:
+              type: AdditiveUniformNoiseCfg
+              params:
+                n_min: -0.2
+                n_max: 0.2
+        - dof_pos:
+            history_length: ${obs.context_length}
+            flatten_history_dim: true
+            noise:
+              type: AdditiveUniformNoiseCfg
+              params:
+                n_min: -0.01
+                n_max: 0.01
+        - dof_vel:
+            history_length: ${obs.context_length}
+            flatten_history_dim: true
+            noise:
+              type: AdditiveUniformNoiseCfg
+              params:
+                n_min: -0.5
+                n_max: 0.5
+        - last_action:
+            history_length: ${obs.context_length}
+            flatten_history_dim: true
+      enable_corruption: false
+      concatenate_terms: true
+
+    critic:
+      atomic_obs_list:
+        - ref_motion_states: {}
+        - global_anchor_diff: {}
+        - rel_robot_root_lin_vel: {}
+        - rel_robot_root_ang_vel: {}
+        - root_rel_robot_bodylink_pos_flat:
+            params:
+              keybody_names: ${robot.key_bodies}
+        - root_rel_robot_bodylink_rot_mat_flat:
+            params:
+              keybody_names: ${robot.key_bodies}
+        - dof_pos: {}
+        - dof_vel: {}
+        - last_action: {}
+      enable_corruption: false
+      concatenate_terms: true
+
+  obs_dict:
+    policy:
+      - dummy_isaaclab_obs
+    critic:
+      - dummy_isaaclab_obs_critic
+
+  obs_auxiliary: {}
+
+  serialization_schema:
+    - obs_name: flattened_obs
+      seq_len: ${obs.context_length}
+      feat_dim: 151
+    - obs_name: flattened_obs_fut
+      seq_len: ${obs.n_fut_frames}
+      feat_dim: 58
+
+  critic_serialization_schema:
+    - obs_name: flattened_obs
+      seq_len: 1
+      feat_dim: 286
+    - obs_name: flattened_obs_fut
+      seq_len: ${obs.n_fut_frames}
+      feat_dim: 58
+
+  obs_scales:
+    dummy_isaaclab_obs: 1.0
+    dummy_isaaclab_obs_critic: 1.0
+
+  noise_scales:
+    dummy_isaaclab_obs: 0.0
+    dummy_isaaclab_obs_critic: 0.0
+
+  obs_dims:
+    - dummy_isaaclab_obs: ${eval:'${obs.serialization_schema[0].feat_dim} * ${obs.serialization_schema[0].seq_len}+ ${obs.serialization_schema[1].feat_dim} * ${obs.serialization_schema[1].seq_len}'}
+    - dummy_isaaclab_obs_critic: ${eval:'${obs.critic_serialization_schema[0].feat_dim} * ${obs.critic_serialization_schema[0].seq_len}+ ${obs.critic_serialization_schema[1].feat_dim} * ${obs.critic_serialization_schema[1].seq_len}'}

@@ -1,0 +1,46 @@
+{
+  "schema": {
+    "root_trans_offset": {
+      "shape": [
+        682,
+        3
+      ],
+      "dtype": "float64"
+    },
+    "pose_aa": {
+      "shape": [
+        682,
+        27,
+        3
+      ],
+      "dtype": "float32"
+    },
+    "dof": {
+      "shape": [
+        682,
+        23
+      ],
+      "dtype": "float32"
+    },
+    "root_rot": {
+      "shape": [
+        682,
+        4
+      ],
+      "dtype": "float64"
+    },
+    "smpl_joints": {
+      "shape": [
+        682,
+        24,
+        3
+      ],
+      "dtype": "float32"
+    },
+    "fps": {
+      "shape": [],
+      "dtype": "int64"
+    }
+  },
+  "sample_top_key": "2024-12-28 16.03.15-视频-2025年主播必学120支热门小舞蹈-帅帅的《电话卡点舞》 #电话卡点舞 #...舞 #抖音热歌 #舞蹈教学 #网红必学+p02_1_btws_pad"
+}

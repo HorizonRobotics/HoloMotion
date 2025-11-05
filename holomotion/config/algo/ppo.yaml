@@ -3,34 +3,56 @@ algo:
   _recursive_: false
   config:
     # --- General Settings ---
-    use_accelerate: ${use_accelerate}
     num_learning_iterations: 300000
     log_interval: 5
     save_interval: 500
     eval_interval: null
     load_optimizer: true
     headless: ${headless}
-    compile_model: true
+    # ---
+
+    # --- Accelerate Settings ---
+    mixed_precision: null # "fp16", "bf16", or null. Use "bf16" for A100/H100, "fp16" for older GPUs
+    dynamo_backend: null # "inductor", "aot_eager", "cudagraphs", or null. Enables automatic model compilation during prepare()
     # ---
 
     # --- PPO Related Settings ---
-    normalize_rewards: true
-    num_steps_per_env: 24
+    num_steps_per_env: 32
     num_learning_epochs: 3
-    num_mini_batches: 3
+    num_mini_batches: 4
     clip_param: 0.2
     gamma: 0.99
     lam: 0.95
     value_loss_coef: 1.0
-    entropy_coef: 0.01
-    actor_learning_rate: 1.0e-05
-    critic_learning_rate: 1.0e-05
+    entropy_coef: 3.0e-3
+    actor_learning_rate: 3.0e-4
+    critic_learning_rate: 3.0e-4
     max_grad_norm: 1.0
-    use_clipped_value_loss: false
+    use_clipped_value_loss: true
     schedule: adaptive
     desired_kl: 0.01
-    init_noise_std: 0.8
-    donot_load_critic: false
+    init_noise_std: 0.6
+    optimizer_type: AdamW # Options: "AdamW" or "Adam" (default: "AdamW")
+    init_at_random_ep_len: true
+
+    # Distributed training settings
+    normalize_advantage_per_mini_batch: false # Use global advantage norm for DDP
+    global_advantage_norm: true # Sync advantages across all ranks
+    # ---
+
+    # --- Observation Normalization Settings ---
+    obs_norm:
+      enabled: true
+      epsilon: 1.0e-8 # Reduced for better stability in DDP
+      update_at_train: true
+      update_at_eval: false
+      enable_clipping: true # Enable clipping for DDP stability
+      clip_range: 10.0 # Reduced clip range for better stability
+      sync_interval_steps: 8 # Periodically sync obs normalizers across ranks during rollout
+      actor:
+        enabled: true
+      critic:
+        enabled: true
     # ---
 
     # --- Dagger Related Settings ---
@@ -45,77 +67,46 @@ algo:
     load_critic_when_dagger: false
     # ---
 
-    # --- AMP Related Settings ---
-    load_disc: false
-    disc_loss_coef: 2.0
-    disc_grad_penalty_coef: 0.1
-    task_rew_coef: 1.0
-    amp_rew_coef: 1.0
-    amp_rew_scale: 1.0
-    adaptive_disc_rew: false
-    disc_loss_type: lsgan
-    # ---
-
-    # --- RND Related Settings ---
-    use_rnd: false
-    load_rnd: false
-    rnd_rew_coef: 1.0
-    rnd_loss_coef: 1.0
-    rnd_learning_rate: 1.0e-04
-    rnd_reward_norm: false
-    # ---
-
-    # --- Auxiliary Task Related Settings ---
-    num_rigid_bodies: ${robot.num_bodies}
-    num_extended_bodies: ${robot.num_extend_bodies}
-    predict_local_body_pos: false
-    pred_local_body_pos_alpha: 1.0
-    predict_local_body_vel: false
-    pred_local_body_vel_alpha: 0.01
-    predict_root_lin_vel: false
-    pred_root_lin_vel_alpha: 0.04
-    # ---
-
     # --- Module Settings ---
     module_dict:
       actor:
-        type: MoEMLP
-        fix_sigma: false
-        use_layernorm: false
+        type: MLP
         input_dim:
           - actor_obs
         output_dim:
           - robot_action_dim
+        n_fut_frames: ${obs.n_fut_frames}
+
+        use_logvar: true
+        fix_sigma: false
         max_sigma: 1.2
-        min_sigma: 0.2
-        clamp_output:
-          enabled: true
-          raw_lower_bound: ${robot.dof_pos_lower_limit_list}
-          raw_upper_bound: ${robot.dof_pos_upper_limit_list}
-          action_scale: ${robot.control.action_scale}
-          default_dof_pos_dict: ${robot.init_state.default_joint_angles}
-          dof_order: ${robot.dof_names}
-        num_fine_experts: 5
-        num_shared_experts: 1
-        top_k: 2
-        load_balancing_loss_alpha: 0.01
-        bound_loss_alpha: 10.0
-        projection_dim: 2048
-        hidden_dim: 1024
+        min_sigma: 0.01
+
+        use_layernorm: false
+        layer_config:
+          hidden_dims:
+            - 1024
+            - 512
+            - 256
+            - 128
+          activation: SiLU
 
       critic:
-        type: MoEMLP
+        type: MLP
         input_dim:
           - critic_obs
         output_dim:
           - 1
-        num_fine_experts: 5
-        num_shared_experts: 1
-        top_k: 2
-        load_balancing_loss_alpha: 0.01
-        projection_dim: 2048
-        hidden_dim: 1024
+        n_fut_frames: ${obs.n_fut_frames}
+
+        use_layernorm: false
+        layer_config:
+          hidden_dims:
+            - 1024
+            - 512
+            - 256
+            - 128
+          activation: SiLU
 
       disc: {}
-
       rnd: {}

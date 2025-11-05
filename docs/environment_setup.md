@@ -8,17 +8,7 @@ This project uses conda to manage Python environments. We recommend using [Minic
 
 ## Step 2: Setup Third-party Dependencies
 
-### 2.1 Download IsaacGym Preview 4
-
-HoloMotion uses IsaacGym for efficient simulation. Download the package from the official [IsaacGym website](https://developer.nvidia.com/isaac-gym).
-
-After downloading `IsaacGym_Preview_4_Package.tar.gz`, place it in the `thirdparties/` directory and extract:
-
-```shell
-tar -xvzf thirdparties/IsaacGym_Preview_4_Package.tar.gz -C thirdparties/
-```
-
-### 2.2 Download SMPL/SMPLX Models
+### 2.1 Download SMPL/SMPLX Models
 
 We use SMPL/SMPLX models to retarget mocap data into robot motion data. Register your account and download the models from:
 
@@ -42,7 +32,7 @@ thirdparties/
    └── SMPL_python_v.1.1.0
 ```
 
-### 2.3 Pull Submodules
+### 2.2 Pull Submodules
 
 After cloning this repository, run the following command to get all submodule dependencies:
 
@@ -50,17 +40,19 @@ After cloning this repository, run the following command to get all submodule de
 git submodule update --init --recursive
 ```
 
-### 2.4 Create Asset Symlinks
+### 2.3 Create Asset Symlinks
 
 This project uses symbolic links to connect robot and SMPL assets from submodules to the main `assets` directory. Symlinks are created automatically when you clone the repository.
 
-### 2.5 Verify Third-party File Structure
+### 2.4 Verify Third-party File Structure
 
 After completing the above steps, your file structure should look like this:
 
 ```shell
 thirdparties/
-├── isaacgym
+├── HoloMotion_assets
+├── GMR
+├── smplx
 ├── joints2smpl
 ├── omomo_release
 ├── smpl_models
@@ -74,8 +66,21 @@ thirdparties/
 Create the conda environment named `holomotion_train` and `holomotion_deploy`:
 
 ```shell
-conda env create -f environment_train.yaml
-conda env create -f environment_deploy.yaml
+conda env create -f environments/environment_train_isaaclab_cu118.yaml
+# for newer GPUs like RTX 5090, use environment_train_isaaclab_cu128.yaml
+conda env create -f environments/environment_deploy.yaml
+```
+
+
+Install smplx and GMR into the conda environment:
+
+```shell
+cd thirdparties
+
+pip install -e ./smplx
+
+# use --no-deps to avoid pulling GMR's dependencies
+pip install -e ./GMR --no-deps
 ```
 
 ## Step 4: Configure the Environment Variables

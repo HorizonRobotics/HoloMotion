@@ -1,4 +1,4 @@
-#!/bin/bash
+source train.env
 
 # 默认原始数据路径
 DATA_ROOT="./data/raw_datasets"
@@ -8,4 +8,6 @@ if [ ! -z "$1" ]; then
     DATA_ROOT="$1"
 fi
 
-python holomotion/src/data_curation/data_smplify.py --data_root "$DATA_ROOT"
+${Train_CONDA_PREFIX}/bin/python \
+    holomotion/src/data_curation/data_smplify.py \
+    --data_root "$DATA_ROOT"

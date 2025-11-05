@@ -157,47 +157,6 @@ The output `.yaml` files will be placed in `holomotion/config/data_curation/`.
 
 ---
 
-### 4. Generate Motion from Monocular Video (optional)
-
-You can also generate SMPL-format motion capture files **directly from monocular RGB videos** using the provided tracking pipeline.
-
-Steps:
-
-1. Clone and set up the tram repository (if you haven’t initialized submodules yet, run `git submodule update --init --recursive`). The tram repository is already included here as a submodule. Refer to its original README for environment setup: [https://github.com/yufu-wang/tram](https://github.com/yufu-wang/tram)
-
-2. Enter the `thirdparties/tram` directory:
-
-   ```bash
-   cd thirdparties/tram
-   ```
-
-3. Modify `thirdparties/joints2smpl/src/customloss.py`:
-Before running the pipeline, make sure to modify the `body_fitting_loss_3d` function in `thirdparties/joints2smpl/src/customloss.py` to include the following change:
-    ```python
-    joint3d_loss = (joint_loss_weight ** 2) * joint3d_loss_part.sum(dim=-1)
-    ```
-
-4. Modify `thirdparties/joints2smpl/src/smplify.py`:
-Next, ensure the following modification in the `__call__` function of `SMPLify3D` inside `thirdparties/joints2smpl/src/smplify.py`:
-    ```python
-    init_cam_t = guess_init_3d(model_joints, j3d, self.joints_category).unsqueeze(1).detach()
-    ```
-
-5. Run the provided bash script to process your monocular video and generate motion files:
-
-   ```bash
-   bash ../../holomotion/scriprs/vision_mocap_pipeline.sh <path_to_your_video>
-   ```
-
-This will output SMPL-format `.npz` motion files under `thirdparties/tram/results/<video_name>/hps/`, which you can use for training or evaluation.
-
-You can run the pipeline with the following commands:
-
-- For a moving camera video: `bash ../../holomotion/scriprs/vision_mocap_pipeline.sh ./example_video.mov`
-- If the camera is static, add the `--static` flag: `bash ../../holomotion/scriprs/vision_mocap_pipeline.sh ./example_video.mov --static`
-
-Choose the appropriate option based on your video setup.
-
 ## Notes
 
 - Paths are relative to the project root.

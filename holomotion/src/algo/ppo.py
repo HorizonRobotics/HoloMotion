@@ -14,1894 +14,962 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
-
 import json
 import os
 import pickle
 import statistics
 import time
 from collections import deque
-
+import sys
+from accelerate import Accelerator
+from accelerate.utils import ProjectConfiguration
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-from accelerate import Accelerator
+import random
+import numpy as np
 from loguru import logger
 from tabulate import tabulate
-from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
-from holomotion.src.modules.agent_modules import PPOActor, PPOCritic, RNDNet
-from holomotion.src.modules.network_modules import RunningMeanStdNormalizer
+
+from holomotion.src.modules.agent_modules import PPOActor, PPOCritic
+from hydra.utils import get_class
+from isaaclab.app import AppLauncher
+
+
+class EmpiricalNormalization(nn.Module):
+    """Normalize mean and variance of values based on empirical values."""
+
+    def __init__(self, shape, eps=1e-2, until=None):
+        """Initialize EmpiricalNormalization module.
+
+        Args:
+            shape (int or tuple of int): Shape of input values except
+                batch axis.
+            eps (float): Small value for stability.
+            until (int or None): If this arg is specified, the link learns
+                input values until the sum of batch sizes
+            exceeds it.
+        """
+        super().__init__()
+        self.eps = eps
+        self.until = until
+        self.register_buffer("_mean", torch.zeros(shape).unsqueeze(0))
+        self.register_buffer("_var", torch.ones(shape).unsqueeze(0))
+        self.register_buffer("_std", torch.ones(shape).unsqueeze(0))
+        self.register_buffer("count", torch.tensor(0, dtype=torch.long))
+        self.register_buffer(
+            "_last_sync_mean", torch.zeros(shape).unsqueeze(0)
+        )
+        self.register_buffer("_last_sync_var", torch.ones(shape).unsqueeze(0))
+        self.register_buffer(
+            "_last_sync_count", torch.tensor(0, dtype=torch.long)
+        )
+
+    @property
+    def mean(self):
+        return self._mean.squeeze(0).clone()
+
+    @property
+    def std(self):
+        return self._std.squeeze(0).clone()
+
+    def forward(self, x):
+        """Normalize mean and variance of values based on empirical values.
+
+        Args:
+            x (ndarray or Variable): Input values
+
+        Returns:
+            ndarray or Variable: Normalized output values
+        """
+
+        if self.training:
+            self.update(x)
+        return (x - self._mean) / (self._std + self.eps)
+
+    def normalize_only(self, x):
+        return (x - self._mean) / (self._std + self.eps)
+
+    @torch.jit.unused
+    def update(self, x):
+        """Learn input values without computing the output values of them"""
+
+        if self.until is not None and self.count >= self.until:
+            return
+
+        count_x = x.shape[0]
+        self.count += count_x
+        rate = count_x / self.count
+
+        var_x = torch.var(x, dim=0, unbiased=False, keepdim=True)
+        mean_x = torch.mean(x, dim=0, keepdim=True)
+        delta_mean = mean_x - self._mean
+        self._mean += rate * delta_mean
+        self._var += rate * (
+            var_x - self._var + delta_mean * (mean_x - self._mean)
+        )
+        self._std = torch.sqrt(self._var)
+
+    @torch.jit.unused
+    def inverse(self, y):
+        return y * (self._std + self.eps) + self._mean
+
+    def sync_stats_across_processes(self, accelerator):
+        """Synchronize normalization statistics across distributed processes."""
+        if accelerator.num_processes <= 1:
+            return
+
+        # Weighted synchronization with correction to avoid double counting
+        device = self._mean.device
+        count_local = self.count.to(device=device, dtype=torch.float32)
+        mean_local = self._mean.to(device=device, dtype=torch.float32)
+        var_local = self._var.to(device=device, dtype=torch.float32)
+
+        # Local weighted sums
+        sum_count = accelerator.reduce(count_local, reduction="sum")
+        sum_mean_count = accelerator.reduce(
+            mean_local * count_local, reduction="sum"
+        )
+        sum_ex2_count = accelerator.reduce(
+            (var_local + mean_local * mean_local) * count_local,
+            reduction="sum",
+        )
+
+        # Correct for replication of previously-synced global stats across ranks
+        last_c = self._last_sync_count.to(device=device, dtype=torch.float32)
+        if last_c.item() > 0:
+            w_minus_1 = float(accelerator.num_processes - 1)
+            last_mean = self._last_sync_mean.to(
+                device=device, dtype=torch.float32
+            )
+            last_var = self._last_sync_var.to(
+                device=device, dtype=torch.float32
+            )
+            sum_count = sum_count - w_minus_1 * last_c
+            sum_mean_count = sum_mean_count - w_minus_1 * (last_mean * last_c)
+            sum_ex2_count = sum_ex2_count - w_minus_1 * (
+                (last_var + last_mean * last_mean) * last_c
+            )
+
+        if sum_count.item() <= 0:
+            return
+
+        global_mean = sum_mean_count / sum_count
+        global_ex2 = sum_ex2_count / sum_count
+        global_var = torch.clamp(
+            global_ex2 - global_mean * global_mean, min=0.0
+        )
+        global_std = torch.sqrt(global_var)
+
+        # Copy back (keep original buffer shapes)
+        self._mean.copy_(global_mean.to(self._mean.dtype))
+        self._var.copy_(global_var.to(self._var.dtype))
+        self._std.copy_(global_std.to(self._std.dtype))
+        # Set global sample count and remember snapshot for next correction
+        self.count.copy_(sum_count.to(self.count.dtype))
+        self._last_sync_mean.copy_(global_mean.to(self._last_sync_mean.dtype))
+        self._last_sync_var.copy_(global_var.to(self._last_sync_var.dtype))
+        self._last_sync_count.copy_(self.count)
+
+
+class RolloutStorage(nn.Module):
+    """Simplified rollout storage that matches rsl_rl behavior exactly."""
+
+    class Transition:
+        def __init__(self):
+            self.observations = None
+            self.privileged_observations = None
+            self.actions = None
+            self.teacher_actions = None
+            self.rewards = None
+            self.dones = None
+            self.values = None
+            self.actions_log_prob = None
+            self.action_mean = None
+            self.action_sigma = None
+            self.velocity_commands = None
+
+        def clear(self):
+            self.__init__()
+
+    def __init__(
+        self,
+        num_envs,
+        num_transitions_per_env,
+        actor_obs_shape,
+        critic_obs_shape,
+        actions_shape,
+        device="cpu",
+        command_name: str = None,
+    ):
+        super().__init__()
+        self.device = device
+        self.num_transitions_per_env = num_transitions_per_env
+        self.num_envs = num_envs
+        self.command_name = command_name
+
+        # Core storage
+        self.observations = torch.zeros(
+            num_transitions_per_env,
+            num_envs,
+            *actor_obs_shape,
+            device=self.device,
+        )
+        self.privileged_observations = (
+            torch.zeros(
+                num_transitions_per_env,
+                num_envs,
+                *critic_obs_shape,
+                device=self.device,
+            )
+            if critic_obs_shape
+            else None
+        )
+        self.rewards = torch.zeros(
+            num_transitions_per_env, num_envs, 1, device=self.device
+        )
+        self.actions = torch.zeros(
+            num_transitions_per_env,
+            num_envs,
+            *actions_shape,
+            device=self.device,
+        )
+        self.teacher_actions = torch.zeros(
+            num_transitions_per_env,
+            num_envs,
+            *actions_shape,
+            device=self.device,
+        )
+        self.dones = torch.zeros(
+            num_transitions_per_env, num_envs, 1, device=self.device
+        ).byte()
+
+        # PPO specific
+        self.values = torch.zeros(
+            num_transitions_per_env, num_envs, 1, device=self.device
+        )
+        self.actions_log_prob = torch.zeros(
+            num_transitions_per_env, num_envs, 1, device=self.device
+        )
+        self.mu = torch.zeros(
+            num_transitions_per_env,
+            num_envs,
+            *actions_shape,
+            device=self.device,
+        )
+        self.sigma = torch.zeros(
+            num_transitions_per_env,
+            num_envs,
+            *actions_shape,
+            device=self.device,
+        )
+        self.returns = torch.zeros(
+            num_transitions_per_env, num_envs, 1, device=self.device
+        )
+        self.advantages = torch.zeros(
+            num_transitions_per_env, num_envs, 1, device=self.device
+        )
+
+        # Store velocity commands for advantage normalization
+        self.velocity_commands = (
+            torch.zeros(
+                num_transitions_per_env, num_envs, 4, device=self.device
+            )
+            if command_name == "base_velocity"
+            else None
+        )
+
+        self.step = 0
+
+    def add_transitions(self, transition: Transition):
+        if self.step >= self.num_transitions_per_env:
+            raise OverflowError("Rollout buffer overflow!")
+
+        self.observations[self.step].copy_(transition.observations)
+        if self.privileged_observations is not None:
+            self.privileged_observations[self.step].copy_(
+                transition.privileged_observations
+            )
+        self.actions[self.step].copy_(transition.actions)
+        if transition.teacher_actions is not None:
+            self.teacher_actions[self.step].copy_(transition.teacher_actions)
+        self.rewards[self.step].copy_(transition.rewards.view(-1, 1))
+        self.dones[self.step].copy_(transition.dones.view(-1, 1))
+        self.values[self.step].copy_(transition.values)
+        self.actions_log_prob[self.step].copy_(
+            transition.actions_log_prob.view(-1, 1)
+        )
+        self.mu[self.step].copy_(transition.action_mean)
+        self.sigma[self.step].copy_(transition.action_sigma)
+        if (
+            self.velocity_commands is not None
+            and transition.velocity_commands is not None
+        ):
+            self.velocity_commands[self.step].copy_(
+                transition.velocity_commands
+            )
+
+        self.step += 1
+
+    def clear(self):
+        self.step = 0
+
+    def compute_returns(
+        self, last_values, gamma, lam, normalize_advantage: bool = False
+    ):
+        advantage = 0
+        for step in reversed(range(self.num_transitions_per_env)):
+            if step == self.num_transitions_per_env - 1:
+                next_values = last_values
+            else:
+                next_values = self.values[step + 1]
+            next_is_not_terminal = 1.0 - self.dones[step].float()
+            delta = (
+                self.rewards[step]
+                + next_is_not_terminal * gamma * next_values
+                - self.values[step]
+            )
+            advantage = delta + next_is_not_terminal * gamma * lam * advantage
+            self.returns[step] = advantage + self.values[step]
+
+        # Compute raw advantages
+        self.advantages = self.returns - self.values
+        # Optional local normalization (RSL-style)
+        if normalize_advantage:
+            flat = self.advantages.view(-1)
+            mean = flat.mean()
+            std = flat.std().clamp_min(1.0e-8)
+            self.advantages = (self.advantages - mean) / std
+
+    def mini_batch_generator(
+        self, num_mini_batches, num_epochs=8, accelerator=None
+    ):
+        batch_size = self.num_envs * self.num_transitions_per_env
+        mini_batch_size = batch_size // num_mini_batches
+
+        indices = torch.randperm(
+            num_mini_batches * mini_batch_size,
+            requires_grad=False,
+            device=self.device,
+        )
+
+        observations = self.observations.flatten(0, 1)
+        privileged_observations = (
+            self.privileged_observations.flatten(0, 1)
+            if self.privileged_observations is not None
+            else observations
+        )
+        actions = self.actions.flatten(0, 1)
+        teacher_actions = self.teacher_actions.flatten(0, 1)
+        values = self.values.flatten(0, 1)
+        returns = self.returns.flatten(0, 1)
+        old_actions_log_prob = self.actions_log_prob.flatten(0, 1)
+        advantages = self.advantages.flatten(0, 1)
+        old_mu = self.mu.flatten(0, 1)
+        old_sigma = self.sigma.flatten(0, 1)
+
+        for epoch in range(num_epochs):
+            for i in range(num_mini_batches):
+                start = i * mini_batch_size
+                end = (i + 1) * mini_batch_size
+                batch_idx = indices[start:end]
+
+                yield (
+                    observations[batch_idx],
+                    privileged_observations[batch_idx],
+                    actions[batch_idx],
+                    teacher_actions[batch_idx],
+                    values[batch_idx],
+                    advantages[batch_idx],
+                    returns[batch_idx],
+                    old_actions_log_prob[batch_idx],
+                    old_mu[batch_idx],
+                    old_sigma[batch_idx],
+                )
 
 
 class PPO:
+    """PPO implementation that exactly matches rsl_rl behavior."""
+
     def __init__(
         self,
-        env,
+        env_config,
         config,
         log_dir=None,
-        device="cpu",
+        headless=True,
+        is_offline_eval=False,
     ):
+        """Initialize PPO algorithm.
+
+        Args:
+            env_config: Environment configuration (OmegaConf object with _target_ and config).
+            config: PPO algorithm configuration.
+            log_dir: Directory for logging and checkpoints.
+            headless: Whether to run in headless mode.
+            is_offline_eval: Whether this is for offline evaluation (uses "offline_eval.log" instead of "run.log").
+        """
         self.config = config
-        self.use_accelerate = config.use_accelerate
-        if self.use_accelerate:
-            self.accelerator = Accelerator()
-            self.device = self.accelerator.device
-            if (
-                torch.distributed.is_available()
-                and torch.distributed.is_initialized()
-            ):
-                self.is_main_process = torch.distributed.get_rank() == 0
-                self.process_rank = torch.distributed.get_rank()
-            else:
-                self.is_main_process = self.accelerator.is_main_process
-                self.process_rank = self.accelerator.process_index
-        else:
-            self.device = device
-            self.is_main_process = True
-            self.process_rank = 0
-
-        self.env = env
+        self.env_config = env_config
         self.log_dir = log_dir
+        self.headless = headless
+        self.is_offline_eval = is_offline_eval
 
-        # Only initialize TensorBoard on the main process
+        self._setup_accelerator()
+        self._setup_environment()
+        self._setup_configs()
+        self._setup_seeding()
+        self._setup_data_buffers()
+        self._setup_models_and_optimizer()
+        self._setup_simulator()
+
+    def _setup_accelerator(self):
+        if not self.is_offline_eval:
+            os.makedirs(self.log_dir, exist_ok=True)
+
+        accelerator_kwargs = {}
+        mixed_precision = self.config.get("mixed_precision", None)
+        if mixed_precision in ("fp16", "bf16"):
+            accelerator_kwargs["mixed_precision"] = mixed_precision
+        dynamo_backend = self.config.get("dynamo_backend", None)
+        if dynamo_backend in ("inductor", "aot_eager", "cudagraphs"):
+            accelerator_kwargs["dynamo_backend"] = dynamo_backend
+
+        accelerator_kwargs["log_with"] = "tensorboard"
+        project_config = ProjectConfiguration(
+            project_dir=self.log_dir,
+            logging_dir=self.log_dir,
+        )
+        accelerator_kwargs["project_config"] = project_config
+
+        self.accelerator = Accelerator(**accelerator_kwargs)
+        self.device = self.accelerator.device
+        self.is_main_process = self.accelerator.is_main_process
+
+        self.accelerator.init_trackers(
+            project_name="holomotion",
+            config={
+                "precision": mixed_precision if mixed_precision else "fp32",
+                "dynamo_backend": dynamo_backend if dynamo_backend else "none",
+            },
+        )
+
+        logger.remove()
         if self.is_main_process:
-            # Initialize TensorBoard SummaryWriter
-            if self.log_dir:
-                self.tensorboard_writer = SummaryWriter(log_dir=self.log_dir)
-                logger.info(f"TensorBoard logging enabled at: {self.log_dir}")
-            else:
-                self.tensorboard_writer = None
-                logger.warning(
-                    "No log directory provided, TensorBoard logging disabled"
-                )
-        else:
-            self.tensorboard_writer = None
-
-        # 🚨 COMPREHENSIVE DISTRIBUTED TRAINING DIAGNOSTICS 🚨
-        # Call after TensorBoard initialization is complete
-        if self.use_accelerate:
-            self._log_distributed_setup()
-
-        self.start_time = 0
-        self.stop_time = 0
-        self.collection_time = 0
-        self.learn_time = 0
-
-        self._init_config()
-
-        self.tot_timesteps = 0
-        self.tot_time = 0
-        self.current_learning_iteration = 0
-
-        # Book keeping
-        self.ep_infos = []
-        self.rewbuffer = deque(maxlen=100)
-        self.lenbuffer = deque(maxlen=100)
-        self.cur_reward_sum = torch.zeros(
-            self.env.num_envs, dtype=torch.float, device=self.device
-        )
-        self.cur_episode_length = torch.zeros(
-            self.env.num_envs, dtype=torch.float, device=self.device
-        )
-
-        # Separate reward tracking for task and RND rewards
-        if self.use_rnd:
-            self.task_rewbuffer = deque(maxlen=100)
-            self.rnd_rewbuffer = deque(maxlen=100)
-            self.cur_task_reward_sum = torch.zeros(
-                self.env.num_envs, dtype=torch.float, device=self.device
+            logger.add(
+                sys.stdout,
+                level=os.environ.get("LOGURU_LEVEL", "INFO").upper(),
+                colorize=True,
             )
-            self.cur_rnd_reward_sum = torch.zeros(
-                self.env.num_envs, dtype=torch.float, device=self.device
+            log_file_name = (
+                "offline_eval.log" if self.is_offline_eval else "run.log"
+            )
+            logger.add(
+                os.path.join(self.log_dir, log_file_name),
+                level=os.environ.get("LOGURU_LEVEL", "INFO").upper(),
+                colorize=False,
             )
 
-        self.episode_env_tensors = TensorAverageMeterDict()
-        _ = self.env.reset_all()
-
-    def _init_config(self):
-        # Env related Config
-        self.num_envs: int = self.env.config.num_envs
-        self.algo_obs_dim_dict = self.env.config.robot.algo_obs_dim_dict
-        self.num_act = self.env.config.robot.actions_dim
-
-        self.normalize_rewards = self.config.get("normalize_rewards", False)
-        self.reward_norm_epsilon = self.config.get("reward_norm_epsilon", 1e-8)
-        if self.normalize_rewards:
-            self.reward_normalizer = RunningMeanStdNormalizer(
-                feature_dim=1, epsilon=self.reward_norm_epsilon
-            ).to(self.device)
+            used_precision = mixed_precision if mixed_precision else "fp32"
             logger.info(
-                f"Reward normalization enabled with epsilon: {self.reward_norm_epsilon}"
+                f"Accelerator initialized with precision: {used_precision}"
             )
-            self.clip_normalized_rewards = self.config.get(
-                "clip_normalized_rewards", False
-            )
-            if self.clip_normalized_rewards:
-                self.normalized_reward_clip_value = self.config.get(
-                    "normalized_reward_clip_value", 10.0
-                )
-                logger.info(
-                    f"Normalized reward clipping enabled with value: "
-                    f"{self.normalized_reward_clip_value}"
-                )
+            if dynamo_backend:
+                logger.info(f"Accelerator dynamo_backend: {dynamo_backend}")
+            logger.info(f"TensorBoard logging enabled at: {self.log_dir}")
 
-        if getattr(self.env, "obs_serializer", None) is not None:
-            self.obs_serializer = self.env.obs_serializer
-        else:
-            self.obs_serializer = None
+        self.process_rank = self.accelerator.process_index
+        self.gpu_world_size = self.accelerator.num_processes
+        self.gpu_global_rank = self.accelerator.process_index
+        self.is_distributed = self.gpu_world_size > 1
 
-        if getattr(self.env, "critic_obs_serializer", None) is not None:
-            self.critic_obs_serializer = self.env.critic_obs_serializer
-        else:
-            self.critic_obs_serializer = None
+    def _setup_environment(self):
+        """Setup IsaacLab AppLauncher and environment instance."""
+        # Device string from accelerator (handles distributed training)
+        device_str = str(self.device)
 
-        if getattr(self.env, "teacher_obs_serializer", None) is not None:
-            self.teacher_obs_serializer = self.env.teacher_obs_serializer
-        else:
-            self.teacher_obs_serializer = None
+        # Create AppLauncher with accelerator device
+        app_launcher_flags = {
+            "headless": self.headless,
+            "enable_cameras": not self.headless,
+            "device": device_str,
+        }
+        self._sim_app_launcher = AppLauncher(**app_launcher_flags)
+        self._sim_app = self._sim_app_launcher.app
 
-        self.donot_load_critic = self.config.get("donot_load_critic", False)
-        self.dagger_only = self.config.get("dagger_only", False)
-
-        self.actor_type = self.config.module_dict.get("actor", {}).get(
-            "type", "MLP"
+        # Create environment instance
+        env_class = get_class(self.env_config._target_)
+        self.env = env_class(
+            config=self.env_config.config,
+            device=device_str,
+            headless=self.headless,
+            log_dir=self.log_dir,
+            accelerator=self.accelerator,
         )
-        if not self.dagger_only:
-            self.critic_type = self.config.module_dict.get("critic", {}).get(
-                "type", "MLP"
-            )
-            self.disc_type = self.config.module_dict.get("disc", {}).get(
-                "type", "MLP"
-            )
-        else:
-            self.critic_type = None
-            self.disc_type = None
 
-        logger.info(f"Actor type: {self.actor_type}")
-        logger.info(f"Critic type: {self.critic_type}")
-        logger.info(f"Disc type: {self.disc_type}")
+    def _setup_configs(self):
+        self.num_envs: int = self.env.config.num_envs
+        self.num_obs = self.env.config.robot.algo_obs_dim_dict["policy"]
+        self.num_privileged_obs = self.env.config.robot.algo_obs_dim_dict[
+            "critic"
+        ]
+        self.num_actions = self.env.config.robot.actions_dim
+
+        self.command_name = list(self.env.config.commands.keys())[0]
 
         self.save_interval = self.config.save_interval
-        self.eval_interval = self.config.get("eval_interval", None)
         self.log_interval = self.config.log_interval
-        # Training related Config
         self.num_steps_per_env = self.config.num_steps_per_env
-        self.load_optimizer = self.config.load_optimizer
-        self.load_critic_when_dagger = self.config.load_critic_when_dagger
         self.num_learning_iterations = self.config.num_learning_iterations
 
         self.desired_kl = self.config.desired_kl
         self.schedule = self.config.schedule
-        self.actor_learning_rate = self.config.actor_learning_rate
-        self.critic_learning_rate = self.config.critic_learning_rate
+        self.actor_learning_rate = self.config.get(
+            "actor_learning_rate", self.config.get("learning_rate", 3e-4)
+        )
+        self.critic_learning_rate = self.config.get(
+            "critic_learning_rate", self.config.get("learning_rate", 3e-4)
+        )
+        self.optimizer_type = self.config.optimizer_type
         self.clip_param = self.config.clip_param
         self.num_learning_epochs = self.config.num_learning_epochs
-        self.num_mini_batches = self.config.num_mini_batches
+        base_num_mini_batches = int(self.config.num_mini_batches)
+        if self.is_distributed:
+            scaled_num_mini_batches = base_num_mini_batches * int(
+                self.gpu_world_size
+            )
+        else:
+            scaled_num_mini_batches = base_num_mini_batches
+        self.num_mini_batches = int(max(1, scaled_num_mini_batches))
         self.gamma = self.config.gamma
         self.lam = self.config.lam
         self.value_loss_coef = self.config.value_loss_coef
         self.entropy_coef = self.config.entropy_coef
         self.max_grad_norm = self.config.max_grad_norm
         self.use_clipped_value_loss = self.config.use_clipped_value_loss
-        self.use_smooth_grad_penalty = self.config.get(
-            "use_smooth_penalty", False
+        self.normalize_advantage_per_mini_batch = bool(
+            self.config.get("normalize_advantage_per_mini_batch", False)
+        )
+        self.global_advantage_norm: bool = bool(
+            self.config.get("global_advantage_norm", True)
         )
 
-        self.entropy_curriculum = self.env.config.get(
-            "entropy_curriculum", {}
-        ).get("enable_entropy_curriculum", False)
+        # Observation normalization
+        obs_norm_cfg = self.config.get("obs_norm", {})
+        self.obs_norm_enabled = obs_norm_cfg.get("enabled", False)
+        self.obs_norm_epsilon = float(obs_norm_cfg.get("epsilon", 1.0e-8))
+        self.obs_norm_clip_range = float(obs_norm_cfg.get("clip_range", 10.0))
+        self.obs_norm_enable_clipping = bool(
+            obs_norm_cfg.get("enable_clipping", False)
+        )
+        # Periodic cross-rank sync during rollout to avoid per-rank drift
+        self.obs_norm_sync_interval_steps = int(
+            obs_norm_cfg.get("sync_interval_steps", 0)
+        )
 
-        self.use_amp = self.env.config.get("amp", {}).get("enabled", False)
-        if self.use_amp:
-            self.task_rew_coef = self.config.get("task_rew_coef", 1.0)
-            self.amp_rew_coef = self.config.get("amp_rew_coef", 1.0)
-            self.disc_loss_coef = self.config.get("disc_loss_coef", 1.0)
-            self.disc_grad_penalty_coef = self.config.get(
-                "disc_grad_penalty_coef", 0.1
-            )
-            self.disc_loss_type = self.config.get("disc_loss_type", "lsgan")
-            self.amp_rew_scale = self.config.get("amp_rew_scale", 1.0)
-            self.adaptive_disc_rew = self.config.get(
-                "adaptive_disc_rew", False
-            )
-            self.smoothed_task_rew_scale = 0.1
-            self.smoothed_disc_rew_scale = 0.1
-            self.smooth_gamma = 1.0 - 1e-2
-
-        # RND configuration
-        self.use_rnd = self.config.get("use_rnd", False)
-        if self.use_rnd:
-            self.rnd_rew_coef = self.config.get("rnd_rew_coef", 1.0)
-            self.rnd_loss_coef = self.config.get("rnd_loss_coef", 1.0)
-            self.rnd_learning_rate = self.config.get("rnd_learning_rate", 1e-4)
-            self.rnd_reward_norm = self.config.get("rnd_reward_norm", True)
-            if self.rnd_reward_norm:
-                self.rnd_reward_normalizer = RunningMeanStdNormalizer(
-                    feature_dim=1, epsilon=1e-8
-                ).to(self.device)
-            logger.info(
-                f"RND enabled with reward coefficient: {self.rnd_rew_coef}"
-            )
-
+        # Distillation / DAgger configuration (teacher-student)
         self.teacher_actor_ckpt_path = self.config.get(
             "teacher_actor_ckpt_path", None
         )
-        self.use_dagger = (
-            True
-            if self.config.get("teacher_actor_ckpt_path", None) is not None
-            else False
+        self.dagger_only: bool = bool(self.config.get("dagger_only", False))
+        self.dagger_anneal: bool = bool(self.config.get("dagger_anneal", True))
+        self.dagger_anneal_degree: float = float(
+            self.config.get("dagger_anneal_degree", 1.0e-5)
         )
-        if self.use_dagger:
-            logger.info(
-                f"Using Dagger with teacher actor checkpoint from {self.teacher_actor_ckpt_path}"
-            )
+        self.dagger_coef: float = float(
+            self.config.get("dagger_init_coef", 1.0)
+        )
+        self.rl_warmup: bool = bool(self.config.get("rl_warmup", False))
+        self.rl_warmup_degree: float = float(
+            self.config.get("rl_warmup_degree", 1.0e-5)
+        )
+        self.rl_coef: float = float(self.config.get("rl_init_coef", 1.0))
+        # Teacher rollout annealing
+        self.use_teacher_rollout_annealing: bool = bool(
+            self.config.get("use_teacher_rollout_annealing", False)
+        )
+        self.teacher_rollout_prob: float = float(
+            self.config.get("teacher_rollout_init_prob", 0.0)
+        )
+        self.teacher_rollout_anneal_degree: float = float(
+            self.config.get("teacher_rollout_anneal_degree", 1.0e-5)
+        )
+        self.teacher_rollout_min_prob: float = float(
+            self.config.get("teacher_rollout_min_prob", 0.0)
+        )
+        # Teacher observation normalization (frozen)
+        self.teacher_normalize_observations: bool = False
+        self.teacher_obs_normalizer = None
 
-            self.dagger_anneal = self.config.get("dagger_anneal", True)
-            self.dagger_anneal_degree = self.config.get(
-                "dagger_anneal_degree", 1.0e-5
-            )
-            self.dagger_coef = self.config.get("dagger_init_coef", 1.0)
+        self.enable_online_eval = self.config.get("enable_online_eval", False)
 
-            # DAgger teacher rollout annealing configuration
-            self.use_teacher_rollout_annealing = self.config.get(
-                "use_teacher_rollout_annealing", False
-            )
-            if self.use_teacher_rollout_annealing:
-                self.teacher_rollout_prob = self.config.get(
-                    "teacher_rollout_init_prob", 1.0
-                )
-                self.teacher_rollout_anneal_degree = self.config.get(
-                    "teacher_rollout_anneal_degree", 1.0e-5
-                )
-                self.teacher_rollout_min_prob = self.config.get(
-                    "teacher_rollout_min_prob", 0.0
-                )
-                logger.info(
-                    f"DAgger teacher rollout annealing enabled: "
-                    f"init_prob={self.teacher_rollout_prob}, "
-                    f"anneal_degree={self.teacher_rollout_anneal_degree}, "
-                    f"min_prob={self.teacher_rollout_min_prob}"
-                )
-            else:
-                # Backward compatibility: no teacher rollout annealing
-                self.use_teacher_rollout_annealing = False
-                self.teacher_rollout_prob = 0.0
-            self.rl_warmup = self.config.get("rl_warmup", False)
-            self.rl_warmup_degree = self.config.get("rl_warmup_degree", 1.0e-5)
-            self.rl_coef = self.config.get("rl_init_coef", 1.0)
-        else:
-            # No DAgger: ensure teacher rollout annealing is disabled
-            self.use_teacher_rollout_annealing = False
-            self.teacher_rollout_prob = 0.0
+    def _setup_seeding(self) -> None:
+        self.base_seed = int(self.config.get("seed", int(time.time())))
+        self.seed = int(self.base_seed + int(self.process_rank))
+        random.seed(self.seed)
+        np.random.seed(self.seed)
+        torch.manual_seed(self.seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(self.seed)
+        self.env.seed(self.seed)
 
-        self.predict_local_body_pos = self.config.get(
-            "predict_local_body_pos",
-            False,
-        )
-        self.predict_local_body_vel = self.config.get(
-            "predict_local_body_vel",
-            False,
-        )
-        self.predict_root_lin_vel = self.config.get(
-            "predict_root_lin_vel",
-            False,
-        )
+    def _setup_data_buffers(self):
+        self.tot_timesteps = 0
+        self.tot_time = 0
+        self.current_learning_iteration = 0
 
-        self.pred_local_body_pos_alpha = self.config.get(
-            "pred_local_body_pos_alpha",
-            1.0,
+        self.start_time = 0
+        self.stop_time = 0
+        self.collection_time = 0
+        self.learn_time = 0
+
+        self.online_eval_metrics_history = []
+
+        self.ep_infos = []
+        self.rewbuffer = deque(maxlen=100)
+        self.lenbuffer = deque(maxlen=100)
+
+        self.cur_reward_sum = torch.zeros(
+            self.env.num_envs,
+            dtype=torch.float,
+            device=self.device,
         )
-        self.pred_local_body_vel_alpha = self.config.get(
-            "pred_local_body_vel_alpha",
-            0.1,
-        )
-        self.pred_root_lin_vel_alpha = self.config.get(
-            "pred_root_lin_vel_alpha",
-            0.1,
+        self.cur_episode_length = torch.zeros(
+            self.env.num_envs,
+            dtype=torch.float,
+            device=self.device,
         )
 
-        # Initialize teacher observation normalization attributes
-        self.teacher_normalize_observations = False
-        self.teacher_obs_normalizers = {}
-        self.obs_norm_epsilon = self.config.get("obs_norm_epsilon", 1e-8)
-
-    def _log_distributed_setup(self):
-        """Comprehensive distributed training setup diagnostics."""
-        import socket
-        import os
-
-        # Get hostname and environment info
-        hostname = socket.gethostname()
-        host_ip = socket.gethostbyname(hostname)
-
-        logger.info("=" * 80)
-        logger.info("🚨 DISTRIBUTED TRAINING DIAGNOSTICS 🚨")
-        logger.info("=" * 80)
-
-        # Basic environment info
-        logger.info(f"🏠 Hostname: {hostname}")
-        logger.info(f"🌐 Host IP: {host_ip}")
-        logger.info(f"🔧 Device: {self.device}")
-
-        # Environment variables crucial for distributed training
-        env_vars = [
-            "MASTER_ADDR",
-            "MASTER_PORT",
-            "RANK",
-            "LOCAL_RANK",
-            "WORLD_SIZE",
-            "NODE_RANK",
-            "RDZV_PORT",
-            "RDZV_ENDPOINT",
-            "TORCH_DISTRIBUTED_DEBUG",
-            "NCCL_DEBUG",
-            "NCCL_SOCKET_IFNAME",
-        ]
-
-        logger.info("📋 Environment Variables:")
-        for var in env_vars:
-            value = os.getenv(var, "NOT_SET")
-            logger.info(f"  {var}: {value}")
-
-        # Accelerator information
-        logger.info("🚀 Accelerator Information:")
-        logger.info(f"  Process Index: {self.accelerator.process_index}")
-        logger.info(
-            f"  Local Process Index: {self.accelerator.local_process_index}"
+        self.storage = RolloutStorage(
+            self.num_envs,
+            self.num_steps_per_env,
+            [self.num_obs],
+            [self.num_privileged_obs],
+            [self.num_actions],
+            device=self.device,
+            command_name=self.command_name,
         )
-        logger.info(f"  Num Processes: {self.accelerator.num_processes}")
-        logger.info(f"  Is Main Process: {self.accelerator.is_main_process}")
-        logger.info(f"  Device: {self.accelerator.device}")
-        logger.info(f"  Mixed Precision: {self.accelerator.mixed_precision}")
-
-        # PyTorch Distributed information
-        logger.info("🔗 PyTorch Distributed Information:")
-        logger.info(f"  Available: {torch.distributed.is_available()}")
-        logger.info(f"  Initialized: {torch.distributed.is_initialized()}")
-
-        if torch.distributed.is_initialized():
-            logger.info(f"  Backend: {torch.distributed.get_backend()}")
-            logger.info(f"  World Size: {torch.distributed.get_world_size()}")
-            logger.info(f"  Rank: {torch.distributed.get_rank()}")
-
-            # Check if we can communicate with other processes
-            try:
-                # Simple all_reduce test
-                test_tensor = torch.tensor(1.0, device=self.device)
-                torch.distributed.all_reduce(test_tensor)
-                logger.info(
-                    f"  ✅ All-reduce test successful! Sum: {test_tensor.item()}"
-                )
-                logger.info(
-                    f"  📊 Expected sum should be: {torch.distributed.get_world_size()}"
-                )
-            except Exception as e:
-                logger.error(f"  ❌ All-reduce test failed: {e}")
-        else:
-            logger.warning("  ⚠️  PyTorch Distributed NOT initialized!")
-
-        # Final assessment
-        world_size = (
-            torch.distributed.get_world_size()
-            if torch.distributed.is_initialized()
-            else self.accelerator.num_processes
-        )
-
-        logger.info("🎯 DISTRIBUTED SETUP ASSESSMENT:")
-        logger.info(f"  Actual World Size: {world_size}")
-
-        if (
-            hasattr(self, "tensorboard_writer")
-            and self.tensorboard_writer is not None
-        ):
-            logger.info(
-                f"  📊 TensorBoard Writer: ACTIVE on process {self.process_rank}"
-            )
-        else:
-            logger.info(
-                f"  📊 TensorBoard Writer: INACTIVE on process {self.process_rank}"
-            )
-
-        # Final process identification
-        logger.info("🏷️  PROCESS IDENTITY:")
-        logger.info(f"  This is process {self.process_rank} of {world_size}")
-        logger.info(f"  Main process: {self.is_main_process}")
-        logger.info(f"  Will log to TensorBoard: {self.is_main_process}")
-
-        logger.info("=" * 80)
-
-    def setup(self):
-        self._setup_models_and_optimizer()
-        self._setup_storage()
+        self.transition = RolloutStorage.Transition()
 
     def _setup_models_and_optimizer(self):
-        if self.actor_type == "MoEMLP":
-            self.actor = PPOActor(
-                obs_dim_dict=self.algo_obs_dim_dict,
-                module_config_dict=self.config.module_dict.actor,
-                num_actions=self.num_act,
-                init_noise_std=self.config.init_noise_std,
-            ).to(self.device)
-        elif (
-            self.actor_type == "MLP"
-            or self.actor_type == "TFStudent"
-            or self.actor_type == "MoEMLPV2"
-        ):
-            self.actor = PPOActor(
-                obs_dim_dict=self.obs_serializer,
-                module_config_dict=self.config.module_dict.actor,
-                num_actions=self.num_act,
-                init_noise_std=self.config.init_noise_std,
-            ).to(self.device)
-        else:
-            raise NotImplementedError
-
-        if not self.dagger_only:
-            if self.critic_type == "MLP" or self.critic_type == "MoEMLPV2":
-                self.critic = PPOCritic(
-                    obs_dim_dict=self.critic_obs_serializer,
-                    module_config_dict=self.config.module_dict.critic,
-                ).to(self.device)
-            elif self.critic_type == "MoEMLP":
-                self.critic = PPOCritic(
-                    obs_dim_dict=self.algo_obs_dim_dict,
-                    module_config_dict=self.config.module_dict.critic,
-                ).to(self.device)
-            else:
-                raise NotImplementedError
-
-            if self.use_amp:
-                if self.disc_type == "MLP":
-                    self.disc = PPOCritic(
-                        obs_dim_dict=self.obs_serializer,
-                        module_config_dict=self.config.module_dict.disc,
-                    ).to(self.device)
-                elif self.disc_type == "MoEMLP":
-                    self.disc = PPOCritic(
-                        obs_dim_dict=self.algo_obs_dim_dict,
-                        module_config_dict=self.config.module_dict.disc,
-                    ).to(self.device)
-                else:
-                    raise NotImplementedError
-
-            # Initialize RND network
-            if self.use_rnd:
-                rnd_obs_dim = (
-                    self.obs_serializer
-                    if hasattr(self, "obs_serializer") and self.obs_serializer
-                    else self.algo_obs_dim_dict
-                )
-                self.rnd_net = RNDNet(
-                    obs_dim_dict=rnd_obs_dim,
-                    module_config_dict=self.config.module_dict.get("rnd", {}),
-                ).to(self.device)
-
-        logger.info("Actor:\n" + str(self.actor))
-        if not self.dagger_only:
-            logger.info("Critic:\n" + str(self.critic))
-            if self.use_amp:
-                logger.info("Disc:\n" + str(self.disc))
-            if self.use_rnd:
-                logger.info("RND Network:\n" + str(self.rnd_net))
-
-        self.actor_optimizer = optim.AdamW(
-            self.actor.parameters(), lr=self.actor_learning_rate
-        )
-
-        if not self.dagger_only:
-            self.critic_optimizer = optim.AdamW(
-                self.critic.parameters(), lr=self.critic_learning_rate
-            )
-            if self.use_amp:
-                self.disc_optimizer = optim.AdamW(
-                    self.disc.parameters(),
-                    lr=self.critic_learning_rate,
-                    betas=(0.0, 0.99),
-                )
-            if self.use_rnd:
-                self.rnd_optimizer = optim.Adam(
-                    self.rnd_net.parameters(),
-                    lr=self.rnd_learning_rate,
-                )
-
-        if self.use_accelerate and hasattr(self, "accelerator"):
-            # accelerator.prepare should handle compiled models correctly
-            self.actor, self.actor_optimizer = self.accelerator.prepare(
-                self.actor, self.actor_optimizer
-            )
-            if not self.dagger_only:
-                self.critic, self.critic_optimizer = self.accelerator.prepare(
-                    self.critic, self.critic_optimizer
-                )
-                if self.use_amp:
-                    self.disc, self.disc_optimizer = self.accelerator.prepare(
-                        self.disc, self.disc_optimizer
-                    )
-                if self.use_rnd:
-                    self.rnd_net, self.rnd_optimizer = (
-                        self.accelerator.prepare(
-                            self.rnd_net, self.rnd_optimizer
-                        )
-                    )
-
-        if self.use_dagger and self.teacher_actor_ckpt_path is not None:
-            # Setup teacher actor with hydra config
-            teacher_actor_type = self.config.module_dict.teacher_actor.get(
-                "type", "MLP"
-            )
-            if (
-                teacher_actor_type == "MLP"
-                or teacher_actor_type == "TFStudent"
-            ):
-                self.teacher_actor = PPOActor(
-                    obs_dim_dict=self.teacher_obs_serializer,
-                    module_config_dict=self.config.module_dict.teacher_actor,
-                    num_actions=self.num_act,
-                    init_noise_std=self.config.init_noise_std,
-                ).to(self.device)
-            elif teacher_actor_type == "MoEMLP":
-                self.teacher_actor = PPOActor(
-                    obs_dim_dict=self.algo_obs_dim_dict,
-                    module_config_dict=self.config.module_dict.teacher_actor,
-                    num_actions=self.num_act,
-                    init_noise_std=self.config.init_noise_std,
-                ).to(self.device)
-            else:
-                raise NotImplementedError
-
-            logger.info("Teacher actor:\n" + str(self.teacher_actor))
-            # Freeze teacher actor
-            self.teacher_actor.to(self.device)
-            self.teacher_actor.eval()
-            for param in self.teacher_actor.parameters():
-                param.requires_grad = False
-            if self.use_accelerate and hasattr(self, "accelerator"):
-                self.teacher_actor = self.accelerator.prepare(
-                    self.teacher_actor
-                )
-
-        # Log brief summaries of the models
-        self._log_model_summary(self.actor, "Actor")
-        if not self.dagger_only:
-            self._log_model_summary(self.critic, "Critic")
-            if self.use_amp:
-                self._log_model_summary(self.disc, "Discriminator")
-            if self.use_rnd:
-                self._log_model_summary(self.rnd_net, "RND Network")
-        if self.use_dagger and hasattr(self, "teacher_actor"):
-            self._log_model_summary(self.teacher_actor, "Teacher Actor")
-
-    def _setup_storage(self):
-        self.storage = RolloutStorage(
-            self.env.num_envs, self.num_steps_per_env, device=self.device
-        )
-        ## Register obs keys
-        for obs_key, obs_dim in self.algo_obs_dim_dict.items():
-            self.storage.register_key(
-                obs_key, shape=(obs_dim,), dtype=torch.float
-            )
-
-        ## Register others
-        self.storage.register_key(
-            "actions", shape=(self.num_act,), dtype=torch.float
-        )
-        self.storage.register_key("rewards", shape=(1,), dtype=torch.float)
-        self.storage.register_key("dones", shape=(1,), dtype=torch.bool)
-        self.storage.register_key("values", shape=(1,), dtype=torch.float)
-        self.storage.register_key("returns", shape=(1,), dtype=torch.float)
-        self.storage.register_key("advantages", shape=(1,), dtype=torch.float)
-        self.storage.register_key(
-            "actions_log_prob", shape=(1,), dtype=torch.float
-        )
-        self.storage.register_key(
-            "action_mean", shape=(self.num_act,), dtype=torch.float
-        )
-        self.storage.register_key(
-            "action_sigma", shape=(self.num_act,), dtype=torch.float
-        )
-
-        if self.use_amp:
-            self.storage.register_key(
-                "disc_demo_obs",
-                shape=(self.env.config.amp.amp_obs_size,),
-                dtype=torch.float,
-            )
-            self.storage.register_key(
-                "amp_valid_sample_mask",
-                shape=(1,),
-                dtype=torch.bool,
-            )
-            # Add storage for task and discriminator rewards
-            self.storage.register_key(
-                "task_rewards", shape=(1,), dtype=torch.float
-            )
-            self.storage.register_key(
-                "disc_rewards", shape=(1,), dtype=torch.float
-            )
-
-        if self.use_rnd:
-            self.storage.register_key(
-                "rnd_rewards", shape=(1,), dtype=torch.float
-            )
-
-        if self.use_dagger:
-            self.storage.register_key(
-                "teacher_actions", shape=(self.num_act,), dtype=torch.float
-            )
-            if self.use_teacher_rollout_annealing:
-                self.storage.register_key(
-                    "use_teacher_for_rollout", shape=(1,), dtype=torch.bool
-                )
-
-        self.num_all_bodies = self.config.get(
-            "num_rigid_bodies", 0
-        ) + self.config.get("num_extended_bodies", 0)
-
-        if self.predict_local_body_pos:
-            self.storage.register_key(
-                "local_body_pos_extend_flat",
-                shape=(self.num_all_bodies * 3,),
-                dtype=torch.float,
-            )
-        if self.predict_local_body_vel:
-            self.storage.register_key(
-                "local_body_vel_extend_flat",
-                shape=(self.num_all_bodies * 3,),
-                dtype=torch.float,
-            )
-        if self.predict_root_lin_vel:
-            self.storage.register_key(
-                "root_lin_vel",
-                shape=(3,),
-                dtype=torch.float,
-            )
-
-    def _eval_mode(self):
-        # Handle both DDP-wrapped and normal models
-        actor = (
-            self.actor.module if hasattr(self.actor, "module") else self.actor
-        )
-        actor.eval()
-        if not self.dagger_only:
-            critic = (
-                self.critic.module
-                if hasattr(self.critic, "module")
-                else self.critic
-            )
-            critic.eval()
-
-    def _train_mode(self):
-        actor = (
-            self.actor.module if hasattr(self.actor, "module") else self.actor
-        )
-        actor.train()
-        if not self.dagger_only:
-            critic = (
-                self.critic.module
-                if hasattr(self.critic, "module")
-                else self.critic
-            )
-            critic.train()
-
-    @staticmethod
-    def _clean_state_dict(state_dict):
-        """Remove the '_orig_mod.' prefix from keys if it exists."""
-        cleaned_dict = {}
-        prefix = "_orig_mod."
-        prefix_len = len(prefix)
-        for k, v in state_dict.items():
-            if k.startswith(prefix):
-                cleaned_dict[k[prefix_len:]] = v
-            else:
-                cleaned_dict[k] = v
-        return cleaned_dict
-
-    def load(self, ckpt_path):
-        self.ckpt_path = ckpt_path
+        self.obs_serializer = self.env.obs_serializer
+        self.critic_obs_serializer = self.env.critic_obs_serializer
         if self.teacher_actor_ckpt_path is not None:
-            # Load teacher actor checkpoint
+            self.teacher_obs_serializer = self.env.teacher_obs_serializer
+            self.use_dagger = True
+        else:
+            self.use_dagger = False
+        self.actor_type = self.config.module_dict.actor.get("type", "MLP")
+        self.critic_type = self.config.module_dict.critic.get("type", "MLP")
+        if self.actor_type == "ConvMoEMLPV2":
+            self.use_MoE = True
+        else:
+            self.use_MoE = False
+        self.actor = PPOActor(
+            obs_dim_dict=self.obs_serializer,
+            module_config_dict=self.config.module_dict.actor,
+            num_actions=self.num_actions,
+            init_noise_std=self.config.init_noise_std,
+        ).to(self.device)
+
+        self.critic = PPOCritic(
+            obs_dim_dict=self.critic_obs_serializer,
+            module_config_dict=self.config.module_dict.critic,
+        ).to(self.device)
+
+        optimizer_class = getattr(optim, self.optimizer_type)
+
+        if self.is_main_process:
+            logger.info("Actor:\n" + str(self.actor))
+            logger.info("Critic:\n" + str(self.critic))
+            # Log actor and critic parameter counts (in millions)
+            actor_params = sum(p.numel() for p in self.actor.parameters())
+            critic_params = sum(p.numel() for p in self.critic.parameters())
+            params_table = [
+                ["Actor", f"{actor_params / 1.0e6:.3f}"],
+                ["Critic", f"{critic_params / 1.0e6:.3f}"],
+                ["Total", f"{(actor_params + critic_params) / 1.0e6:.3f}"],
+            ]
+            logger.info(
+                "Model Summary:\n"
+                + tabulate(
+                    params_table,
+                    headers=["Model", "Params (M)"],
+                    tablefmt="simple_outline",
+                )
+            )
+
+        # Create separate optimizers for actor and critic
+        self.actor_optimizer = optimizer_class(
+            self.actor.parameters(),
+            lr=self.actor_learning_rate,
+        )
+        self.critic_optimizer = optimizer_class(
+            self.critic.parameters(),
+            lr=self.critic_learning_rate,
+        )
+
+        # Prepare models and optimizers with accelerator
+        # Note: If dynamo_backend is configured, Accelerate will automatically
+        # compile models during prepare() using the specified backend.
+        dynamo_backend = self.config.get("dynamo_backend", None)
+        if dynamo_backend and self.is_main_process:
+            logger.info(
+                f"Models will be compiled with dynamo_backend='{dynamo_backend}' "
+                "during accelerator.prepare()"
+            )
+        (
+            self.actor,
+            self.critic,
+            self.actor_optimizer,
+            self.critic_optimizer,
+        ) = self.accelerator.prepare(
+            self.actor,
+            self.critic,
+            self.actor_optimizer,
+            self.critic_optimizer,
+        )
+
+        # Setup teacher actor for distillation (frozen)
+        self.teacher_actor = None
+        if self.use_dagger and self.teacher_actor_ckpt_path is not None:
+            self.teacher_actor = PPOActor(
+                obs_dim_dict=self.teacher_obs_serializer,
+                module_config_dict=self.config.module_dict.actor,
+                num_actions=self.num_actions,
+                init_noise_std=self.config.init_noise_std,
+            ).to(self.device)
+
+            # Freeze teacher
+            self.teacher_actor.eval()
+            for p in self.teacher_actor.parameters():
+                p.requires_grad = False
+
+            # Load teacher checkpoint (support both separate and rsl formats)
+            if self.is_main_process:
+                logger.info(
+                    f"Loading teacher actor checkpoint from {self.teacher_actor_ckpt_path}"
+                )
             teacher_ckpt = torch.load(
                 self.teacher_actor_ckpt_path, map_location=self.device
             )
-            self.teacher_actor.load_state_dict(
-                teacher_ckpt["actor_model_state_dict"], strict=True
-            )
-            logger.info("Teacher actor loaded from checkpoint successfully !")
-            if self.load_critic_when_dagger:
-                cleaned_critic_state_dict = self._clean_state_dict(
-                    teacher_ckpt["critic_model_state_dict"]
+
+            if "actor_model_state_dict" in teacher_ckpt:
+                teacher_actor_state = self._clean_state_dict(
+                    teacher_ckpt["actor_model_state_dict"]
                 )
-                if self.use_accelerate and hasattr(self, "accelerator"):
-                    self.accelerator.unwrap_model(self.critic).load_state_dict(
-                        cleaned_critic_state_dict, strict=True
-                    )
-                else:
-                    self.critic.load_state_dict(
-                        cleaned_critic_state_dict, strict=True
-                    )
-                logger.info(
-                    "Strict loading of critic state dict from teacher checkpoint successful!"
+            elif "model_state_dict" in teacher_ckpt:
+                cleaned = self._clean_state_dict(
+                    teacher_ckpt["model_state_dict"]
                 )
-
-            if self.use_amp:
-                if "disc_model_state_dict" in teacher_ckpt:
-                    cleaned_disc_state_dict = self._clean_state_dict(
-                        teacher_ckpt["disc_model_state_dict"]
-                    )
-                    if self.use_accelerate and hasattr(self, "accelerator"):
-                        self.accelerator.unwrap_model(
-                            self.disc
-                        ).load_state_dict(cleaned_disc_state_dict, strict=True)
-                    else:
-                        self.disc.load_state_dict(
-                            cleaned_disc_state_dict, strict=True
-                        )
-                    logger.info(
-                        "Strict loading of discriminator state dict successful!"
-                    )
-                else:
-                    logger.warning(
-                        "use_amp is True, but 'disc_model_state_dict' not found in checkpoint. Skipping discriminator model loading."
-                    )
-
-        if ckpt_path is not None:
-            logger.info(f"Loading checkpoint from {ckpt_path}")
-            loaded_dict = torch.load(ckpt_path, map_location=self.device)
-
-            # Clean the state dicts to remove potential compilation prefixes
-            cleaned_actor_state_dict = self._clean_state_dict(
-                loaded_dict["actor_model_state_dict"]
-            )
-
-            if (
-                not self.dagger_only
-                and "critic_model_state_dict" in loaded_dict
-            ):
-                cleaned_critic_state_dict = self._clean_state_dict(
-                    loaded_dict["critic_model_state_dict"]
-                )
+                teacher_actor_state = {
+                    k[6:]: v
+                    for k, v in cleaned.items()
+                    if k.startswith("actor.")
+                }
             else:
-                logger.warning(
-                    "critic_model_state_dict not found in checkpoint. Skipping critic model loading !"
-                )
+                teacher_actor_state = None
 
-            if self.use_accelerate and hasattr(self, "accelerator"):
-                self.accelerator.unwrap_model(self.actor).load_state_dict(
-                    cleaned_actor_state_dict, strict=True
+            if teacher_actor_state is not None:
+                self.teacher_actor.load_state_dict(
+                    teacher_actor_state, strict=True
                 )
-                if (
-                    not self.dagger_only
-                    and not self.donot_load_critic
-                    and "critic_model_state_dict" in loaded_dict
-                ):
-                    self.accelerator.unwrap_model(self.critic).load_state_dict(
-                        cleaned_critic_state_dict, strict=True
-                    )
-                logger.info(
-                    "Strict loading of actor and critic state dicts successful !"
-                )
+                if self.is_main_process:
+                    logger.info("Teacher actor weights loaded successfully.")
             else:
-                self.actor.load_state_dict(
-                    cleaned_actor_state_dict, strict=True
-                )
-                if not self.dagger_only and self.load_critic_when_dagger:
-                    self.critic.load_state_dict(
-                        cleaned_critic_state_dict, strict=True
-                    )
-                    logger.info(
-                        "Strict loading of actor and critic state dicts successful."
-                    )
-
-            # Load teacher's observation normalization statistics (CRITICAL for dagger consistency)
-            # Teacher normalization is INDEPENDENT of student normalization settings
-            if self.teacher_actor_ckpt_path is not None:
-                if "obs_normalizers_state" in teacher_ckpt:
-                    self.teacher_normalize_observations = True
-                    teacher_norm_state = teacher_ckpt["obs_normalizers_state"]
-
-                    # Teacher should only care about teacher_obs
-                    # Try multiple possible keys that the teacher might have used during training
-                    possible_teacher_keys = [
-                        "teacher_obs",  # Direct teacher_obs key
-                        "actor_obs",  # Teacher was trained as actor
-                    ]
-
-                    loaded_teacher_norm = False
-                    for possible_key in possible_teacher_keys:
-                        if possible_key in teacher_norm_state:
-                            # Create teacher normalizer and load frozen state
-                            teacher_normalizer = RunningMeanStdNormalizer(
-                                feature_dim=teacher_norm_state[possible_key][
-                                    "feature_dim"
-                                ],
-                                epsilon=self.obs_norm_epsilon,
-                            ).to(self.device)
-                            teacher_normalizer.set_state(
-                                teacher_norm_state[possible_key], self.device
-                            )
-                            self.teacher_obs_normalizers["teacher_obs"] = (
-                                teacher_normalizer
-                            )
-                            logger.info(
-                                f"Loaded FROZEN teacher normalizer for 'teacher_obs' from teacher checkpoint key '{possible_key}'"
-                            )
-                            loaded_teacher_norm = True
-                            break
-
-                    if not loaded_teacher_norm:
-                        logger.warning(
-                            "Teacher checkpoint contains normalizer state but no compatible observation key found. Teacher observations will NOT be normalized."
-                        )
-                        self.teacher_normalize_observations = False
-                    else:
-                        logger.info(
-                            "Teacher observation normalization loaded successfully"
-                        )
-                else:
-                    logger.info(
-                        "Teacher checkpoint has no observation normalizer state. Teacher observations will NOT be normalized."
-                    )
-
-            if self.use_amp and not self.dagger_only:
-                if self.config.get("load_disc", False):
-                    if "disc_model_state_dict" in loaded_dict:
-                        cleaned_disc_state_dict = self._clean_state_dict(
-                            loaded_dict["disc_model_state_dict"]
-                        )
-                        if self.use_accelerate and hasattr(
-                            self, "accelerator"
-                        ):
-                            self.accelerator.unwrap_model(
-                                self.disc
-                            ).load_state_dict(
-                                cleaned_disc_state_dict, strict=True
-                            )
-                        else:
-                            self.disc.load_state_dict(
-                                cleaned_disc_state_dict, strict=True
-                            )
-                        logger.info(
-                            "Strict loading of discriminator state dict successful."
-                        )
-                    else:
-                        logger.warning(
-                            "use_amp is True, but 'disc_model_state_dict' not found in checkpoint. Skipping discriminator model loading."
-                        )
-
-            if self.use_rnd:
-                if self.config.get("load_rnd", False):
-                    if "rnd_model_state_dict" in loaded_dict:
-                        cleaned_rnd_state_dict = self._clean_state_dict(
-                            loaded_dict["rnd_model_state_dict"]
-                        )
-                        if self.use_accelerate and hasattr(
-                            self, "accelerator"
-                        ):
-                            self.accelerator.unwrap_model(
-                                self.rnd_net
-                            ).load_state_dict(
-                                cleaned_rnd_state_dict, strict=True
-                            )
-                        else:
-                            self.rnd_net.load_state_dict(
-                                cleaned_rnd_state_dict, strict=True
-                            )
-                        logger.info(
-                            "Strict loading of RND network state dict successful."
-                        )
-                    else:
-                        logger.warning(
-                            "use_rnd is True, but 'rnd_model_state_dict' not found in checkpoint. Skipping RND model loading."
-                        )
-
-            if self.load_optimizer:
-                self.actor_optimizer.load_state_dict(
-                    loaded_dict["actor_optimizer_state_dict"]
-                )
-                if (
-                    not self.dagger_only
-                    and "critic_optimizer_state_dict" in loaded_dict
-                ):
-                    self.critic_optimizer.load_state_dict(
-                        loaded_dict["critic_optimizer_state_dict"]
-                    )
-                    if self.use_amp:
-                        if self.config.get("load_disc", False):
-                            if "disc_optimizer_state_dict" in loaded_dict:
-                                self.disc_optimizer.load_state_dict(
-                                    loaded_dict["disc_optimizer_state_dict"]
-                                )
-                                logger.info(
-                                    "Discriminator optimizer loaded from checkpoint"
-                                )
-                            else:
-                                logger.warning(
-                                    "use_amp is True, but 'disc_optimizer_state_dict' not found in checkpoint. Skipping discriminator optimizer loading."
-                                )
-                    if self.use_rnd:
-                        if self.config.get("load_rnd", False):
-                            if "rnd_optimizer_state_dict" in loaded_dict:
-                                self.rnd_optimizer.load_state_dict(
-                                    loaded_dict["rnd_optimizer_state_dict"]
-                                )
-                                logger.info(
-                                    "RND optimizer loaded from checkpoint"
-                                )
-                            else:
-                                logger.warning(
-                                    "use_rnd is True, but 'rnd_optimizer_state_dict' not found in checkpoint. Skipping RND optimizer loading."
-                                )
-
-                if (
-                    not self.dagger_only
-                    and self.load_critic_when_dagger
-                    and self.teacher_actor_ckpt_path is not None
-                ):
-                    self.critic_optimizer.load_state_dict(
-                        teacher_ckpt["critic_optimizer_state_dict"]
-                    )
-                    self.critic_learning_rate = teacher_ckpt[
-                        "critic_optimizer_state_dict"
-                    ]["param_groups"][0]["lr"]
-                    logger.info(
-                        "Strict loading of critic state dict and optimizer state dict from teacher checkpoint successful!"
-                    )
-
-                self.actor_learning_rate = loaded_dict[
-                    "actor_optimizer_state_dict"
-                ]["param_groups"][0]["lr"]
-
-                logger.info("Optimizer loaded from checkpoint")
-                logger.info(f"Actor Learning rate: {self.actor_learning_rate}")
-                if not self.dagger_only:
-                    logger.info(
-                        f"Critic Learning rate: {self.critic_learning_rate}"
-                    )
-            self.current_learning_iteration = loaded_dict["iter"]
-            if "env_curriculum" in loaded_dict:
-                curriculum_dict = loaded_dict["env_curriculum"]
-                if (
-                    self.env.use_reward_penalty_curriculum
-                    and "reward_penalty_scale" in curriculum_dict
-                ):
-                    self.env.reward_penalty_scale = curriculum_dict[
-                        "reward_penalty_scale"
-                    ]
-                if (
-                    self.env.use_reward_limits_dof_pos_curriculum
-                    and "soft_dof_pos_curriculum_value" in curriculum_dict
-                ):
-                    self.env.soft_dof_pos_curriculum_value = curriculum_dict[
-                        "soft_dof_pos_curriculum_value"
-                    ]
-                if (
-                    self.env.use_reward_limits_dof_vel_curriculum
-                    and "soft_dof_vel_curriculum_value" in curriculum_dict
-                ):
-                    self.env.soft_dof_vel_curriculum_value = curriculum_dict[
-                        "soft_dof_vel_curriculum_value"
-                    ]
-                if (
-                    self.env.use_reward_limits_torque_curriculum
-                    and "soft_torque_curriculum_value" in curriculum_dict
-                ):
-                    self.env.soft_torque_curriculum_value = curriculum_dict[
-                        "soft_torque_curriculum_value"
-                    ]
-                if (
-                    self.env.add_noise_currculum
-                    and "current_noise_curriculum_value" in curriculum_dict
-                ):
-                    self.env.current_noise_curriculum_value = curriculum_dict[
-                        "current_noise_curriculum_value"
-                    ]
-                if (
-                    self.env.config.termination.terminate_when_motion_far
-                    and self.env.config.termination_curriculum.terminate_when_motion_far_curriculum
-                    and "average_episode_length" in curriculum_dict
-                    and "terminate_when_motion_far_threshold"
-                    in curriculum_dict
-                ):
-                    self.env.average_episode_length = curriculum_dict[
-                        "average_episode_length"
-                    ]
-                    self.env.terminate_when_motion_far_threshold = (
-                        curriculum_dict["terminate_when_motion_far_threshold"]
-                    )
-
-                # Load current entropy coefficient for proper training resumption
-                if (
-                    hasattr(self.env, "entropy_coef")
-                    and "entropy_coef" in curriculum_dict
-                    and self.config.get("load_entropy_coef", True)
-                ):
-                    self.env.entropy_coef = curriculum_dict["entropy_coef"]
-                    logger.info(
-                        f"Loaded entropy coefficient: {self.env.entropy_coef}"
-                    )
-                    # Update PPO agent's entropy coefficient to match environment
-                    self.entropy_coef = self.env.entropy_coef
-
-            if self.normalize_rewards and hasattr(self, "reward_normalizer"):
-                if "reward_normalizer_state" in loaded_dict:
-                    self.reward_normalizer.set_state(
-                        loaded_dict["reward_normalizer_state"],
-                        new_buffer_device=self.device,
-                    )
-                    logger.info(
-                        "Reward normalizer state loaded from checkpoint."
-                    )
-                else:
+                if self.is_main_process:
                     logger.warning(
-                        "normalize_rewards is True, but 'reward_normalizer_state' not found in checkpoint. Initializing new reward normalizer."
+                        "Teacher checkpoint missing actor weights. Distillation will run uninitialized."
                     )
 
-            if (
-                self.use_rnd
-                and self.rnd_reward_norm
-                and hasattr(self, "rnd_reward_normalizer")
-            ):
-                if "rnd_reward_normalizer_state" in loaded_dict:
-                    self.rnd_reward_normalizer.set_state(
-                        loaded_dict["rnd_reward_normalizer_state"],
-                        new_buffer_device=self.device,
-                    )
-                    logger.info(
-                        "RND reward normalizer state loaded from checkpoint."
-                    )
-                else:
-                    logger.warning(
-                        "use_rnd with reward normalization is True, but 'rnd_reward_normalizer_state' not found in checkpoint. Initializing new RND reward normalizer."
-                    )
-
-            return loaded_dict["infos"]
-
-    def save(self, path, infos=None):
-        if not self.is_main_process:
+        if not self.obs_norm_enabled:
+            self.obs_normalizer = torch.nn.Identity().to(self.device)
+            self.privileged_obs_normalizer = torch.nn.Identity().to(
+                self.device
+            )
             return
 
-        logger.info(f"Saving checkpoint to {path}")
+        self.obs_normalizer = EmpiricalNormalization(
+            shape=[self.num_obs], eps=self.obs_norm_epsilon
+        ).to(self.device)
 
-        env_curriculum = {}
-        if self.env.use_reward_penalty_curriculum:
-            env_curriculum["reward_penalty_scale"] = (
-                self.env.reward_penalty_scale
-            )
-        if self.env.use_reward_limits_dof_pos_curriculum:
-            env_curriculum["soft_dof_pos_curriculum_value"] = (
-                self.env.soft_dof_pos_curriculum_value
-            )
-        if self.env.use_reward_limits_dof_vel_curriculum:
-            env_curriculum["soft_dof_vel_curriculum_value"] = (
-                self.env.soft_dof_vel_curriculum_value
-            )
-        if self.env.use_reward_limits_torque_curriculum:
-            env_curriculum["soft_torque_curriculum_value"] = (
-                self.env.soft_torque_curriculum_value
-            )
-        if self.env.add_noise_currculum:
-            env_curriculum["current_noise_curriculum_value"] = (
-                self.env.current_noise_curriculum_value
-            )
-        if (
-            self.env.config.termination.terminate_when_motion_far
-            and self.env.config.termination_curriculum.terminate_when_motion_far_curriculum  # noqa: E501
-        ):
-            env_curriculum["average_episode_length"] = (
-                self.env.average_episode_length
-            )
-            env_curriculum["terminate_when_motion_far_threshold"] = (
-                self.env.terminate_when_motion_far_threshold
-            )
+        self.privileged_obs_normalizer = EmpiricalNormalization(
+            shape=[self.num_privileged_obs],
+            eps=self.obs_norm_epsilon,
+        ).to(self.device)
 
-        # Save current entropy coefficient for proper training resumption
-        if hasattr(self.env, "entropy_coef"):
-            env_curriculum["entropy_coef"] = self.env.entropy_coef
+    def _setup_simulator(self):
+        _ = self.env.reset_all()
 
-        # Get unwrapped model state dict if using accelerate
-        actor_state = (
-            self.accelerator.unwrap_model(self.actor).state_dict()
-            if (self.use_accelerate and hasattr(self, "accelerator"))
-            else self.actor.state_dict()
+    def act(self, obs, critic_obs):
+        """Act function using separate actor and critic."""
+        actions, actions_log_prob, mu, sigma, _ = self.actor(
+            obs, actions=None, mode="sampling"
         )
-        if not self.dagger_only:
-            critic_state = (
-                self.accelerator.unwrap_model(self.critic).state_dict()
-                if (self.use_accelerate and hasattr(self, "accelerator"))
-                else self.critic.state_dict()
-            )
-
-        save_dict = {
-            "actor_model_state_dict": actor_state,
-            "actor_optimizer_state_dict": self.actor_optimizer.state_dict(),
-            "iter": self.current_learning_iteration,
-            "infos": infos,
-            "env_curriculum": env_curriculum,
-        }
-
-        if self.normalize_rewards and hasattr(self, "reward_normalizer"):
-            save_dict["reward_normalizer_state"] = (
-                self.reward_normalizer.get_state()
-            )
-
-        if not self.dagger_only:
-            save_dict.update(
-                {
-                    "critic_model_state_dict": critic_state,
-                    "critic_optimizer_state_dict": self.critic_optimizer.state_dict(),  # noqa: E501
-                }
-            )
-
-        if self.use_amp and not self.dagger_only:
-            disc_state = (
-                self.accelerator.unwrap_model(self.disc).state_dict()
-                if (self.use_accelerate and hasattr(self, "accelerator"))
-                else self.disc.state_dict()
-            )
-            save_dict["disc_model_state_dict"] = disc_state
-            save_dict["disc_optimizer_state_dict"] = (
-                self.disc_optimizer.state_dict()
-            )
-
-        if self.use_rnd:
-            rnd_state = (
-                self.accelerator.unwrap_model(self.rnd_net).state_dict()
-                if (self.use_accelerate and hasattr(self, "accelerator"))
-                else self.rnd_net.state_dict()
-            )
-            save_dict["rnd_model_state_dict"] = rnd_state
-            save_dict["rnd_optimizer_state_dict"] = (
-                self.rnd_optimizer.state_dict()
-            )
-            if self.rnd_reward_norm and hasattr(self, "rnd_reward_normalizer"):
-                save_dict["rnd_reward_normalizer_state"] = (
-                    self.rnd_reward_normalizer.get_state()
-                )
-
-        torch.save(save_dict, path)
-
-    def learn(self):
-        obs_dict = self.env.reset_all()
-        for obs_key in obs_dict.keys():
-            obs_dict[obs_key] = obs_dict[obs_key].to(self.device)
-
-        self._train_mode()
-
-        num_learning_iterations = self.num_learning_iterations
-
-        tot_iter = self.current_learning_iteration + num_learning_iterations
-
-        # Initialize distributed barrier for synchronized training
-        if self.use_accelerate and hasattr(self, "accelerator"):
-            self.accelerator.wait_for_everyone()
-
-        if self.is_main_process:
-            logger.info(
-                f"Starting training for {num_learning_iterations} iterations "
-                f"from iteration {self.current_learning_iteration}"
-            )
-
-        for it in range(self.current_learning_iteration, tot_iter):
-            self.start_time = time.time()
-
-            obs_dict = self._rollout_step(obs_dict)
-
-            end_of_rollout_time = time.time()
-            self.collection_time = end_of_rollout_time - self.start_time
-
-            loss_dict = self._training_step()
-
-            end_of_training_time = time.time()
-            self.learn_time = end_of_training_time - end_of_rollout_time
-
-            self.current_learning_iteration = it
-
-            # Logging
-            log_dict = {
-                "it": it,
-                "loss_dict": loss_dict,
-                "collection_time": self.collection_time,
-                "learn_time": self.learn_time,
-                "ep_infos": self.ep_infos,
-                "rewbuffer": self.rewbuffer,
-                "lenbuffer": self.lenbuffer,
-                "entropy_coef": self.entropy_coef,
-                "num_learning_iterations": num_learning_iterations,
-                "total_learning_iterations": tot_iter,
-            }
-
-            # Add RND reward logging
-            if self.use_rnd:
-                log_dict["task_rewbuffer"] = self.task_rewbuffer
-                log_dict["rnd_rewbuffer"] = self.rnd_rewbuffer
-
-            # Only log on main process when using distributed training
-            if self.is_main_process:
-                if it % self.log_interval == 0:
-                    self._post_epoch_logging(log_dict)
-                    self.env._log_motion_tracking_info()
-                if it % self.save_interval == 0:
-                    self.save(
-                        os.path.join(
-                            self.log_dir,
-                            f"model_{self.current_learning_iteration}.pt",
-                        )
-                    )
-            self.ep_infos.clear()
-
-            if self.eval_interval is not None:
-                if it > 0 and it % self.eval_interval == 0:
-                    if self.use_accelerate:
-                        self.accelerator.wait_for_everyone()
-                    self.evaluate_policy()
-
-            # Synchronize processes after each iteration
-            if self.use_accelerate and hasattr(self, "accelerator"):
-                self.accelerator.wait_for_everyone()
-
-                # 🔍 DISTRIBUTED TRAINING MONITORING (every 10 iterations)
-                if it % 10 == 0 and self.is_main_process:
-                    # Check if we're actually in distributed mode
-                    if torch.distributed.is_initialized():
-                        world_size = torch.distributed.get_world_size()
-                        if world_size > 1:
-                            logger.info(
-                                f"🔗 Distributed Training Active: {world_size} processes synchronized"
-                            )
-                    else:
-                        logger.warning(
-                            "⚠️  PyTorch Distributed not initialized!"
-                        )
-
-                # 🚨 CRITICAL: Monitor for gradient synchronization issues
-                if it % 100 == 0 and torch.distributed.is_initialized():
-                    try:
-                        # Test gradient synchronization with a simple all-reduce
-                        test_tensor = torch.tensor(
-                            float(self.process_rank), device=self.device
-                        )
-                        original_value = test_tensor.item()
-                        torch.distributed.all_reduce(test_tensor)
-
-                        expected_sum = sum(
-                            range(torch.distributed.get_world_size())
-                        )
-                        actual_sum = test_tensor.item()
-
-                        if abs(actual_sum - expected_sum) < 1e-6:
-                            if self.is_main_process:
-                                logger.info(
-                                    f"✅ Gradient sync check passed (iter {it})"
-                                )
-                        else:
-                            logger.error(
-                                f"❌ Gradient sync check FAILED at iter {it}: "
-                                f"expected {expected_sum}, got {actual_sum}"
-                            )
-                    except Exception as e:
-                        logger.error(
-                            f"❌ Gradient sync test error at iter {it}: {e}"
-                        )
-
-        # Only save on main process when using distributed training
-        if self.is_main_process:
-            self.save(
-                os.path.join(
-                    self.log_dir,
-                    f"model_{self.current_learning_iteration}.pt",
-                )
-            )
-            logger.info(f"Training completed. Model saved to {self.log_dir}")
-            if self.tensorboard_writer is not None:
-                self.tensorboard_writer.close()
-
-    def _actor_rollout_step(self, obs_dict, policy_state_dict):
-        with torch.no_grad():
-            num_envs = obs_dict["actor_obs"].shape[0]
-            use_teacher_mask = torch.zeros(
-                num_envs, dtype=torch.bool, device=self.device
-            )
-
-            if (
-                self.use_dagger
-                and self.use_teacher_rollout_annealing
-                and self.teacher_rollout_prob > 0
-            ):
-                random_vals = torch.rand(num_envs, device=self.device)
-                use_teacher_mask = random_vals < self.teacher_rollout_prob
-
-            student_actions = self._actor_act_step(obs_dict)
-
-            # Get student action statistics for policy gradient computation
-            if hasattr(self.actor, "module"):
-                action_mean = self.actor.module.action_mean.detach()
-                action_sigma = self.actor.module.action_std.detach()
-            else:
-                action_mean = self.actor.action_mean.detach()
-                action_sigma = self.actor.action_std.detach()
-
-            # Initialize actions with student actions
-            actions = student_actions.clone()
-
-            if self.use_dagger and use_teacher_mask.any():
-                teacher_obs_dict = {"teacher_obs": obs_dict["teacher_obs"]}
-                teacher_actions = self.teacher_actor.act_inference(
-                    teacher_obs_dict["teacher_obs"]
-                ).detach()
-
-                actions[use_teacher_mask] = teacher_actions[use_teacher_mask]
-
-            if hasattr(self.actor, "module"):
-                actions_log_prob = (
-                    self.actor.module.get_actions_log_prob(actions)
-                    .detach()
-                    .unsqueeze(1)
-                )
-            else:
-                actions_log_prob = (
-                    self.actor.get_actions_log_prob(actions)
-                    .detach()
-                    .unsqueeze(1)
-                )
-
-        policy_state_dict["actions"] = actions
-        policy_state_dict["action_mean"] = action_mean
-        policy_state_dict["action_sigma"] = action_sigma
-        policy_state_dict["actions_log_prob"] = actions_log_prob
-
-        # Store teacher rollout usage tracking with correct shape for storage
-        if self.use_teacher_rollout_annealing:
-            policy_state_dict["use_teacher_for_rollout"] = (
-                use_teacher_mask.unsqueeze(1).float()
-            )  # Shape: (num_envs, 1)
-
-        assert len(actions.shape) == 2
-        assert len(actions_log_prob.shape) == 2
-        assert len(action_mean.shape) == 2
-        assert len(action_sigma.shape) == 2
-
-        return policy_state_dict
-
-    def _rollout_step(self, obs_dict):
-        with torch.no_grad():
-            for _ in range(self.num_steps_per_env):
-                policy_state_dict = {}
-                policy_state_dict = self._actor_rollout_step(
-                    obs_dict, policy_state_dict
-                )
-                if not self.dagger_only:
-                    values = self._critic_eval_step(obs_dict).detach()
-                    policy_state_dict["values"] = values
-                for obs_key in obs_dict.keys():
-                    if obs_key != "disc_obs":
-                        self.storage.update_key(obs_key, obs_dict[obs_key])
-                if self.use_amp and not self.dagger_only:
-                    valid_env_ids = (
-                        self.env.episode_length_buf
-                        > self.env.config.amp_context_length
-                    )
-                    self.storage.update_key(
-                        "disc_obs",
-                        obs_dict["disc_obs"],
-                    )
-                    self.storage.update_key(
-                        "amp_valid_sample_mask",
-                        valid_env_ids[:, None],
-                    )
-                    disc_demo_obs = self.env._get_obs_amp_demo_seq_v2().to(
-                        self.device
-                    )
-                    self.storage.update_key("disc_demo_obs", disc_demo_obs)
-
-                    disc_r = torch.zeros(self.env.num_envs, device=self.device)
-                    # calculate disc reward for amp
-                    if valid_env_ids.any():
-                        with torch.no_grad():
-                            if self.use_accelerate and hasattr(
-                                self.disc, "module"
-                            ):
-                                disc_logits = self.disc.module.evaluate(
-                                    obs_dict["disc_obs"]
-                                ).detach()
-                            else:
-                                disc_logits = self.disc.evaluate(
-                                    obs_dict["disc_obs"]
-                                ).detach()
-                            # Eq. 4: Style Reward Calculation
-                            # r = max(0, 1 - 0.25 * (D(s, s') - 1)^2)
-                            style_reward_term = (
-                                1.0
-                                - 0.25 * (disc_logits.squeeze(1) - 1.0) ** 2
-                            )
-                            disc_r = torch.maximum(
-                                torch.zeros_like(style_reward_term),
-                                style_reward_term,
-                            )
-                            disc_r[~valid_env_ids] = 0.0
-                    disc_r = disc_r * self.amp_rew_scale
-
-                if self.use_dagger:
-                    with torch.no_grad():
-                        policy_state_dict["teacher_actions"] = (
-                            self.teacher_actor.act_inference(
-                                obs_dict["teacher_obs"]
-                            ).detach()
-                        )
-
-                if self.predict_local_body_pos:
-                    local_body_pos_extend_flat = (
-                        self.env._get_obs_local_body_pos_extend_flat()
-                    )
-                    self.storage.update_key(
-                        "local_body_pos_extend_flat",
-                        local_body_pos_extend_flat,
-                    )
-                if self.predict_local_body_vel:
-                    local_body_vel_extend_flat = (
-                        self.env._get_obs_local_body_vel_extend_flat()
-                    )
-                    self.storage.update_key(
-                        "local_body_vel_extend_flat",
-                        local_body_vel_extend_flat,
-                    )
-                if self.predict_root_lin_vel:
-                    root_lin_vel = self.env._get_obs_base_lin_vel()
-                    self.storage.update_key("root_lin_vel", root_lin_vel)
-
-                # Add policy output and states into storage
-                for obs_ in policy_state_dict.keys():
-                    self.storage.update_key(obs_, policy_state_dict[obs_])
-
-                actions = policy_state_dict["actions"]
-                actor_state = {}
-                actor_state["actions"] = actions
-                obs_dict, task_rewards, dones, infos = self.env.step(
-                    actor_state
-                )
-                for obs_key in obs_dict.keys():
-                    obs_dict[obs_key] = obs_dict[obs_key].to(self.device)
-                task_rewards, dones = (
-                    task_rewards.to(self.device),
-                    dones.to(self.device),
-                )
-
-                # Only accumulate logging info on the main process
-                if self.is_main_process:
-                    self.episode_env_tensors.add(infos["to_log"])
-
-                disc_rewards = torch.zeros_like(task_rewards)
-                rnd_rewards = torch.zeros_like(task_rewards)
-
-                if self.use_amp:
-                    disc_rewards = disc_r * self.amp_rew_coef
-                    if self.adaptive_disc_rew:
-                        self.smoothed_task_rew_scale = (
-                            self.smooth_gamma * self.smoothed_task_rew_scale
-                            + (1.0 - self.smooth_gamma)
-                            * task_rewards.abs().mean().item()
-                        )
-                        self.smoothed_disc_rew_scale = (
-                            self.smooth_gamma * self.smoothed_disc_rew_scale
-                            + (1.0 - self.smooth_gamma)
-                            * disc_rewards.abs().mean().item()
-                        )
-                        task_to_disc_rew_ratio = (
-                            self.smoothed_task_rew_scale
-                            / self.smoothed_disc_rew_scale
-                        )
-                        disc_rewards = (
-                            disc_rewards * task_to_disc_rew_ratio * 0.25
-                        )
-
-                # Compute RND intrinsic rewards
-                if self.use_rnd:
-                    with torch.no_grad():
-                        # Use actor observations for RND reward computation
-                        rnd_obs = obs_dict["actor_obs"]
-                        if self.use_accelerate and hasattr(
-                            self.rnd_net, "module"
-                        ):
-                            rnd_r = self.rnd_net.module.get_rnd_reward(rnd_obs)
-                        else:
-                            rnd_r = self.rnd_net.get_rnd_reward(rnd_obs)
-
-                        # Normalize RND rewards if enabled
-                        if self.rnd_reward_norm:
-                            self.rnd_reward_normalizer.update(rnd_r[:, None])
-                            if (
-                                self.use_accelerate
-                                and self.accelerator.num_processes > 1
-                                and torch.distributed.is_initialized()
-                            ):
-                                for buff_name in [
-                                    "running_mean",
-                                    "running_var",
-                                    "running_count",
-                                ]:
-                                    buff = getattr(
-                                        self.rnd_reward_normalizer, buff_name
-                                    )
-                                    torch.distributed.all_reduce(
-                                        buff, op=torch.distributed.ReduceOp.AVG
-                                    )
-                            rnd_r = self.rnd_reward_normalizer.normalize(
-                                rnd_r[:, None]
-                            ).squeeze(1)
-
-                        rnd_rewards = rnd_r * self.rnd_rew_coef
-                else:
-                    rnd_rewards = torch.zeros_like(task_rewards)
-
-                if self.use_amp and self.use_rnd:
-                    rewards = (
-                        self.task_rew_coef * task_rewards
-                        + self.amp_rew_coef * disc_rewards
-                        + rnd_rewards
-                    )
-                elif self.use_amp:
-                    rewards = (
-                        self.task_rew_coef * task_rewards
-                        + self.amp_rew_coef * disc_rewards
-                    )
-                elif self.use_rnd:
-                    rewards = task_rewards + rnd_rewards
-                else:
-                    rewards = task_rewards
-
-                rewards_for_storage_and_gae = (
-                    rewards.clone()
-                )  # This will be potentially normalized
-
-                if self.normalize_rewards:
-                    self.reward_normalizer.update(
-                        rewards_for_storage_and_gae[:, None]
-                    )  # Local update
-
-                    if (
-                        self.use_accelerate
-                        and self.accelerator.num_processes > 1
-                        and torch.distributed.is_initialized()
-                    ):
-                        for buff_name in [
-                            "running_mean",
-                            "running_var",
-                            "running_count",
-                        ]:
-                            buff = getattr(self.reward_normalizer, buff_name)
-                            torch.distributed.all_reduce(
-                                buff, op=torch.distributed.ReduceOp.AVG
-                            )
-
-                    rewards_for_storage_and_gae = (
-                        self.reward_normalizer.normalize(
-                            rewards_for_storage_and_gae[:, None]
-                        ).squeeze(1)
-                    )
-
-                    if self.clip_normalized_rewards:
-                        rewards_for_storage_and_gae = torch.clamp(
-                            rewards_for_storage_and_gae,
-                            -self.normalized_reward_clip_value,
-                            self.normalized_reward_clip_value,
-                        )
-
-                rewards_stored = rewards_for_storage_and_gae.unsqueeze(
-                    1
-                )  # Shape [num_envs, 1]
-
-                if not self.dagger_only:
-                    if "time_outs" in infos:
-                        rewards_stored += (
-                            self.gamma
-                            * policy_state_dict[
-                                "values"
-                            ]  # Values are based on (normalized) returns
-                            * infos["time_outs"].unsqueeze(1).to(self.device)
-                        )
-                assert len(rewards_stored.shape) == 2
-                self.storage.update_key("rewards", rewards_stored)
-                if self.use_amp and not self.dagger_only:
-                    self.storage.update_key(
-                        "task_rewards", task_rewards.unsqueeze(1)
-                    )
-                    self.storage.update_key(
-                        "disc_rewards", disc_rewards.unsqueeze(1)
-                    )
-                if self.use_rnd:
-                    self.storage.update_key(
-                        "rnd_rewards", rnd_rewards.unsqueeze(1)
-                    )
-                self.storage.update_key("dones", dones.unsqueeze(1))
-                self.storage.increment_step()
-
-                self._process_env_step(rewards, dones, infos)
-
-                # Only do bookkeeping for logging on the main process
-                if self.is_main_process:
-                    # Book keeping
-                    if "episode" in infos:
-                        self.ep_infos.append(infos["episode"])
-                    self.cur_reward_sum += rewards
-                    self.cur_episode_length += 1
-
-                    # Separate reward tracking for RND
-                    if self.use_rnd:
-                        self.cur_task_reward_sum += task_rewards
-                        self.cur_rnd_reward_sum += rnd_rewards
-
-                    new_ids = (dones > 0).nonzero(as_tuple=False)
-                    self.rewbuffer.extend(
-                        self.cur_reward_sum[new_ids][:, 0]
-                        .cpu()
-                        .numpy()
-                        .tolist()
-                    )
-                    self.lenbuffer.extend(
-                        self.cur_episode_length[new_ids][:, 0]
-                        .cpu()
-                        .numpy()
-                        .tolist()
-                    )
-
-                    # Separate reward buffer updates for RND
-                    if self.use_rnd and len(new_ids) > 0:
-                        self.task_rewbuffer.extend(
-                            self.cur_task_reward_sum[new_ids][:, 0]
-                            .cpu()
-                            .numpy()
-                            .tolist()
-                        )
-                        self.rnd_rewbuffer.extend(
-                            self.cur_rnd_reward_sum[new_ids][:, 0]
-                            .cpu()
-                            .numpy()
-                            .tolist()
-                        )
-                        self.cur_task_reward_sum[new_ids] = 0
-                        self.cur_rnd_reward_sum[new_ids] = 0
-
-                    self.cur_reward_sum[new_ids] = 0
-                    self.cur_episode_length[new_ids] = 0
-
-            if not self.dagger_only:
-                returns, advantages = self._compute_returns(
-                    last_obs_dict=obs_dict,
-                    policy_state_dict=dict(
-                        values=self.storage.query_key("values"),
-                        dones=self.storage.query_key("dones"),
-                        rewards=self.storage.query_key("rewards"),
-                    ),
-                )
-                self.storage.batch_update_data("returns", returns)
-                self.storage.batch_update_data("advantages", advantages)
-
-        return obs_dict
-
-    def _process_env_step(self, rewards, dones, infos):
-        if self.use_accelerate and hasattr(self.actor, "module"):
-            self.actor.module.reset(dones)
-        else:
-            self.actor.reset(dones)
-
-        if not self.dagger_only:
-            if self.use_accelerate and hasattr(self.critic, "module"):
-                self.critic.module.reset(dones)
-            else:
-                self.critic.reset(dones)
-
-    def _compute_returns(self, last_obs_dict, policy_state_dict):
-        if self.use_accelerate and hasattr(self.critic, "module"):
-            last_values = self.critic.module.evaluate(
-                last_obs_dict["critic_obs"]
-            ).detach()
-        else:
-            last_values = self.critic.evaluate(
-                last_obs_dict["critic_obs"]
-            ).detach()
-        advantage = 0
-
-        values = policy_state_dict["values"]
-        dones = policy_state_dict["dones"]
-        rewards = policy_state_dict["rewards"]
-
-        last_values = last_values.to(self.device)
-        values = values.to(self.device)
-        dones = dones.to(self.device)
-        rewards = rewards.to(self.device)
-
-        returns = torch.zeros_like(values)
-
-        num_steps = returns.shape[0]
-
-        for step in reversed(range(num_steps)):
-            if step == num_steps - 1:
-                next_values = last_values
-            else:
-                next_values = values[step + 1]
-            next_is_not_terminal = 1.0 - dones[step].float()
-            delta = (
-                rewards[step]
-                + next_is_not_terminal * self.gamma * next_values
-                - values[step]
-            )
-
-            advantage = (
-                delta
-                + next_is_not_terminal * self.gamma * self.lam * advantage
-            )
-            returns[step] = advantage + values[step]
-
-        # Compute and normalize the advantages
-        advantages = returns - values
-        advantages = (advantages - advantages.mean()) / (
-            advantages.std() + 1e-8
+        self.transition.actions = actions.detach()
+        self.transition.values = self.critic(critic_obs).detach()
+        self.transition.actions_log_prob = actions_log_prob.detach()
+        self.transition.action_mean = mu.detach()
+        self.transition.action_sigma = sigma.detach()
+        self.transition.observations = obs
+        self.transition.privileged_observations = critic_obs
+        return self.transition.actions
+
+    def process_env_step(self, rewards, dones, time_outs, infos):
+        """Process environment step that matches rsl_rl exactly."""
+        self.transition.rewards = rewards.clone()
+        self.transition.dones = dones
+
+        # Bootstrapping on time outs
+        self.transition.rewards += self.gamma * torch.squeeze(
+            self.transition.values * time_outs.unsqueeze(1), 1
         )
 
-        return returns, advantages
+        # Extract velocity commands for advantage normalization
+        if self.command_name == "base_velocity":
+            velocity_cmd = self.env._env.command_manager.get_command(
+                "base_velocity"
+            )
+            # Compute move_mask: norm of velocity > 0.1
+            move_mask = velocity_cmd.norm(dim=-1) > 0.1
+            # Store [move_mask, velocity_cmd] with shape [num_envs, 4]
+            self.transition.velocity_commands = torch.cat(
+                [move_mask[..., None], velocity_cmd], dim=-1
+            )
 
-    def _training_step(self):
-        loss_dict = self._init_loss_dict_at_training_step()
+        # record the transition
+        self.storage.add_transitions(self.transition)
+        self.transition.clear()
+
+    def compute_returns(self, last_critic_obs):
+        """Compute returns and optionally normalize advantages (RSL-style)."""
+        last_values = self.critic(last_critic_obs).detach()
+        self.storage.compute_returns(
+            last_values,
+            self.gamma,
+            self.lam,
+            normalize_advantage=(
+                False
+                if self.global_advantage_norm
+                else (not self.normalize_advantage_per_mini_batch)
+            ),
+        )
+
+    def update(self):
+        """Update function that matches rsl_rl exactly."""
+        mean_value_loss = 0
+        mean_surrogate_loss = 0
+        mean_actor_load_balancing_loss = 0
+        mean_entropy = 0
+        mean_dagger_loss = 0
+        actor_load_balancing_loss = None
+
+        adaptive_kl_enabled = (
+            self.desired_kl is not None and self.schedule == "adaptive"
+        )
+
         generator = self.storage.mini_batch_generator(
-            self.num_mini_batches, self.num_learning_epochs
+            self.num_mini_batches,
+            self.num_learning_epochs,
+            self.accelerator,
         )
 
-        for policy_state_dict in generator:
-            loss_dict = self._update_algo_step(policy_state_dict, loss_dict)
-        num_updates = self.num_learning_epochs * self.num_mini_batches
-        for key in loss_dict.keys():
-            loss_dict[key] /= num_updates
-        self.storage.clear()
-        return loss_dict
+        for (
+            obs_batch,
+            critic_obs_batch,
+            actions_batch,
+            teacher_actions_batch,
+            target_values_batch,
+            advantages_batch,
+            returns_batch,
+            old_actions_log_prob_batch,
+            old_mu_batch,
+            old_sigma_batch,
+        ) in generator:
+            if self.normalize_advantage_per_mini_batch:
+                with torch.no_grad():
+                    flat = advantages_batch.view(-1).float()
+                    if self.global_advantage_norm and self.is_distributed:
+                        count = torch.tensor(
+                            [flat.numel()],
+                            device=self.device,
+                            dtype=torch.float32,
+                        )
+                        sum_g = self.accelerator.reduce(
+                            flat.sum(), reduction="sum"
+                        )
+                        sqsum_g = self.accelerator.reduce(
+                            (flat * flat).sum(), reduction="sum"
+                        )
+                        count_g = self.accelerator.reduce(
+                            count, reduction="sum"
+                        )
+                        mean = sum_g / count_g
+                        var = (sqsum_g / count_g) - mean * mean
+                        std = torch.sqrt(var.clamp_min(1.0e-8))
+                    else:
+                        mean = flat.mean()
+                        std = flat.std().clamp_min(1.0e-8)
+                    advantages_batch = (advantages_batch - mean) / std
 
-    def _init_loss_dict_at_training_step(self):
-        loss_dict = {}
-        loss_dict["Value"] = 0
-        loss_dict["Surrogate"] = 0
-        loss_dict["Entropy"] = 0
-        loss_dict["Smooth_Grad_Penalty"] = 0
-        loss_dict["Disc_Loss"] = 0
-        loss_dict["Disc_Grad_Penalty"] = 0
-        loss_dict["Disc_Agent_Logits_Mean"] = 0
-        loss_dict["Disc_Demo_Logits_Mean"] = 0
-        loss_dict["Actor_Load_Balancing_Loss"] = 0
-        loss_dict["Critic_Load_Balancing_Loss"] = 0
-        loss_dict["Actor_VAE_Recon_Loss"] = 0
-        loss_dict["Actor_VAE_KL_Loss"] = 0
-        loss_dict["Actor_VAE_Loss"] = 0
-        loss_dict["Critic_VAE_Recon_Loss"] = 0
-        loss_dict["Critic_VAE_KL_Loss"] = 0
-        loss_dict["Critic_VAE_Loss"] = 0
-        loss_dict["Bound_Loss"] = 0
-        loss_dict["Dagger_loss"] = 0
-        loss_dict["Teacher_Rollout_Usage"] = 0
-        loss_dict["Local_Body_Pos_Reg_Loss"] = 0
-        loss_dict["Local_Body_Vel_Reg_Loss"] = 0
-        loss_dict["Root_Lin_Vel_Reg_Loss"] = 0
-        loss_dict["KL_Mean"] = 0
-        loss_dict["RND_Loss"] = 0
-        return loss_dict
+            _, actions_log_prob_batch, mu_batch, sigma_batch, entropy_batch = (
+                self.actor(obs_batch, actions=actions_batch, mode="logp")
+            )
+            actions_log_prob_batch = actions_log_prob_batch.float()
+            value_batch = self.critic(critic_obs_batch)
 
-    def _update_algo_step(self, policy_state_dict, loss_dict):
-        loss_dict = self._update_ppo(policy_state_dict, loss_dict)
-        return loss_dict
-
-    def _actor_act_step(self, obs_dict):
-        if self.use_accelerate and hasattr(self.actor, "module"):
-            return self.actor.module.act(obs_dict["actor_obs"])
-        else:
-            return self.actor.act(obs_dict["actor_obs"])
-
-    def _critic_eval_step(self, obs_dict):
-        if self.use_accelerate and hasattr(self.critic, "module"):
-            return self.critic.module.evaluate(obs_dict["critic_obs"])
-        else:
-            return self.critic.evaluate(obs_dict["critic_obs"])
-
-    def _update_ppo(self, policy_state_dict, loss_dict):
-        actions_batch = policy_state_dict["actions"]
-        old_actions_log_prob_batch = policy_state_dict["actions_log_prob"]
-        old_mu_batch = policy_state_dict["action_mean"]
-        old_sigma_batch = policy_state_dict["action_sigma"]
-        if not self.dagger_only:
-            target_values_batch = policy_state_dict["values"]
-            advantages_batch = policy_state_dict["advantages"]
-            returns_batch = policy_state_dict["returns"]
-
-        self.actor_optimizer.zero_grad()
-
-        if not self.dagger_only:
-            self.critic_optimizer.zero_grad()
-            if self.use_amp:
-                self.disc_optimizer.zero_grad()
-            if self.use_rnd:
-                self.rnd_optimizer.zero_grad()
-
-        self._actor_act_step(policy_state_dict)
-        actions_log_prob_batch = (
-            self.actor.get_actions_log_prob(actions_batch)
-            if not hasattr(self.actor, "module")
-            else self.actor.module.get_actions_log_prob(actions_batch)
-        )
-        if not self.dagger_only:
-            value_batch = self._critic_eval_step(policy_state_dict)
-        mu_batch = (
-            self.actor.action_mean
-            if not hasattr(self.actor, "module")
-            else self.actor.module.action_mean
-        )
-        sigma_batch = (
-            self.actor.action_std
-            if not hasattr(self.actor, "module")
-            else self.actor.module.action_std
-        )
-        entropy_batch = (
-            self.actor.entropy
-            if not hasattr(self.actor, "module")
-            else self.actor.module.entropy
-        )
-
-        if self.desired_kl is not None and self.schedule == "adaptive":
-            with torch.no_grad():
-                kl = torch.sum(
-                    torch.log(sigma_batch / old_sigma_batch + 1.0e-5)
-                    + (
-                        torch.square(old_sigma_batch)
-                        + torch.square(old_mu_batch - mu_batch)
+            if adaptive_kl_enabled:
+                with torch.no_grad():
+                    kl_vec = torch.sum(
+                        torch.log(
+                            (sigma_batch + 1.0e-8) / (old_sigma_batch + 1.0e-8)
+                        )
+                        + (
+                            torch.square(old_sigma_batch)
+                            + torch.square(old_mu_batch - mu_batch)
+                        )
+                        / (2.0 * torch.square(sigma_batch) + 1.0e-8)
+                        - 0.5,
+                        axis=-1,
                     )
-                    / (2.0 * torch.square(sigma_batch))
-                    - 0.5,
-                    axis=-1,
-                )
-                kl_mean = torch.mean(kl)
-                loss_dict["KL_Mean"] += kl_mean.item()
-                lr_scaler = 1.2
-                if kl_mean > self.desired_kl * 2.0:
-                    self.actor_learning_rate = max(
-                        1e-6, self.actor_learning_rate / lr_scaler
-                    )
-                    self.critic_learning_rate = max(
-                        1e-6, self.critic_learning_rate / lr_scaler
-                    )
-                elif kl_mean < self.desired_kl / 2.0 and kl_mean > 0.0:
-                    self.actor_learning_rate = min(
-                        1e-2, self.actor_learning_rate * lr_scaler
-                    )
-                    self.critic_learning_rate = min(
-                        1e-2, self.critic_learning_rate * lr_scaler
-                    )
+                    kl_mean_local = kl_vec.mean()
+                    if self.is_distributed:
+                        kl_mean_global = self.accelerator.reduce(
+                            kl_mean_local, reduction="mean"
+                        )
+                    else:
+                        kl_mean_global = kl_mean_local
+
+                    km = float(kl_mean_global.item())
+                    min_lr = 1e-6
+                    max_lr = 1e-2
+                    lr_scaler = 1.5
+                    if km > self.desired_kl * 2.0:
+                        self.actor_learning_rate = max(
+                            min_lr, self.actor_learning_rate / lr_scaler
+                        )
+                        self.critic_learning_rate = max(
+                            min_lr, self.critic_learning_rate / lr_scaler
+                        )
+                    elif km > 0.0 and km < self.desired_kl / 2.0:
+                        self.actor_learning_rate = min(
+                            max_lr, self.actor_learning_rate * lr_scaler
+                        )
+                        self.critic_learning_rate = min(
+                            max_lr, self.critic_learning_rate * lr_scaler
+                        )
 
                 for param_group in self.actor_optimizer.param_groups:
                     param_group["lr"] = self.actor_learning_rate
                 for param_group in self.critic_optimizer.param_groups:
                     param_group["lr"] = self.critic_learning_rate
 
-        if not self.dagger_only:
+            # Surrogate loss
             ratio = torch.exp(
                 actions_log_prob_batch
-                - torch.squeeze(old_actions_log_prob_batch)
+                - torch.squeeze(old_actions_log_prob_batch).float()
             )
             surrogate = -torch.squeeze(advantages_batch) * ratio
             surrogate_clipped = -torch.squeeze(advantages_batch) * torch.clamp(
@@ -1922,388 +990,1297 @@ class PPO:
             else:
                 value_loss = (returns_batch - value_batch).pow(2).mean()
 
-            if "moe" in self.critic_type.lower():
-                if self.use_accelerate and hasattr(self.actor, "module"):
-                    critic_load_balancing_loss = (
-                        self.critic.module.critic_module.compute_load_balancing_loss()
-                        * self.config.get("load_balancing_loss_alpha", 1e-2)
-                    )
-                else:
-                    critic_load_balancing_loss = (
-                        self.critic.critic_module.compute_load_balancing_loss()
-                        * self.config.get("load_balancing_loss_alpha", 1e-2)
-                    )
-                value_loss = value_loss + critic_load_balancing_loss
-
-                loss_dict["Critic_Load_Balancing_Loss"] += (
-                    critic_load_balancing_loss.item()
-                )
-
-            if "vae" in self.critic_type.lower():
-                vae_loss_alpha = self.config.get("vae_loss_alpha", 1.0)
-                if self.use_accelerate and hasattr(self.critic, "module"):
-                    rec_loss, kl_loss = (
-                        self.critic.module.critic_module.compute_vae_loss()
-                    )
-                else:
-                    rec_loss, kl_loss = (
-                        self.critic.critic_module.compute_vae_loss()
-                    )
-                vae_loss = (rec_loss + kl_loss) * vae_loss_alpha
-                loss_dict["Critic_VAE_Recon_Loss"] += rec_loss.item()
-                loss_dict["Critic_VAE_KL_Loss"] += kl_loss.item()
-                loss_dict["Critic_VAE_Loss"] += vae_loss.item()
-                value_loss = value_loss + vae_loss
-
-            if self.entropy_coef > 0.0 and not self.dagger_only:
-                entropy_loss = entropy_batch.mean()
-                if self.entropy_curriculum:
-                    self.entropy_coef = self.env.entropy_coef
-                actor_loss = surrogate_loss - self.entropy_coef * entropy_loss
-            else:
-                actor_loss = surrogate_loss
-
-        if self.use_dagger:
-            teacher_actions_batch = policy_state_dict["teacher_actions"]
-            dagger_loss = F.mse_loss(mu_batch, teacher_actions_batch)
-            if not self.dagger_only:
-                if self.dagger_anneal:
-                    self.dagger_coef = self.dagger_coef * (
-                        1.0 - self.dagger_anneal_degree
-                    )
-                if self.rl_warmup:
-                    self.rl_coef = self.rl_coef * (1.0 + self.rl_warmup_degree)
-                    self.rl_coef = min(self.rl_coef, 1.0)
-                actor_loss = (
-                    self.rl_coef * actor_loss + self.dagger_coef * dagger_loss
-                )
-            else:
-                actor_loss = dagger_loss
-
-            loss_dict["Dagger_loss"] += dagger_loss.item()
-
-            if self.use_teacher_rollout_annealing:
-                self.teacher_rollout_prob = max(
-                    self.teacher_rollout_min_prob,
-                    self.teacher_rollout_prob
-                    * (1.0 - self.teacher_rollout_anneal_degree),
-                )
-            if "use_teacher_for_rollout" in policy_state_dict:
-                teacher_rollout_usage = (
-                    policy_state_dict["use_teacher_for_rollout"]
-                    .float()
-                    .mean()
-                    .item()
-                )
-                loss_dict["Teacher_Rollout_Usage"] += teacher_rollout_usage
-
-        # Load balancing loss (only for MoE-based actors)
-        if "moe" in self.actor_type.lower():
-            if self.use_accelerate and hasattr(self.actor, "module"):
-                load_balancing_loss = (
-                    self.actor.module.actor_module.compute_load_balancing_loss()
-                    * self.config.get("load_balancing_loss_alpha", 1e-2)
-                )
-            else:
-                load_balancing_loss = (
-                    self.actor.actor_module.compute_load_balancing_loss()
-                    * self.config.get("load_balancing_loss_alpha", 1e-2)
-                )
-            actor_loss = actor_loss + load_balancing_loss
-            loss_dict["Actor_Load_Balancing_Loss"] += (
-                load_balancing_loss.item()
-            )
-
-        if "vae" in self.actor_type.lower():
-            vae_loss_alpha = self.config.get("vae_loss_alpha", 1.0)
-            if self.use_accelerate and hasattr(self.actor, "module"):
-                rec_loss, kl_loss = (
-                    self.actor.module.actor_module.compute_vae_loss()
-                )
-            else:
-                rec_loss, kl_loss = self.actor.actor_module.compute_vae_loss()
-            vae_loss = (rec_loss + kl_loss) * vae_loss_alpha
-            actor_loss = actor_loss + vae_loss
-            loss_dict["Actor_VAE_Recon_Loss"] += rec_loss.item()
-            loss_dict["Actor_VAE_KL_Loss"] += kl_loss.item()
-            loss_dict["Actor_VAE_Loss"] += vae_loss.item()
-
-        # Bound loss (for all actor types)
-        if self.use_accelerate and hasattr(self.actor, "module"):
-            bound_loss = (
-                self.actor.module.actor_module.compute_bound_loss()
-                * self.config.get("bound_loss_alpha", 1.0)
-            )
-        else:
-            bound_loss = (
-                self.actor.actor_module.compute_bound_loss()
-                * self.config.get("bound_loss_alpha", 1.0)
-            )
-        actor_loss = actor_loss + bound_loss
-        loss_dict["Bound_Loss"] += bound_loss.item()
-
-        if self.predict_local_body_pos:
-            gt_local_body_pos_extend_flat = policy_state_dict[
-                "local_body_pos_extend_flat"
-            ]
-            if self.use_accelerate and hasattr(self.actor, "module"):
-                local_body_pos_reg_loss = (
-                    self.actor.module.actor_module.compute_local_body_pos_reg_loss(
-                        gt_local_body_pos_extend_flat
-                    )
-                    * self.pred_local_body_pos_alpha
-                )
-            else:
-                local_body_pos_reg_loss = (
-                    self.actor.actor_module.compute_local_body_pos_reg_loss(
-                        gt_local_body_pos_extend_flat
-                    )
-                    * self.pred_local_body_pos_alpha
-                )
-            actor_loss = actor_loss + local_body_pos_reg_loss
-            loss_dict["Local_Body_Pos_Reg_Loss"] += (
-                local_body_pos_reg_loss.item()
-            )
-
-        if self.predict_local_body_vel:
-            gt_local_body_vel_extend_flat = policy_state_dict[
-                "local_body_vel_extend_flat"
-            ]
-            if self.use_accelerate and hasattr(self.actor, "module"):
-                local_body_vel_reg_loss = (
-                    self.actor.module.actor_module.compute_local_body_vel_reg_loss(
-                        gt_local_body_vel_extend_flat
-                    )
-                    * self.pred_local_body_vel_alpha
-                )
-            else:
-                local_body_vel_reg_loss = (
-                    self.actor.actor_module.compute_local_body_vel_reg_loss(
-                        gt_local_body_vel_extend_flat
-                    )
-                    * self.pred_local_body_vel_alpha
-                )
-            actor_loss = actor_loss + local_body_vel_reg_loss
-            loss_dict["Local_Body_Vel_Reg_Loss"] += (
-                local_body_vel_reg_loss.item()
-            )
-        if self.predict_root_lin_vel:
-            gt_root_lin_vel = policy_state_dict["root_lin_vel"]
-            if self.use_accelerate and hasattr(self.actor, "module"):
-                root_lin_vel_reg_loss = (
-                    self.actor.module.actor_module.compute_root_lin_vel_reg_loss(
-                        gt_root_lin_vel
-                    )
-                    * self.pred_root_lin_vel_alpha
-                )
-            else:
-                root_lin_vel_reg_loss = (
-                    self.actor.actor_module.compute_root_lin_vel_reg_loss(
-                        gt_root_lin_vel
-                    )
-                    * self.pred_root_lin_vel_alpha
-                )
-            actor_loss = actor_loss + root_lin_vel_reg_loss
-            loss_dict["Root_Lin_Vel_Reg_Loss"] += root_lin_vel_reg_loss.item()
-
-        if self.use_amp and not self.dagger_only:
-            valid_sample_mask = policy_state_dict[
-                "amp_valid_sample_mask"
-            ].squeeze()
-            if valid_sample_mask.any():
-                disc_agent_obs = policy_state_dict["disc_obs"][
-                    valid_sample_mask
-                ].to(self.device)
-                disc_demo_obs = policy_state_dict["disc_demo_obs"][
-                    valid_sample_mask
-                ].to(self.device)
-                disc_demo_obs.requires_grad_(True)
-                if self.use_accelerate and hasattr(self.disc, "module"):
-                    disc_agent_logits = self.disc.module.evaluate(
-                        disc_agent_obs
-                    )
-                    disc_demo_logits = self.disc.module.evaluate(disc_demo_obs)
-                else:
-                    disc_agent_logits = self.disc.evaluate(disc_agent_obs)
-                    disc_demo_logits = self.disc.evaluate(disc_demo_obs)
-
-                if self.disc_loss_type == "lsgan":
-                    disc_loss_agent = (
-                        (disc_agent_logits - (-1.0)) ** 2
-                    ).mean()
-                    disc_loss_demo = ((disc_demo_logits - 1.0) ** 2).mean()
-                    disc_loss = (
-                        self.disc_loss_coef
-                        * 0.5
-                        * (disc_loss_agent + disc_loss_demo)
-                    )
-                elif self.disc_loss_type == "bce":
-                    disc_loss_agent = (
-                        torch.nn.functional.binary_cross_entropy_with_logits(
-                            disc_agent_logits,
-                            torch.zeros_like(
-                                disc_agent_logits, device=self.device
-                            ),
-                        )
-                    )
-                    disc_loss_demo = (
-                        torch.nn.functional.binary_cross_entropy_with_logits(
-                            disc_demo_logits,
-                            torch.ones_like(
-                                disc_demo_logits, device=self.device
-                            ),
-                        )
-                    )
-                    disc_loss = (
-                        self.disc_loss_coef
-                        * 0.5
-                        * (disc_loss_agent + disc_loss_demo)
-                    )
-                    disc_logit_loss = torch.sum(
-                        torch.square(
-                            self.disc.module.logits_weights
-                            if hasattr(self.disc, "module")
-                            else self.disc.logits_weights
-                        )
-                    )
-                    disc_loss = disc_loss + 1e-2 * disc_logit_loss
-
-                disc_demo_grad = torch.autograd.grad(
-                    disc_demo_logits,
-                    disc_demo_obs,
-                    grad_outputs=torch.ones_like(
-                        disc_demo_logits, device=self.device
-                    ),
-                    create_graph=True,
-                    retain_graph=True,
-                    only_inputs=True,
-                )[0]
-                disc_demo_grad_norm = torch.norm(
-                    disc_demo_grad, p=2, dim=-1
-                ).mean()
-                disc_grad_penalty_loss = (
-                    self.disc_grad_penalty_coef * disc_demo_grad_norm
-                )
-
-                disc_total_loss = disc_loss + disc_grad_penalty_loss
-                disc_agent_logits_mean = disc_agent_logits.mean()
-                disc_demo_logits_mean = disc_demo_logits.mean()
-
-            else:
-                disc_loss = torch.tensor(0.0, device=self.device)
-                disc_grad_penalty_loss = torch.tensor(0.0, device=self.device)
-                disc_total_loss = torch.tensor(0.0, device=self.device)
-                disc_agent_logits_mean = torch.tensor(0.0, device=self.device)
-                disc_demo_logits_mean = torch.tensor(0.0, device=self.device)
-
-        # RND Loss computation
-        if self.use_rnd:
-            rnd_obs = policy_state_dict["actor_obs"]
-            if self.use_accelerate and hasattr(self.rnd_net, "module"):
-                rnd_loss = (
-                    self.rnd_net.module.get_rnd_loss(rnd_obs)
-                    * self.rnd_loss_coef
-                )
-            else:
-                rnd_loss = (
-                    self.rnd_net.get_rnd_loss(rnd_obs) * self.rnd_loss_coef
-                )
-        else:
-            rnd_loss = torch.tensor(0.0, device=self.device)
-
-        if not self.dagger_only:
+            # Separate actor and critic losses with auxiliary losses
+            actor_loss = surrogate_loss
             critic_loss = self.value_loss_coef * value_loss
-        else:
-            value_loss = torch.tensor(0.0, device=self.device)
-            critic_loss = torch.tensor(0.0, device=self.device)
 
-        actor_critic_loss = actor_loss + critic_loss
+            # Entropy loss
+            if self.entropy_coef > 0.0:
+                entropy_loss = entropy_batch.mean()
+                actor_loss = actor_loss - self.entropy_coef * entropy_loss
 
-        if self.use_accelerate and hasattr(self, "accelerator"):
-            self.accelerator.backward(actor_critic_loss)
-            if self.use_amp and not self.dagger_only:
-                if valid_sample_mask.any():
-                    self.accelerator.backward(disc_total_loss)
-            if self.use_rnd:
-                self.accelerator.backward(rnd_loss)
-        else:
-            actor_critic_loss.backward()
-            if self.use_amp and not self.dagger_only:
-                if valid_sample_mask.any():
-                    disc_total_loss.backward()
-            if self.use_rnd:
-                rnd_loss.backward()
+            # Distillation (DAgger) loss: MSE between student mean and teacher actions
+            dagger_loss = None
+            if self.use_dagger and teacher_actions_batch is not None:
+                dagger_loss = F.mse_loss(mu_batch, teacher_actions_batch)
+                # Anneal and warmup coefficients
+                if not self.dagger_only:
+                    if self.dagger_anneal:
+                        self.dagger_coef = self.dagger_coef * (
+                            1.0 - self.dagger_anneal_degree
+                        )
+                    if self.rl_warmup:
+                        self.rl_coef = min(
+                            1.0, self.rl_coef * (1.0 + self.rl_warmup_degree)
+                        )
+                    actor_loss = (
+                        self.rl_coef * actor_loss
+                        + self.dagger_coef * dagger_loss
+                    )
+                else:
+                    actor_loss = self.dagger_coef * dagger_loss
 
-        # Gradient step
-        nn.utils.clip_grad_norm_(self.actor.parameters(), self.max_grad_norm)
-        if not self.dagger_only:
-            nn.utils.clip_grad_norm_(
-                self.critic.parameters(), self.max_grad_norm
-            )
-            if self.use_amp:
-                nn.utils.clip_grad_norm_(
-                    self.disc.parameters(), self.max_grad_norm
+            # Zero gradients for both optimizers
+            self.actor_optimizer.zero_grad()
+            self.critic_optimizer.zero_grad()
+
+            # Separate backward passes for actor and critic
+            self.accelerator.backward(actor_loss)
+            if not self.dagger_only:
+                self.accelerator.backward(critic_loss)
+
+            # Gradient clipping for actor
+            if self.max_grad_norm is not None:
+                self.accelerator.clip_grad_norm_(
+                    self.actor.parameters(),
+                    self.max_grad_norm,
                 )
-            if self.use_rnd:
-                nn.utils.clip_grad_norm_(
-                    self.rnd_net.parameters(), self.max_grad_norm
+
+            # Gradient clipping for critic
+            if self.max_grad_norm is not None and not self.dagger_only:
+                self.accelerator.clip_grad_norm_(
+                    self.critic.parameters(),
+                    self.max_grad_norm,
                 )
 
-        self.actor_optimizer.step()
-        if not self.dagger_only:
-            self.critic_optimizer.step()
-            if self.use_amp:
-                self.disc_optimizer.step()
-            if self.use_rnd:
-                self.rnd_optimizer.step()
+            # Separate optimizer steps
+            self.actor_optimizer.step()
+            if not self.dagger_only:
+                self.critic_optimizer.step()
 
-        if not self.dagger_only:
-            loss_dict["Value"] += value_loss.item()
-            loss_dict["Surrogate"] += surrogate_loss.item()
-        if self.entropy_coef > 0.0 and not self.dagger_only:
-            loss_dict["Entropy"] += entropy_loss.item()
-        if self.use_amp:
-            loss_dict["Disc_Loss"] += disc_loss.item()
-            loss_dict["Disc_Grad_Penalty"] += disc_grad_penalty_loss.item()
-            loss_dict["Disc_Agent_Logits_Mean"] += (
-                disc_agent_logits_mean.item()
+            mean_value_loss += 0.0 if self.dagger_only else value_loss.item()
+            mean_surrogate_loss += surrogate_loss.item()
+            mean_entropy += entropy_batch.mean().item()
+            if self.use_MoE and actor_load_balancing_loss is not None:
+                mean_actor_load_balancing_loss += (
+                    actor_load_balancing_loss.item()
+                )
+            if self.use_dagger and dagger_loss is not None:
+                mean_dagger_loss += dagger_loss.item()
+
+            # Track dagger loss to return/log
+            if self.use_dagger and dagger_loss is not None:
+                if "Dagger_loss" not in locals():
+                    pass
+
+        num_updates = self.num_learning_epochs * self.num_mini_batches
+        denom = max(1, num_updates)
+        mean_value_loss /= denom
+        mean_surrogate_loss /= denom
+        mean_entropy /= denom
+        if self.use_MoE:
+            mean_actor_load_balancing_loss /= denom
+        if self.use_dagger:
+            mean_dagger_loss /= denom
+
+        self.storage.clear()
+
+        loss_out = {
+            "value_function": mean_value_loss,
+            "surrogate": mean_surrogate_loss,
+            "entropy": mean_entropy,
+        }
+        if self.use_MoE:
+            loss_out["actor_load_balancing"] = mean_actor_load_balancing_loss
+        if self.use_dagger:
+            loss_out["Dagger_loss"] = mean_dagger_loss
+
+        # Teacher rollout annealing schedule update
+        if self.use_dagger and self.use_teacher_rollout_annealing:
+            self.teacher_rollout_prob = max(
+                self.teacher_rollout_min_prob,
+                self.teacher_rollout_prob
+                * (1.0 - self.teacher_rollout_anneal_degree),
             )
-            loss_dict["Disc_Demo_Logits_Mean"] += disc_demo_logits_mean.item()
 
-        if self.use_rnd:
-            loss_dict["RND_Loss"] += rnd_loss.item()
+        # Reduce losses across processes for consistent logging on rank 0
+        if self.is_distributed:
+            reduced_out = {}
+            for k, v in loss_out.items():
+                if v is None:
+                    reduced_out[k] = None
+                    continue
+                t = torch.tensor(v, device=self.device, dtype=torch.float32)
+                reduced_t = self.accelerator.reduce(t, reduction="mean")
+                reduced_out[k] = float(reduced_t.item())
+            loss_out = reduced_out
 
-        return loss_dict
+        return loss_out
 
-    @property
-    def inference_model(self):
-        actor = (
-            self.actor.module if hasattr(self.actor, "module") else self.actor
+    def learn(self):
+        """Main learning loop that matches rsl_rl exactly."""
+        obs_dict = self.env.reset_all()[0]
+        obs_raw = obs_dict["policy"].to(self.device)
+        privileged_obs_raw = obs_dict["critic"].to(self.device)
+
+        # Normalize initial observations using current stats without updating
+        if self.obs_norm_enabled:
+            obs = self.obs_normalizer.normalize_only(obs_raw)
+            privileged_obs = self.privileged_obs_normalizer.normalize_only(
+                privileged_obs_raw
+            )
+            if self.obs_norm_enable_clipping:
+                obs = torch.clamp(
+                    obs, -self.obs_norm_clip_range, self.obs_norm_clip_range
+                )
+                privileged_obs = torch.clamp(
+                    privileged_obs,
+                    -self.obs_norm_clip_range,
+                    self.obs_norm_clip_range,
+                )
+        else:
+            obs = obs_raw
+            privileged_obs = privileged_obs_raw
+
+        self.actor.train()
+        self.critic.train()
+
+        num_learning_iterations = self.num_learning_iterations
+        tot_iter = self.current_learning_iteration + num_learning_iterations
+
+        # Synchronize all processes before starting
+        self.accelerator.wait_for_everyone()
+
+        if self.is_main_process:
+            logger.info(
+                f"Starting training for {num_learning_iterations} iterations from iteration {self.current_learning_iteration}"
+            )
+
+        for it in range(self.current_learning_iteration, tot_iter):
+            start = time.time()
+
+            # Rollout
+            with torch.no_grad():
+                for step_idx in range(self.num_steps_per_env):
+                    # Sample actions using normalized observations
+                    actions = self.act(obs, privileged_obs)
+
+                    # If distillation is enabled, compute teacher actions (using separate teacher obs)
+                    if self.use_dagger and self.teacher_actor is not None:
+                        teacher_obs = obs_dict.get("teacher", None)
+                        if teacher_obs is None:
+                            logger.error(
+                                "Teacher observations not found in obs_dict under key 'teacher'"
+                            )
+                        else:
+                            teacher_obs = teacher_obs.to(self.device)
+
+                        # Apply frozen teacher normalizer if available
+                        if (
+                            teacher_obs is not None
+                            and self.teacher_normalize_observations
+                            and self.teacher_obs_normalizer is not None
+                        ):
+                            with torch.no_grad():
+                                teacher_obs = (
+                                    self.teacher_obs_normalizer.normalize(
+                                        teacher_obs
+                                    )
+                                )
+
+                        if teacher_obs is not None:
+                            teacher_actions, _, _, _, _ = self.teacher_actor(
+                                teacher_obs, actions=None, mode="inference"
+                            )
+                            teacher_actions = teacher_actions.detach()
+                            self.transition.teacher_actions = teacher_actions
+
+                    # Step the environment
+                    obs_dict, rewards, dones, time_outs, infos = self.env.step(
+                        actions
+                    )
+
+                    # Raw observations from environment
+                    obs_raw = obs_dict["policy"].to(self.device)
+                    privileged_obs_raw = obs_dict["critic"].to(self.device)
+                    rewards = rewards.to(self.device)
+                    dones = dones.to(self.device)
+
+                    # Update normalization statistics with raw observations
+                    if self.obs_norm_enabled:
+                        self.obs_normalizer.update(obs_raw)
+                        self.privileged_obs_normalizer.update(
+                            privileged_obs_raw
+                        )
+
+                        obs = self.obs_normalizer.normalize_only(obs_raw)
+                        privileged_obs = (
+                            self.privileged_obs_normalizer.normalize_only(
+                                privileged_obs_raw
+                            )
+                        )
+                        if self.obs_norm_enable_clipping:
+                            obs = torch.clamp(
+                                obs,
+                                -self.obs_norm_clip_range,
+                                self.obs_norm_clip_range,
+                            )
+                            privileged_obs = torch.clamp(
+                                privileged_obs,
+                                -self.obs_norm_clip_range,
+                                self.obs_norm_clip_range,
+                            )
+                    else:
+                        obs = obs_raw
+                        privileged_obs = privileged_obs_raw
+
+                    # Periodically synchronize observation normalizers mid-rollout
+                    if (
+                        self.obs_norm_enabled
+                        and self.obs_norm_sync_interval_steps > 0
+                        and (
+                            (step_idx + 1) % self.obs_norm_sync_interval_steps
+                            == 0
+                        )
+                    ):
+                        self.synchronize_normalizers()
+
+                    # Process the step
+                    self.process_env_step(rewards, dones, time_outs, infos)
+
+                    self.ep_infos.append(infos["log"])
+
+                    # Update reward tracking
+                    self.cur_reward_sum += rewards
+                    self.cur_episode_length += 1
+
+                    # Handle episode completion
+                    done_ids = (dones > 0).nonzero(as_tuple=False)
+                    self.rewbuffer.extend(
+                        self.cur_reward_sum[done_ids][:, 0]
+                        .cpu()
+                        .numpy()
+                        .tolist()
+                    )
+                    self.lenbuffer.extend(
+                        self.cur_episode_length[done_ids][:, 0]
+                        .cpu()
+                        .numpy()
+                        .tolist()
+                    )
+                    self.cur_reward_sum[done_ids] = 0
+                    self.cur_episode_length[done_ids] = 0
+
+                # Synchronize normalizers across ranks before computing returns
+                if self.obs_norm_enabled:
+                    self.synchronize_normalizers()
+                # Compute returns using the last normalized critic observations
+                self.compute_returns(privileged_obs)
+                if (
+                    self.global_advantage_norm
+                    and not self.normalize_advantage_per_mini_batch
+                ):
+                    adv = self.storage.advantages.view(-1).float()
+                    count = torch.tensor(
+                        [adv.numel()], device=self.device, dtype=torch.float32
+                    )
+                    sum_local = adv.sum()
+                    sqsum_local = (adv * adv).sum()
+                    if self.is_distributed:
+                        count_g = self.accelerator.reduce(
+                            count, reduction="sum"
+                        )
+                        sum_g = self.accelerator.reduce(
+                            sum_local, reduction="sum"
+                        )
+                        sqsum_g = self.accelerator.reduce(
+                            sqsum_local, reduction="sum"
+                        )
+                    else:
+                        count_g = count
+                        sum_g = sum_local
+                        sqsum_g = sqsum_local
+                    mean = sum_g / count_g
+                    var = (sqsum_g / count_g) - mean * mean
+                    std = torch.sqrt(var.clamp_min(1.0e-8))
+                    self.storage.advantages = (
+                        self.storage.advantages - mean
+                    ) / std
+
+            stop = time.time()
+            collection_time = stop - start
+            start = stop
+
+            # Update policy
+            loss_dict = self.update()
+            # Log Dagger loss if used
+            if self.use_dagger:
+                if "Dagger_loss" not in loss_dict:
+                    loss_dict["Dagger_loss"] = None
+            if self.use_MoE:
+                if "actor_load_balancing" not in loss_dict:
+                    loss_dict["actor_load_balancing"] = None
+
+            stop = time.time()
+            learn_time = stop - start
+            self.current_learning_iteration = it
+
+            # Logging and saving on main process
+            if self.is_main_process and it % self.log_interval == 0:
+                self._log(locals())
+
+            if it % self.save_interval == 0:
+                if self.is_main_process:
+                    self.save(
+                        os.path.join(
+                            self.log_dir,
+                            f"model_{self.current_learning_iteration}.pt",
+                        )
+                    )
+
+                # Trigger online evaluation after checkpoint save (all ranks)
+                if self.enable_online_eval:
+                    if self.is_main_process:
+                        logger.info(
+                            "Starting distributed online evaluation after checkpoint save..."
+                        )
+                    eval_metrics = self.online_evaluate_policy()
+
+                    # Only main process records TB and history
+                    if self.is_main_process and eval_metrics:
+                        self.online_eval_metrics_history.append(
+                            {"iteration": it, "metrics": eval_metrics}
+                        )
+                        if self.log_dir:
+                            # Log online evaluation metrics using Accelerate
+                            online_eval_metrics = {
+                                f"OnlineEval/{key}": value
+                                for key, value in eval_metrics.items()
+                            }
+                            self.accelerator.log(online_eval_metrics, step=it)
+
+            self.ep_infos.clear()
+
+            # Synchronize processes after each iteration
+            self.accelerator.wait_for_everyone()
+
+        # Only save on main process when using distributed training
+        if self.is_main_process:
+            self.save(
+                os.path.join(
+                    self.log_dir, f"model_{self.current_learning_iteration}.pt"
+                )
+            )
+
+        # End training and finalize trackers
+        if self.log_dir:
+            self.accelerator.end_training()
+            if self.is_main_process:
+                logger.info(
+                    f"Training completed. Model saved to {self.log_dir}"
+                )
+
+    def online_evaluate_policy(self):
+        """Run online evaluation using validation motion library.
+
+        Returns:
+            dict: Aggregated evaluation metrics
+        """
+        command_name = list(self.env.config.commands.keys())[0]
+        if command_name != "ref_motion":
+            logger.warning(
+                "Online evaluation only supported for ref_motion command"
+            )
+            return {}
+
+        motion_cmd = self.env._env.command_manager.get_term("ref_motion")
+
+        cache = motion_cmd._motion_cache
+        logger.info("Starting online evaluation (simple cache)...")
+
+        # Switch to validation mode
+        cache.set_mode("val")
+        motion_cmd._is_evaluating = True
+
+        # Set models to eval mode
+        self.actor.eval()
+        self.critic.eval()
+        if self.obs_norm_enabled:
+            self.obs_normalizer.eval()
+            self.privileged_obs_normalizer.eval()
+
+        # Ensure command metrics are normal tensors (not inference tensors)
+        try:
+            if hasattr(motion_cmd, "metrics") and isinstance(
+                motion_cmd.metrics, dict
+            ):
+                for k, v in list(motion_cmd.metrics.items()):
+                    if (
+                        isinstance(v, torch.Tensor)
+                        and getattr(v, "_is_zerocopy", False) is False
+                    ):
+                        motion_cmd.metrics[k] = v.detach().clone()
+        except Exception:
+            pass
+
+        num_envs = self.env.num_envs
+        all_env_metrics = []
+        episode_lengths_all: list = []
+
+        with torch.no_grad():
+            # Exhaustively iterate through all validation batches sequentially
+            total_batches = cache.num_batches
+            for batch_idx in range(total_batches):
+                # Uniformly sample clips for envs from current cache batch; start at frame 0
+                clip_idx, frame_idx = cache.sample_env_assignments(
+                    num_envs,
+                    motion_cmd.cfg.n_fut_frames,
+                    self.device,
+                    deterministic_start=True,
+                )
+                motion_cmd._clip_indices[:] = clip_idx
+                motion_cmd._frame_indices[:] = frame_idx
+
+                # Reset and update reference state from cache for selected clips
+                obs_dict = self.env.reset_all()[0]
+                motion_cmd._update_ref_motion_state_from_cache()
+                all_ids = torch.arange(
+                    num_envs, dtype=torch.long, device=self.device
+                )
+                motion_cmd._align_root_to_ref(all_ids)
+                motion_cmd._align_dof_to_ref(all_ids)
+
+                # Recompute observations post-alignment
+                obs_dict = self.env._env.observation_manager.compute(
+                    update_history=True
+                )
+                obs = obs_dict["policy"].to(self.device)
+                privileged_obs = obs_dict["critic"].to(self.device)
+                obs = self.obs_normalizer(obs)
+                privileged_obs = self.privileged_obs_normalizer(privileged_obs)
+
+                # Track first-done per env and episode lengths
+                env_has_done = torch.zeros(
+                    num_envs, dtype=torch.bool, device=self.device
+                )
+                episode_lengths = torch.zeros(
+                    num_envs, dtype=torch.long, device=self.device
+                )
+                collected_metrics: dict = {}
+
+                max_steps = cache.max_frame_length
+                for step in range(max_steps):
+                    # Increment episode lengths for active envs
+                    episode_lengths += (~env_has_done).long()
+
+                    # Inference and env step
+                    actions, _, _, _, _ = self.actor(
+                        obs, actions=None, mode="inference"
+                    )
+                    obs_dict, rewards, dones, time_outs, infos = self.env.step(
+                        actions
+                    )
+                    obs = obs_dict["policy"].to(self.device)
+                    privileged_obs = obs_dict["critic"].to(self.device)
+                    rewards = rewards.to(self.device)
+                    dones = dones.to(self.device)
+                    obs = self.obs_normalizer(obs)
+                    privileged_obs = self.privileged_obs_normalizer(
+                        privileged_obs
+                    )
+
+                    newly_done = dones.bool() & ~env_has_done
+                    if torch.any(newly_done):
+                        done_envs = torch.nonzero(newly_done).squeeze(-1)
+                        # Episode length for these envs
+                        episode_lengths_all.append(
+                            episode_lengths[done_envs].detach().float().cpu()
+                        )
+                        # Metrics from infos['log'] with ref_motion prefix
+                        if isinstance(infos, dict) and infos.get("log"):
+                            for key, value in infos["log"].items():
+                                if not isinstance(key, str):
+                                    continue
+                                if not key.startswith("Metrics/ref_motion/"):
+                                    continue
+                                v = value
+                                if not isinstance(v, torch.Tensor):
+                                    v = torch.tensor(v, device=self.device)
+                                if v.dim() == 0:
+                                    v = v.unsqueeze(0).expand(num_envs)
+                                done_values = v[done_envs]
+                                if done_values.numel() == 0:
+                                    continue
+                                collected_metrics.setdefault(key, []).append(
+                                    done_values.detach().float().cpu()
+                                )
+                        env_has_done |= newly_done
+
+                    if torch.all(env_has_done):
+                        break
+
+                # Store metrics for this batch
+                if collected_metrics:
+                    all_env_metrics.append(collected_metrics)
+
+                # Advance to next cache batch except after the last iteration
+                if batch_idx < total_batches - 1:
+                    cache.advance()
+
+        # Aggregate metrics
+        if not all_env_metrics and not episode_lengths_all:
+            logger.warning("No evaluation metrics collected")
+            cache.set_mode("train")
+            motion_cmd._is_evaluating = False
+
+            # Restore models and normalizers to train mode after evaluation
+            self.actor.train()
+            self.critic.train()
+            if self.obs_norm_enabled:
+                self.obs_normalizer.train()
+                self.privileged_obs_normalizer.train()
+            return {}
+
+        aggregated = {}
+        for batch_metrics in all_env_metrics:
+            for key, values in batch_metrics.items():
+                aggregated.setdefault(key, []).extend(values)
+
+        final_metrics = {}
+
+        for key, values in aggregated.items():
+            # Concatenate lists of tensors then mean
+            if len(values) == 0:
+                continue
+            stacked = torch.cat([torch.as_tensor(v) for v in values])
+            final_metrics[f"{key}_mean"] = float(stacked.mean().item())
+
+        # Mean episode length across all finished envs
+        if episode_lengths_all:
+            elens = torch.cat(episode_lengths_all)
+            final_metrics["Episode/length_mean"] = float(elens.mean().item())
+
+        # Reduce across processes if distributed
+        if final_metrics:
+            reduced = {}
+            for k, v in final_metrics.items():
+                t = torch.tensor(v, device=self.device, dtype=torch.float32)
+                rv = self.accelerator.reduce(t, reduction="mean")
+                reduced[k] = float(rv.item())
+            final_metrics = reduced
+
+        self._back_to_train(motion_cmd)
+        return final_metrics
+
+    def _back_to_train(self, motion_cmd):
+        """Restore training mode after evaluation and reset episode tracking.
+
+        Args:
+            motion_cmd: Reference motion command term
+        """
+        cache = motion_cmd._motion_cache
+        cache.set_mode("train")
+        motion_cmd._is_evaluating = False
+
+        # Restore models and normalizers to train mode
+        self.actor.train()
+        self.critic.train()
+        if self.obs_norm_enabled:
+            self.obs_normalizer.train()
+            self.privileged_obs_normalizer.train()
+
+        # Sample new clips and reset environment for training
+        num_envs = self.env.num_envs
+        clip_idx, frame_idx = cache.sample_env_assignments(
+            num_envs,
+            motion_cmd.cfg.n_fut_frames,
+            self.device,
+            deterministic_start=False,
         )
-        if not self.dagger_only:
-            critic = (
-                self.critic.module
-                if hasattr(self.critic, "module")
-                else self.critic
-            )
-        else:
-            critic = None
-        return {"actor": actor, "critic": critic}
+        motion_cmd._clip_indices[:] = clip_idx
+        motion_cmd._frame_indices[:] = frame_idx
+        motion_cmd._update_ref_motion_state_from_cache()
+        all_ids = torch.arange(num_envs, dtype=torch.long, device=self.device)
+        motion_cmd._align_root_to_ref(all_ids)
+        motion_cmd._align_dof_to_ref(all_ids)
 
-    def _post_epoch_logging(self, log_dict, width=80, pad=35):
-        # Skip logging if not the main process
-        if not self.is_main_process:
+        # Reset episode tracking to avoid contamination from eval episodes
+        self.cur_reward_sum.zero_()
+        self.cur_episode_length.zero_()
+
+        logger.info("Restored training mode after evaluation")
+
+    def _log_eval_results(self, metrics: dict, num_clips: int):
+        """Format and log evaluation results with tabulate, and save to JSON.
+
+        Args:
+            metrics: Dictionary of evaluation metrics
+            num_clips: Number of clips evaluated
+        """
+        import json
+        from datetime import datetime
+
+        if not metrics:
+            logger.warning("No evaluation metrics to log")
             return
 
-        self.tot_timesteps += self.num_steps_per_env * self.env.num_envs
-        self.tot_time += log_dict["collection_time"] + log_dict["learn_time"]
-        iteration_time = log_dict["collection_time"] + log_dict["learn_time"]
+        # Build table data
+        table_data = []
 
-        if log_dict["ep_infos"]:
-            for key in log_dict["ep_infos"][0]:
+        # Summary section
+        table_data.append(["=== SUMMARY ===", ""])
+        table_data.append(["Total Clips Evaluated", f"{num_clips}"])
+        table_data.append(
+            ["Current Iteration", f"{self.current_learning_iteration}"]
+        )
+        table_data.append(["", ""])
+
+        # Metrics section - group by metric type
+        table_data.append(["=== EVALUATION METRICS ===", ""])
+
+        # Separate mean and std metrics
+        mean_metrics = {
+            k: v for k, v in metrics.items() if k.endswith("_mean")
+        }
+
+        # Display metrics with their std
+        for key in sorted(mean_metrics.keys()):
+            metric_name = key.replace("_mean", "")
+            mean_val = mean_metrics[key]
+            display_name = metric_name.replace("_", " ").title()
+            table_data.append([display_name, f"{mean_val:.4f}"])
+
+        # Print formatted table
+        log_lines = [
+            "\n" + "=" * 80,
+            f"ONLINE EVALUATION RESULTS - Iteration {self.current_learning_iteration}",
+            "=" * 80,
+            tabulate(
+                table_data,
+                headers=["Metric", "Value"],
+                tablefmt="simple_outline",
+            ),
+            "=" * 80 + "\n",
+        ]
+        eval_log = "\n".join(log_lines)
+        logger.info(eval_log)
+
+        # Save to JSON file
+        if self.log_dir:
+            eval_results = {
+                "iteration": self.current_learning_iteration,
+                "timestamp": datetime.now().isoformat(),
+                "num_clips_evaluated": num_clips,
+                "metrics": metrics,
+            }
+
+            # Save to checkpoint-specific file
+            json_filename = (
+                f"eval_metrics_iter_{self.current_learning_iteration}.json"
+            )
+            json_path = os.path.join(self.log_dir, json_filename)
+
+            with open(json_path, "w") as f:
+                json.dump(eval_results, f, indent=2)
+
+            logger.info(f"Evaluation metrics saved to: {json_path}")
+
+            # Also save to a "latest" file for easy access
+            latest_json_path = os.path.join(
+                self.log_dir, "eval_metrics_latest.json"
+            )
+            with open(latest_json_path, "w") as f:
+                json.dump(eval_results, f, indent=2)
+
+    def record_metric(self, env_tracking_metrics, motion_cmd, record_path):
+        holomotion_metrics_mean = {}
+        if hasattr(motion_cmd, "log_dict_holomotion"):
+            for k in motion_cmd.log_dict_holomotion.keys():
+                values = [
+                    sum(env_metrics.get(k, [0]))
+                    / max(len(env_metrics.get(k, [0])), 1)
+                    for env_metrics in env_tracking_metrics
+                ]
+                holomotion_metrics_mean[k] = sum(values) / max(len(values), 1)
+
+        if holomotion_metrics_mean:
+            holomotion_metrics = {
+                "MPJPE_G": f"{holomotion_metrics_mean.get('mpjpe_g', 0):.4f}",  # noqa: E501
+                "MPJPE_L": f"{holomotion_metrics_mean.get('mpjpe_l', 0):.4f}",  # noqa: E501
+                "MPJPE_PA": f"{holomotion_metrics_mean.get('mpjpe_pa', 0):.4f}",  # noqa: E501
+                "ACCELERATION_DIST": f"{holomotion_metrics_mean.get('accel_dist', 0):.4f}",  # noqa: E501
+                "VELOCITY_DIST": f"{holomotion_metrics_mean.get('vel_dist', 0):.4f}",  # noqa: E501
+                "UPPER_BODY_JOINTS_DIST": f"{holomotion_metrics_mean.get('upper_body_joints_dist', 0):.4f}",  # noqa: E501
+                "LOWER_BODY_JOINTS_DIST": f"{holomotion_metrics_mean.get('lower_body_joints_dist', 0):.4f}",  # noqa: E501
+                "ROOT_Roll_ERROR": f"{holomotion_metrics_mean.get('root_r_error', 0):.4f}",  # noqa: E501
+                "ROOT_Pitch_ERROR": f"{holomotion_metrics_mean.get('root_p_error', 0):.4f}",  # noqa: E501
+                "ROOT_Yaw_ERROR": f"{holomotion_metrics_mean.get('root_y_error', 0):.4f}",  # noqa: E501
+                "ROOT_VEL_ERROR": f"{holomotion_metrics_mean.get('root_vel_error', 0):.4f}",  # noqa: E501
+                "ROOT_HEIGHT_ERROR": f"{holomotion_metrics_mean.get('root_height_error', 0):.4f}",  # noqa: E501
+            }
+            logger.info(
+                "\n"
+                + tabulate(
+                    [[k, v] for k, v in holomotion_metrics.items()],
+                    headers=["Metric", "Value"],
+                    tablefmt="simple_outline",
+                )
+                + "\n"
+            )
+
+        # Save global metrics to a separate file
+        global_metrics = {
+            "iteration": self.current_learning_iteration,
+        }
+
+        # Add holomotion metrics to global metrics
+        if holomotion_metrics_mean:
+            global_metrics.update(holomotion_metrics_mean)
+
+        with open(record_path, "w+") as f:
+            json.dump(global_metrics, f, indent=2)
+
+    def offline_evaluate_policy(self, dump_npzs: bool = False):
+        """Dump NPZs (no metrics) from validation cache using ref_motion command.
+
+        - Iterates validation batches; env i -> clip i (deterministic) starting at frame 0.
+        - Collect robot and reference sequences each step and save one NPZ per clip.
+        - NPZ conforms to holomotion_retargeted format keys.
+        """
+        ckpt_path = self.config.checkpoint
+        # log_dir is already set to checkpoint directory in eval script
+        model_name = os.path.basename(ckpt_path).replace(".pt", "")
+
+        # Eval modes (freeze normalizers if enabled)
+        self.actor.eval()
+        self.critic.eval()
+        if self.obs_norm_enabled:
+            self.obs_normalizer.eval()
+            self.privileged_obs_normalizer.eval()
+
+        # Require ref_motion command and simple cache backend
+        command_name = list(self.env.config.commands.keys())[0]
+        if command_name != "ref_motion":
+            logger.warning(
+                "Offline evaluation only supported for ref_motion command"
+            )
+            return {}
+        motion_cmd = self.env._env.command_manager.get_term("ref_motion")
+        cache = getattr(motion_cmd, "_motion_cache", None)
+        if cache is None:
+            logger.error(
+                "Offline evaluation requires hdf5_simple cache backend (no LMDB support)"
+            )
+            return {}
+
+        # Evaluation flag and cache batch-size adjustment (ensure batch_size == num_envs)
+        motion_cmd._is_evaluating = True
+        num_envs = self.env.num_envs
+        try:
+            if getattr(cache, "_batch_size", None) != num_envs:
+                from holomotion.src.training.h5_dataloader import (
+                    MotionClipBatchCache,
+                )
+
+                cache = MotionClipBatchCache(
+                    train_dataset=cache._datasets["train"],
+                    val_dataset=cache._datasets["val"],
+                    batch_size=num_envs,
+                    stage_device=getattr(cache, "_stage_device", None),
+                    num_workers=getattr(cache, "_num_workers", 0),
+                    prefetch_factor=getattr(cache, "_prefetch_factor", None),
+                    pin_memory=getattr(cache, "_pin_memory", True),
+                    persistent_workers=getattr(
+                        cache, "_persistent_workers", False
+                    ),
+                    sampler_rank=getattr(cache, "_sampler_rank", 0),
+                    sampler_world_size=getattr(
+                        cache, "_sampler_world_size", 1
+                    ),
+                    swap_interval_steps=getattr(
+                        cache, "swap_interval_steps", None
+                    ),
+                    force_timeout_on_swap=getattr(
+                        cache, "force_timeout_on_swap", True
+                    ),
+                )
+                motion_cmd._motion_cache = cache
+        except Exception as e:
+            logger.warning(
+                f"Offline eval: failed to rebuild cache to batch_size={num_envs}: {e}"
+            )
+
+        # Output directory (respect existing log_dir derived from checkpoint)
+        output_dir = os.path.join(
+            self.log_dir, f"isaaclab_eval_output_{model_name}"
+        )
+        os.makedirs(output_dir, exist_ok=True)
+        logger.info(f"Saving evaluation outputs to: {output_dir}")
+
+        # Switch to validation cache and iterate all batches
+        if hasattr(cache, "set_mode"):
+            cache.set_mode("val")
+        total_batches = int(getattr(cache, "num_batches", 1))
+        with torch.no_grad():
+            for batch_idx in tqdm(
+                range(total_batches), desc="Evaluating batches"
+            ):
+                # Reset envs first, then apply deterministic mapping on the active cache batch
+                _ = self.env.reset_all()
+                if hasattr(motion_cmd, "setup_offline_eval_deterministic"):
+                    motion_cmd.setup_offline_eval_deterministic(
+                        apply_pending_swap=True
+                    )
+
+                # Read current batch metadata AFTER reset + setup
+                current = getattr(cache, "current_batch", None)
+                if current is None or not hasattr(current, "motion_keys"):
+                    logger.warning(
+                        "Current cache batch missing motion_keys; skipping batch"
+                    )
+                    continue
+                motion_keys = list(current.motion_keys)
+                raw_motion_keys = list(
+                    getattr(current, "raw_motion_keys", current.motion_keys)
+                )
+
+                # Determine active env count for this batch
+                clip_count = int(cache.clip_count)
+                active_count = min(num_envs, clip_count)
+
+                # Recompute observations after deterministic setup
+                obs_dict = self.env._env.observation_manager.compute(
+                    update_history=True
+                )
+                obs = obs_dict["policy"].to(self.device)
+                obs = (
+                    self.obs_normalizer(obs) if self.obs_norm_enabled else obs
+                )
+
+                # Map env -> motion_key for active envs
+                env_motion_keys = {
+                    int(i): motion_keys[int(i)] for i in range(active_count)
+                }
+                env_raw_motion_keys = {
+                    int(i): raw_motion_keys[int(i)]
+                    for i in range(active_count)
+                }
+
+                # Prepare per-env collectors
+                env_has_done = torch.zeros(
+                    num_envs, dtype=torch.bool, device=self.device
+                )
+                episode_lengths = torch.zeros(
+                    num_envs, dtype=torch.long, device=self.device
+                )
+
+                active_mask = torch.zeros(
+                    num_envs, dtype=torch.bool, device=self.device
+                )
+                if active_count > 0:
+                    active_mask[:active_count] = True
+
+                # Reference collectors (URDF order)
+                ref_dof_pos = [[] for _ in range(active_count)]
+                ref_dof_vel = [[] for _ in range(active_count)]
+                ref_body_pos = [[] for _ in range(active_count)]
+                ref_body_rot_wxyz = [[] for _ in range(active_count)]
+                ref_body_vel = [[] for _ in range(active_count)]
+                ref_body_ang_vel = [[] for _ in range(active_count)]
+
+                # Robot collectors (URDF order)
+                robot_dof_pos = [[] for _ in range(active_count)]
+                robot_dof_vel = [[] for _ in range(active_count)]
+                robot_body_pos = [[] for _ in range(active_count)]
+                robot_body_rot_wxyz = [[] for _ in range(active_count)]
+                robot_body_vel = [[] for _ in range(active_count)]
+                robot_body_ang_vel = [[] for _ in range(active_count)]
+
+                # Per-env bookkeeping
+                clip_lengths_np = (
+                    current.lengths.detach().cpu().numpy()
+                    if hasattr(current, "lengths")
+                    else np.array(
+                        [getattr(cache, "max_frame_length", 1000)]
+                        * active_count
+                    )
+                )
+                # Persist an explicit mapping file for verification
+                try:
+                    mapping_records = []
+                    for i in range(active_count):
+                        mapping_records.append(
+                            {
+                                "env_id": int(i),
+                                "motion_key": env_motion_keys[int(i)],
+                                "raw_motion_key": env_raw_motion_keys[int(i)],
+                                "clip_length": int(clip_lengths_np[int(i)]),
+                            }
+                        )
+                    mapping_path = os.path.join(
+                        output_dir, f"batch_{batch_idx:04d}_mapping.json"
+                    )
+                    with open(mapping_path, "w") as f:
+                        json.dump(mapping_records, f, indent=2)
+                except Exception:
+                    pass
+
+                env_frame_counts = [0 for _ in range(active_count)]
+                encountered_done = [False for _ in range(active_count)]
+                valid_masks = [[] for _ in range(active_count)]
+
+                def _sanitize_key(key: str) -> str:
+                    return (
+                        key.replace("/", "+")
+                        .replace(" ", "_")
+                        .replace("\\", "+")
+                    )
+
+                def _save_env_npz(idx: int):
+                    if idx >= active_count:
+                        return
+                    # Total collected frames
+                    total_len = int(min(env_frame_counts[idx], max_steps))
+                    if total_len <= 0:
+                        return
+
+                    # Compute contiguous valid prefix length and slice_len
+                    vm = valid_masks[idx][:total_len]
+                    valid_prefix_len = 0
+                    for b in vm:
+                        if b:
+                            valid_prefix_len += 1
+                        else:
+                            break
+                    clip_len = int(clip_lengths_np[idx])
+                    slice_len = int(min(valid_prefix_len, clip_len, total_len))
+                    if slice_len <= 0:
+                        return
+
+                    # Reference arrays (sliced)
+                    ref_dof_pos_arr = np.stack(
+                        ref_dof_pos[idx][:slice_len], axis=0
+                    ).astype(np.float32)
+                    ref_dof_vel_arr = np.stack(
+                        ref_dof_vel[idx][:slice_len], axis=0
+                    ).astype(np.float32)
+                    ref_body_pos_arr = np.stack(
+                        ref_body_pos[idx][:slice_len], axis=0
+                    ).astype(np.float32)
+                    ref_body_rot_wxyz_arr = np.stack(
+                        ref_body_rot_wxyz[idx][:slice_len], axis=0
+                    ).astype(np.float32)
+                    ref_body_vel_arr = np.stack(
+                        ref_body_vel[idx][:slice_len], axis=0
+                    ).astype(np.float32)
+                    ref_body_ang_vel_arr = np.stack(
+                        ref_body_ang_vel[idx][:slice_len], axis=0
+                    ).astype(np.float32)
+
+                    # Robot arrays (sliced)
+                    robot_dof_pos_arr = np.stack(
+                        robot_dof_pos[idx][:slice_len], axis=0
+                    ).astype(np.float32)
+                    robot_dof_vel_arr = np.stack(
+                        robot_dof_vel[idx][:slice_len], axis=0
+                    ).astype(np.float32)
+                    robot_body_pos_arr = np.stack(
+                        robot_body_pos[idx][:slice_len], axis=0
+                    ).astype(np.float32)
+                    robot_body_rot_wxyz_arr = np.stack(
+                        robot_body_rot_wxyz[idx][:slice_len], axis=0
+                    ).astype(np.float32)
+                    robot_body_vel_arr = np.stack(
+                        robot_body_vel[idx][:slice_len], axis=0
+                    ).astype(np.float32)
+                    robot_body_ang_vel_arr = np.stack(
+                        robot_body_ang_vel[idx][:slice_len], axis=0
+                    ).astype(np.float32)
+
+                    # Metadata
+                    motion_fps = int(getattr(motion_cmd.cfg, "target_fps", 50))
+                    num_dofs = int(ref_dof_pos_arr.shape[1])
+                    num_bodies = int(ref_body_pos_arr.shape[1])
+                    wallclock_len = (
+                        float(slice_len - 1) / float(motion_fps)
+                        if motion_fps > 0 and slice_len > 0
+                        else 0.0
+                    )
+                    meta = {
+                        "motion_key": env_motion_keys[idx],
+                        "raw_motion_key": env_raw_motion_keys[idx],
+                        "motion_fps": float(motion_fps),
+                        "num_frames": int(slice_len),
+                        "wallclock_len": float(wallclock_len),
+                        "num_dofs": int(num_dofs),
+                        "num_bodies": int(num_bodies),
+                        "clip_length": int(clip_lengths_np[idx]),
+                        "valid_prefix_len": int(valid_prefix_len),
+                    }
+
+                    # Output filename: flattened motion_key
+                    out_name = f"{_sanitize_key(env_motion_keys[idx])}.npz"
+                    out_path = os.path.join(output_dir, out_name)
+
+                    np.savez_compressed(
+                        out_path,
+                        metadata=json.dumps(meta),
+                        dof_pos=robot_dof_pos_arr,
+                        dof_vel=robot_dof_vel_arr,
+                        global_translation=robot_body_pos_arr,
+                        global_rotation_quat=robot_body_rot_wxyz_arr,
+                        global_velocity=robot_body_vel_arr,
+                        global_angular_velocity=robot_body_ang_vel_arr,
+                        ref_dof_pos=ref_dof_pos_arr,
+                        ref_dof_vel=ref_dof_vel_arr,
+                        ref_global_translation=ref_body_pos_arr,
+                        ref_global_rotation_quat=ref_body_rot_wxyz_arr,
+                        ref_global_velocity=ref_body_vel_arr,
+                        ref_global_angular_velocity=ref_body_ang_vel_arr,
+                    )
+
+                max_steps = int(
+                    getattr(cache, "max_frame_length", 1000)
+                )  # decide the max_length to evaluate
+                for rollout_step in tqdm(
+                    range(max_steps), desc="Rollout steps"
+                ):
+                    # PRE-STEP: collect states for all active envs
+                    active = [i for i in range(active_count)]
+                    if len(active) > 0:
+                        # Reference step tensors (URDF order)
+                        ref_dp = (
+                            motion_cmd.ref_motion_dof_pos_cur_urdf_order.detach()
+                            .cpu()
+                            .numpy()
+                        )
+                        ref_dv = (
+                            motion_cmd.ref_motion_dof_vel_cur_urdf_order.detach()
+                            .cpu()
+                            .numpy()
+                        )
+                        ref_bp = (
+                            motion_cmd.ref_motion_bodylink_global_pos_cur_urdf_order.detach()
+                            .cpu()
+                            .numpy()
+                        )
+                        ref_br = (
+                            motion_cmd.ref_motion_bodylink_global_rot_wxyz_cur_urdf_order.detach()
+                            .cpu()
+                            .numpy()
+                        )
+                        ref_bv = (
+                            motion_cmd.ref_motion_bodylink_global_lin_vel_cur_urdf_order.detach()
+                            .cpu()
+                            .numpy()
+                        )
+                        ref_bav = (
+                            motion_cmd.ref_motion_bodylink_global_ang_vel_cur_urdf_order.detach()
+                            .cpu()
+                            .numpy()
+                        )
+
+                        # Robot step tensors (URDF order)
+                        rob_dp = (
+                            motion_cmd.robot_dof_pos_cur_urdf_order.detach()
+                            .cpu()
+                            .numpy()
+                        )
+                        rob_dv = (
+                            motion_cmd.robot_dof_vel_cur_urdf_order.detach()
+                            .cpu()
+                            .numpy()
+                        )
+                        rob_bp = (
+                            motion_cmd.robot_bodylink_global_pos_cur_urdf_order.detach()
+                            .cpu()
+                            .numpy()
+                        )
+                        rob_br = (
+                            motion_cmd.robot_bodylink_global_rot_wxyz_cur_urdf_order.detach()
+                            .cpu()
+                            .numpy()
+                        )
+                        rob_bv = (
+                            motion_cmd.robot_bodylink_global_lin_vel_cur_urdf_order.detach()
+                            .cpu()
+                            .numpy()
+                        )
+                        rob_bav = (
+                            motion_cmd.robot_bodylink_global_ang_vel_cur_urdf_order.detach()
+                            .cpu()
+                            .numpy()
+                        )
+                        for idx in active:
+                            ref_dof_pos[idx].append(ref_dp[idx])
+                            ref_dof_vel[idx].append(ref_dv[idx])
+                            ref_body_pos[idx].append(ref_bp[idx])
+                            ref_body_rot_wxyz[idx].append(ref_br[idx])
+                            ref_body_vel[idx].append(ref_bv[idx])
+                            ref_body_ang_vel[idx].append(ref_bav[idx])
+
+                            robot_dof_pos[idx].append(rob_dp[idx])
+                            robot_dof_vel[idx].append(rob_dv[idx])
+                            robot_body_pos[idx].append(rob_bp[idx])
+                            robot_body_rot_wxyz[idx].append(rob_br[idx])
+                            robot_body_vel[idx].append(rob_bv[idx])
+                            robot_body_ang_vel[idx].append(rob_bav[idx])
+
+                            # Record valid mask for current frame (before step)
+                            clip_limit = int(clip_lengths_np[idx])
+                            valid_now = (
+                                (idx < active_count)
+                                and (not encountered_done[idx])
+                                and (env_frame_counts[idx] < clip_limit)
+                            )
+                            valid_masks[idx].append(bool(valid_now))
+
+                            # Increment local frame counter
+                            env_frame_counts[idx] += 1
+
+                    # No mid-rollout finalize; we defer to end using valid masks
+
+                    # Inference and step (advance sim)
+                    actions, _, _, _, _ = self.actor(
+                        obs, actions=None, mode="inference"
+                    )
+                    obs_dict, _, dones, _, infos = self.env.step(actions)
+                    obs = obs_dict["policy"].to(self.device)
+                    obs = (
+                        self.obs_normalizer(obs)
+                        if self.obs_norm_enabled
+                        else obs
+                    )
+
+                    # Handle RL dones (first-done policy): mark done for future frames
+                    step_dones = (
+                        dones.bool().reshape(-1).detach().cpu().numpy()
+                    )
+                    for idx in range(min(active_count, len(step_dones))):
+                        if step_dones[idx] and not encountered_done[idx]:
+                            encountered_done[idx] = True
+
+                    if rollout_step == max_steps - 1:
+                        # End of rollout: save once per env with full rollout arrays + valid_mask
+                        if dump_npzs:
+                            for idx in range(active_count):
+                                _save_env_npz(idx)
+                        break
+
+                # No manual cache.advance(); handled by command setup on next reset
+        logger.info(
+            f"Offline evaluation complete: saved clips to {output_dir}"
+        )
+        return {"output_dir": output_dir}
+
+    def offline_evaluate_velocity_tracking(self):
+        """Roll out indefinitely for visualizing the velocity tracking policy.
+        
+        This method runs a continuous rollout without time limits, suitable for
+        visualization and interactive evaluation. The policy will track velocity
+        commands generated by the environment's command manager.
+        
+        Returns:
+            dict: Empty dict (method runs indefinitely until interrupted)
+        """
+        command_name = list(self.env.config.commands.keys())[0]
+        if command_name != "base_velocity":
+            logger.warning(
+                "Velocity tracking evaluation only supported for base_velocity command"
+            )
+            return {}
+
+        if self.is_main_process:
+            logger.info("Starting indefinite velocity tracking rollout for visualization...")
+            logger.info("Press Ctrl+C to stop")
+
+        # Set models to eval mode
+        self.actor.eval()
+        self.critic.eval()
+        if self.obs_norm_enabled:
+            self.obs_normalizer.eval()
+            self.privileged_obs_normalizer.eval()
+
+        # Reset environment
+        obs_dict = self.env.reset_all()[0]
+        obs_raw = obs_dict["policy"].to(self.device)
+        privileged_obs_raw = obs_dict["critic"].to(self.device)
+
+        # Normalize initial observations
+        if self.obs_norm_enabled:
+            obs = self.obs_normalizer.normalize_only(obs_raw)
+            privileged_obs = self.privileged_obs_normalizer.normalize_only(
+                privileged_obs_raw
+            )
+            if self.obs_norm_enable_clipping:
+                obs = torch.clamp(
+                    obs, -self.obs_norm_clip_range, self.obs_norm_clip_range
+                )
+                privileged_obs = torch.clamp(
+                    privileged_obs,
+                    -self.obs_norm_clip_range,
+                    self.obs_norm_clip_range,
+                )
+        else:
+            obs = obs_raw
+            privileged_obs = privileged_obs_raw
+
+        step_count = 0
+        with torch.no_grad():
+            while True:
+                # Inference: compute actions
+                actions, _, _, _, _ = self.actor(
+                    obs, actions=None, mode="inference"
+                )
+
+                # Step environment
+                obs_dict, rewards, dones, time_outs, infos = self.env.step(actions)
+                obs_raw = obs_dict["policy"].to(self.device)
+                privileged_obs_raw = obs_dict["critic"].to(self.device)
+
+                # Normalize observations
+                if self.obs_norm_enabled:
+                    obs = self.obs_normalizer.normalize_only(obs_raw)
+                    privileged_obs = self.privileged_obs_normalizer.normalize_only(
+                        privileged_obs_raw
+                    )
+                    if self.obs_norm_enable_clipping:
+                        obs = torch.clamp(
+                            obs,
+                            -self.obs_norm_clip_range,
+                            self.obs_norm_clip_range,
+                        )
+                        privileged_obs = torch.clamp(
+                            privileged_obs,
+                            -self.obs_norm_clip_range,
+                            self.obs_norm_clip_range,
+                        )
+                else:
+                    obs = obs_raw
+                    privileged_obs = privileged_obs_raw
+
+                step_count += 1
+
+                # Handle resets (when dones occur, environment will auto-reset)
+                if torch.any(dones):
+                    if self.is_main_process:
+                        logger.debug(
+                            f"Episode resets detected at step {step_count}"
+                        )
+
+        return {}
+
+    def _log(self, locs: dict):
+        """Enhanced logging function with beautiful tabulate formatting."""
+        if not self.log_dir:
+            return
+
+        it = locs["it"]
+        loss_dict = locs["loss_dict"]
+        collection_time = locs["collection_time"]
+        learn_time = locs["learn_time"]
+
+        # Prepare metrics dictionary for Accelerate's logging
+        metrics = {}
+
+        # Episode info logging to TensorBoard
+        ep_info_data = {}
+        if self.ep_infos:
+            for key in self.ep_infos[0]:
                 infotensor = torch.tensor([], device=self.device)
-                for ep_info in log_dict["ep_infos"]:
-                    # handle scalar and zero dimensional tensor infos
+                for ep_info in self.ep_infos:
+                    if key not in ep_info:
+                        continue
                     if not isinstance(ep_info[key], torch.Tensor):
                         ep_info[key] = torch.Tensor([ep_info[key]])
                     if len(ep_info[key].shape) == 0:
@@ -2311,97 +2288,146 @@ class PPO:
                     infotensor = torch.cat(
                         (infotensor, ep_info[key].to(self.device))
                     )
-                value = torch.mean(infotensor)
-                if (
-                    self.is_main_process
-                    and self.tensorboard_writer is not None
-                ):
-                    self.tensorboard_writer.add_scalar(
-                        f"Episode/{key}", value.item(), log_dict["it"]
-                    )
 
-        train_log_dict = {}
-        actor_model = (
-            self.actor.module if hasattr(self.actor, "module") else self.actor
-        )
-        mean_std = actor_model.std.mean()
+                if infotensor.numel() > 0:
+                    value = torch.mean(infotensor)
+                    metric_key = key if "/" in key else f"Episode/{key}"
+                    metrics[metric_key] = value.item()
+                    ep_info_data[metric_key] = value.item()
+
+        # Estimate policy noise std without accessing DDP-wrapped internals
+        base_actor = self.accelerator.unwrap_model(self.actor)
+        if hasattr(base_actor, "std"):
+            mean_std = base_actor.std.mean()
+        elif hasattr(base_actor, "log_std"):
+            mean_std = torch.exp(base_actor.log_std).mean()
+        else:
+            mean_std = torch.tensor(0.0, device=self.device)
+
         fps = int(
             self.num_steps_per_env
-            * self.env.num_envs
-            / (log_dict["collection_time"] + log_dict["learn_time"])
+            * self.num_envs
+            * self.gpu_world_size
+            / (collection_time + learn_time)
         )
-        train_log_dict["fps"] = fps
-        train_log_dict["mean_std"] = mean_std.item()
 
-        env_log_dict = self.episode_env_tensors.mean_and_clear()
-        env_log_dict = {f"Env/{k}": v for k, v in env_log_dict.items()}
+        # Add loss metrics
+        for key, value in loss_dict.items():
+            metrics[f"Loss/{key}"] = value
 
-        self._logging_to_writer(log_dict, train_log_dict, env_log_dict)
+        metrics["Loss/actor_learning_rate"] = self.actor_learning_rate
+        metrics["Loss/critic_learning_rate"] = self.critic_learning_rate
+        metrics["Policy/mean_noise_std"] = mean_std.item()
+        metrics["Perf/total_fps"] = fps
+        metrics["Perf/collection_time"] = collection_time
+        metrics["Perf/learning_time"] = learn_time
 
-        # Prepare training log data for tabulate
+        synced_mean_reward = locs.get("synced_mean_reward", None)
+        synced_mean_episode_length = locs.get(
+            "synced_mean_episode_length", None
+        )
+        if (
+            synced_mean_reward is not None
+            and synced_mean_episode_length is not None
+        ):
+            metrics["Train/mean_reward"] = synced_mean_reward
+            metrics["Train/mean_episode_length"] = synced_mean_episode_length
+        elif len(self.rewbuffer) > 0:
+            metrics["Train/mean_reward"] = statistics.mean(self.rewbuffer)
+            metrics["Train/mean_episode_length"] = statistics.mean(
+                self.lenbuffer
+            )
+
+        # Log all metrics using Accelerate's native logging
+        self.accelerator.log(metrics, step=it)
+
+        # Beautiful console logging with tabulate
+        self._post_epoch_logging(
+            {
+                "it": it,
+                "total_learning_iterations": self.num_learning_iterations,
+                "loss_dict": loss_dict,
+                "collection_time": collection_time,
+                "learn_time": learn_time,
+                "ep_infos": self.ep_infos,
+                "rewbuffer": self.rewbuffer,
+                "lenbuffer": self.lenbuffer,
+                "synced_mean_reward": synced_mean_reward,
+                "synced_mean_episode_length": synced_mean_episode_length,
+                "mean_std": mean_std.item(),
+                "fps": fps,
+                "actor_learning_rate": self.actor_learning_rate,
+                "critic_learning_rate": self.critic_learning_rate,
+            }
+        )
+
+    def _post_epoch_logging(self, log_dict):
+        """Beautiful console logging with tabulate formatting."""
+        # Episode info processing
+        ep_metrics = {}
+        if log_dict["ep_infos"]:
+            for key in log_dict["ep_infos"][0]:
+                infotensor = torch.tensor([], device=self.device)
+                for ep_info in log_dict["ep_infos"]:
+                    if key not in ep_info:
+                        continue
+                    if not isinstance(ep_info[key], torch.Tensor):
+                        ep_info[key] = torch.Tensor([ep_info[key]])
+                    if len(ep_info[key].shape) == 0:
+                        ep_info[key] = ep_info[key].unsqueeze(0)
+                    infotensor = torch.cat(
+                        (infotensor, ep_info[key].to(self.device))
+                    )
+
+                if infotensor.numel() > 0:
+                    value = torch.mean(infotensor)
+                    if "/" in key:
+                        ep_metrics[key] = f"{value:.4f}"
+                    else:
+                        ep_metrics[f"Mean Episode {key}"] = f"{value:.4f}"
+
+        # Build training data dictionary
         training_data = {
-            "Learning Iteration": f"{log_dict['it']}/{log_dict['total_learning_iterations']}",  # noqa: E501
-            "FPS": f"{train_log_dict['fps']:.0f} steps/s",
+            "Learning Iteration": f"{log_dict['it']}/{log_dict['total_learning_iterations']}",
+            "FPS": f"{log_dict['fps']:.0f} steps/s",
             "Collection Time": f"{log_dict['collection_time']:.3f}s",
             "Learning Time": f"{log_dict['learn_time']:.3f}s",
-            "Total Time": f"{self.tot_time:.2f}s",
-            "Iteration Time": f"{iteration_time:.2f}s",
-            "Total Timesteps": f"{self.tot_timesteps}",
-            "ETA": f"{(self.tot_time / (log_dict['it'] + 1) * (log_dict['total_learning_iterations'] - log_dict['it'])) / 3600:.2f}H",  # noqa: E501
-            "Mean Action Noise Std": f"{train_log_dict['mean_std']:.2f}",
-            "Entropy Coef": f"{self.entropy_coef:.4e}",
+            "Mean Action Noise Std": f"{log_dict['mean_std']:.2f}",
+            "Actor Learning Rate": f"{log_dict['actor_learning_rate']:.4e}",
+            "Critic Learning Rate": f"{log_dict['critic_learning_rate']:.4e}",
         }
 
-        # Add reward and episode length if available
-        if len(log_dict["rewbuffer"]) > 0:
-            training_data["Mean Reward"] = (
+        # Add reward and episode info (synced across ranks if available)
+        smr = log_dict.get("synced_mean_reward", None)
+        smel = log_dict.get("synced_mean_episode_length", None)
+        if smr is not None and smel is not None:
+            training_data["Mean Episode Reward"] = f"{smr:.2f}"
+            training_data["Mean Episode Length"] = f"{smel:.2f}"
+        elif len(log_dict["rewbuffer"]) > 0:
+            training_data["Mean Episode Reward"] = (
                 f"{statistics.mean(log_dict['rewbuffer']):.2f}"
             )
             training_data["Mean Episode Length"] = (
                 f"{statistics.mean(log_dict['lenbuffer']):.2f}"
             )
 
-            # Add task and RND reward logging to console output
-            if self.use_rnd:
-                if len(log_dict["task_rewbuffer"]) > 0:
-                    training_data["Mean Task Reward"] = (
-                        f"{statistics.mean(log_dict['task_rewbuffer']):.2f}"
-                    )
-                if len(log_dict["rnd_rewbuffer"]) > 0:
-                    training_data["Mean RND Reward"] = (
-                        f"{statistics.mean(log_dict['rnd_rewbuffer']):.2f}"
-                    )
-
-        # Add environment log data
-        for k, v in env_log_dict.items():
-            key_name = k.replace("Env/", "")  # Clean up key names
-            training_data[key_name] = f"{v:.4f}"
-
+        # Add loss data
         training_data.update(
             {
-                k: f"{v:.4f}" if isinstance(v, torch.Tensor) else f"{v:.4f}"
+                k: f"{v:.4f}" if isinstance(v, (int, float)) else f"{v:.4f}"
                 for k, v in log_dict["loss_dict"].items()
+                if v is not None
             }
         )
 
-        if log_dict["ep_infos"]:
-            for key in log_dict["ep_infos"][0]:
-                infotensor = torch.tensor([], device=self.device)
-                for ep_info in log_dict["ep_infos"]:
-                    # handle scalar and zero dimensional tensor infos
-                    if not isinstance(ep_info[key], torch.Tensor):
-                        ep_info[key] = torch.Tensor([ep_info[key]])
-                    if len(ep_info[key].shape) == 0:
-                        ep_info[key] = ep_info[key].unsqueeze(0)
-                    infotensor = torch.cat(
-                        (infotensor, ep_info[key].to(self.device))
-                    )
-                value = torch.mean(infotensor)
-                training_data[f"Mean Episode {key}"] = f"{value:.4f}"
-        table_data = [[key, value] for key, value in training_data.items()]
+        # Add episode metrics
+        training_data.update(ep_metrics)
+
+        # Organize and display
+        table_data = self._organize_training_data(training_data)
         log_lines = [
             "\n" + "=" * 80,
-            f"TRAINING LOG - Iteration {log_dict['it']}/{log_dict['total_learning_iterations']}",  # noqa: E501
+            f"TRAINING LOG - Iteration {log_dict['it']}/{log_dict['total_learning_iterations']}",
             "=" * 80,
             tabulate(
                 table_data,
@@ -2415,671 +2441,436 @@ class PPO:
         training_log = "\n".join(log_lines)
         logger.info(training_log)
 
-    def _logging_to_writer(self, log_dict, train_log_dict, env_log_dict):
-        # Skip logging if not the main process or TensorBoard writer is None
-        if not self.is_main_process or self.tensorboard_writer is None:
-            return
+    def _organize_training_data(self, training_data):
+        """Organize training data into logical groups for better console display."""
+        # Define priority order for key display
+        priority_keys = [
+            # Core training info (highest priority)
+            "Learning Iteration",
+            "FPS",
+            "Collection Time",
+            "Learning Time",
+            "",  # separator
+            # Episode statistics
+            "Mean Episode Reward",
+            "Mean Episode Length",
+            "",  # separator
+            # Model metrics
+            "Mean Action Noise Std",
+            "Actor Learning Rate",
+            "Critic Learning Rate",
+            "",  # separator
+        ]
 
-        # Logging Loss Dict
-        for loss_key, loss_value in log_dict["loss_dict"].items():
-            # Skip logging accuracy metrics if they were removed
-            if "Acc" not in loss_key:
-                self.tensorboard_writer.add_scalar(
-                    f"Loss/{loss_key}", loss_value, log_dict["it"]
-                )
+        # Create organized list
+        organized_data = []
+        used_keys = set()
 
-        self.tensorboard_writer.add_scalar(
-            "Loss/actor_learning_rate",
-            self.actor_learning_rate,
-            log_dict["it"],
+        # Helper function to add section header
+        def add_section_header(title):
+            organized_data.append([f"=== {title.upper()} ===", "======"])
+
+        # Add priority keys first
+        current_section = None
+        for key in priority_keys:
+            if key == "":  # section break
+                current_section = None
+            elif key in training_data:
+                # Add section header for performance metrics
+                if current_section != "training" and key in [
+                    "Learning Iteration",
+                    "FPS",
+                    "Collection Time",
+                    "Learning Time",
+                ]:
+                    add_section_header("Performance")
+                    current_section = "training"
+                # Add section header for episode stats
+                elif current_section != "episode" and key in [
+                    "Mean Episode Reward",
+                    "Mean Episode Length",
+                ]:
+                    add_section_header("Episode Statistics")
+                    current_section = "episode"
+                # Add section header for model metrics
+                elif current_section != "model" and key in [
+                    "Mean Action Noise Std",
+                    "Actor Learning Rate",
+                    "Critic Learning Rate",
+                ]:
+                    add_section_header("Model")
+                    current_section = "model"
+
+                organized_data.append([key, training_data[key]])
+                used_keys.add(key)
+
+        loss_keys = sorted(
+            [
+                k
+                for k in training_data.keys()
+                if k in ["value_function", "surrogate", "entropy"]
+                and k not in used_keys
+            ]
         )
-        self.tensorboard_writer.add_scalar(
-            "Loss/critic_learning_rate",
-            self.critic_learning_rate,
-            log_dict["it"],
+        if loss_keys:
+            add_section_header("Loss")
+            for key in loss_keys:
+                display_key = f"Loss/{key}"
+                organized_data.append([display_key, training_data[key]])
+                used_keys.add(key)
+
+        remaining_keys = sorted(
+            [k for k in training_data.keys() if k not in used_keys]
         )
-        self.tensorboard_writer.add_scalar(
-            "Policy/mean_noise_std", train_log_dict["mean_std"], log_dict["it"]
-        )
-        self.tensorboard_writer.add_scalar(
-            "Perf/total_fps", train_log_dict["fps"], log_dict["it"]
-        )
-        self.tensorboard_writer.add_scalar(
-            "Perf/collection_time", log_dict["collection_time"], log_dict["it"]
-        )
-        self.tensorboard_writer.add_scalar(
-            "Perf/learning_time", log_dict["learn_time"], log_dict["it"]
-        )
+        if remaining_keys:
+            add_section_header("Other Metrics")
+            for key in remaining_keys:
+                organized_data.append([key, training_data[key]])
 
-        if len(log_dict["rewbuffer"]) > 0:
-            self.tensorboard_writer.add_scalar(
-                "Train/mean_reward",
-                statistics.mean(log_dict["rewbuffer"]),
-                log_dict["it"],
-            )
-            self.tensorboard_writer.add_scalar(
-                "Train/mean_episode_length",
-                statistics.mean(log_dict["lenbuffer"]),
-                log_dict["it"],
-            )
+        return organized_data
 
-            # Task and RND episode reward logging
-            if self.use_rnd:
-                if len(log_dict["task_rewbuffer"]) > 0:
-                    self.tensorboard_writer.add_scalar(
-                        "Train/mean_task_reward_episodes",
-                        statistics.mean(log_dict["task_rewbuffer"]),
-                        log_dict["it"],
-                    )
-                if len(log_dict["rnd_rewbuffer"]) > 0:
-                    self.tensorboard_writer.add_scalar(
-                        "Train/mean_rnd_reward_episodes",
-                        statistics.mean(log_dict["rnd_rewbuffer"]),
-                        log_dict["it"],
-                    )
+    @staticmethod
+    def _clean_state_dict(state_dict):
+        """Remove the '_orig_mod.' prefix from keys if it exists.
 
-        if len(env_log_dict) > 0:
-            for k, v in env_log_dict.items():
-                self.tensorboard_writer.add_scalar(k, v, log_dict["it"])
-
-        self.tensorboard_writer.add_scalar(
-            "Train/entropy_coef", self.entropy_coef, log_dict["it"]
-        )
-
-        # Log mean task and disc rewards from rollout storage if available
-        if self.use_amp:
-            mean_task_reward = (
-                self.storage.query_key("task_rewards").mean().item()
-            )
-            mean_disc_reward = (
-                self.storage.query_key("disc_rewards").mean().item()
-            )
-            self.tensorboard_writer.add_scalar(
-                "Train/mean_task_reward", mean_task_reward, log_dict["it"]
-            )
-            self.tensorboard_writer.add_scalar(
-                "Train/mean_disc_reward", mean_disc_reward, log_dict["it"]
-            )
-
-        if self.use_rnd:
-            mean_rnd_reward = (
-                self.storage.query_key("rnd_rewards").mean().item()
-            )
-            self.tensorboard_writer.add_scalar(
-                "Train/mean_rnd_reward", mean_rnd_reward, log_dict["it"]
-            )
-
-            # Log task reward at step level
-            if self.use_amp:
-                mean_task_reward = (
-                    self.storage.query_key("task_rewards").mean().item()
-                )
-                self.tensorboard_writer.add_scalar(
-                    "Train/mean_task_reward", mean_task_reward, log_dict["it"]
-                )
-
-        if self.use_dagger:
-            self.tensorboard_writer.add_scalar(
-                "Train/dagger_coef", self.dagger_coef, log_dict["it"]
-            )
-            if self.use_teacher_rollout_annealing:
-                self.tensorboard_writer.add_scalar(
-                    "Train/teacher_rollout_prob",
-                    self.teacher_rollout_prob,
-                    log_dict["it"],
-                )
-                if "Teacher_Rollout_Usage" in train_log_dict:
-                    self.tensorboard_writer.add_scalar(
-                        "Train/teacher_rollout_usage",
-                        train_log_dict["Teacher_Rollout_Usage"],
-                        log_dict["it"],
-                    )
-
-    ##########################################################################################
-    # Code for Evaluation
-    ##########################################################################################
-
-    def env_step(self, actor_state):
-        obs_dict, rewards, dones, extras = self.env.step(actor_state)
-        actor_state.update(
-            {
-                "obs": obs_dict,
-                "rewards": rewards,
-                "dones": dones,
-                "extras": extras,
-            }
-        )
-        return actor_state
-
-    @torch.no_grad()
-    def get_example_obs(self):
-        obs_dict = self.env.reset_all()
-        for obs_key in obs_dict.keys():
-            print(obs_key, sorted(self.env.config.obs.obs_dict[obs_key]))
-        # move to cpu
-        for k in obs_dict:
-            obs_dict[k] = obs_dict[k].cpu()
-        return obs_dict
-
-    def _create_actor_state(self):
-        return {"done_indices": [], "stop": False}
-
-    def _pre_evaluate_policy(self, reset_env=True):
-        self._eval_mode()
-        self.env.set_is_evaluating()
-        self.env.resample_motion()
-        if reset_env:
-            _ = self.env.reset_all()
-
-    def _post_evaluate_policy(self):
-        self.env._init_buffers()
-        self.env.resample_motion()
-        obs_dict = self.env.reset_all()
-        for obs_key in obs_dict.keys():
-            obs_dict[obs_key] = obs_dict[obs_key].to(self.device)
-
-        # Reset PPO bookkeeping for accurate logging post-evaluation
-        self.cur_reward_sum.zero_()
-        self.cur_episode_length.zero_()
-        if self.use_rnd:
-            self.cur_task_reward_sum.zero_()
-            self.cur_rnd_reward_sum.zero_()
-        self._train_mode()  # Switch model back to training mode
-        self.env.is_evaluating = False  # Reset evaluation flag
-
-    def _pre_eval_env_step(self, actor_state: dict):
-        actor_obs = actor_state["obs"]["actor_obs"]
-        actions = self.eval_policy(actor_obs)
-        actor_state.update({"actions": actions})
-        return actor_state
-
-    def _post_eval_env_step(self, actor_state):
-        actor_state["step_log_dict"] = self.env.log_dict
-        return actor_state
-
-    def _get_inference_policy(self, device=None):
-        actor = (
-            self.actor.module if hasattr(self.actor, "module") else self.actor
-        )
-        actor.eval()  # switch to evaluation mode (dropout for example)
-        if device is not None:
-            actor.to(device)
-        return actor.act_inference
-
-    def _log_model_summary(self, model, name):
-        if not model:
-            logger.info(f"{name}: None")
-            return
-
-        # Get total parameters
-        total_params = sum(p.numel() for p in model.parameters())
-        trainable_params = sum(
-            p.numel() for p in model.parameters() if p.requires_grad
-        )
-
-        # Format parameter counts in K, M, B for readability
-        def format_params(count):
-            if count >= 1e9:
-                return f"{count / 1e9:.2f}B"
-            elif count >= 1e6:
-                return f"{count / 1e6:.2f}M"
-            elif count >= 1e3:
-                return f"{count / 1e3:.1f}K"
-            else:
-                return f"{count}"
-
-        total_params_str = format_params(total_params)
-        trainable_params_str = format_params(trainable_params)
-
-        # Get model structure overview
-        if hasattr(model, "__class__"):
-            model_type = model.__class__.__name__
-        else:
-            model_type = str(type(model))
-
-        # Get layer info if available
-        layer_info = ""
-        if hasattr(model, "children"):
-            top_level_modules = list(model.children())
-            if len(top_level_modules) <= 5:  # Only show if not too many
-                layer_info = f", Modules: {len(top_level_modules)}"
-
-        logger.info(
-            f"{name} Summary: {model_type}, Total params: {total_params_str}, "
-            f"Trainable: {trainable_params_str}{layer_info}"
-        )
-
-    @torch.inference_mode()
-    def evaluate_policy(self, keyboard_commander=None):
-        """Evaluate the trained policy and save motion tracking metrics.
-
-        This function runs the evaluation loop for the trained policy, collects
-        motion tracking metrics for each environment
-        and global evaluation results to disk. The evaluation includes running
-        the policy on all evaluation motion clips, aggregating metrics, and
-        saving input/output samples for further analysis.
-
-        Reference: This evaluation logic is self-developed for the HoloMotion
-        project, but is inspired by best practices from open-source RL and
-        motion imitation frameworks such as IsaacGym and ProtoMotions.
+        This is needed because compiled models (torch.compile or dynamo_backend)
+        add '_orig_mod.' prefixes to parameter names. Cleaning ensures
+        compatibility when loading checkpoints regardless of compilation state.
 
         Args:
-            keyboard_commander (optional): Not used in this implementation, but
-                can be used to provide manual control during evaluation.
+            state_dict: State dict that may contain '_orig_mod.' prefixed keys
 
         Returns:
-            dict or None: If called on the main process, returns a
-                dictionary of global evaluation metrics (e.g., mean
-                MPJPE, joint errors, etc.). On non-main processes,
-                returns None.
+            Cleaned state dict with '_orig_mod.' prefixes removed
         """
-        self._pre_evaluate_policy()
-        self.env.is_evaluating = True
-        actor_state = self._create_actor_state()
+        cleaned_dict = {}
+        prefix = "_orig_mod."
+        prefix_len = len(prefix)
+        for k, v in state_dict.items():
+            if k.startswith(prefix):
+                cleaned_dict[k[prefix_len:]] = v
+            else:
+                cleaned_dict[k] = v
+        return cleaned_dict
 
-        self.eval_policy = self._get_inference_policy()
-        obs_dict = self.env.reset_all()
-        init_actions = torch.zeros(
-            self.env.num_envs, self.num_act, device=self.device
-        )
-        actor_state.update({"obs": obs_dict, "actions": init_actions})
+    def _load_model_state(self, model, state_dict, *, strict: bool = True):
+        """Load a state dict into a (possibly compiled) model safely.
 
-        if self.is_main_process:
-            self.dump_inoutput = {
-                "input": [],
-                "output": [],
-            }
+        - Always unwrap Accelerate wrappers first.
+        - If the model is a compiled OptimizedModule (has ``_orig_mod``),
+          load into the original module and strip any ``_orig_mod.`` prefixes
+          from the incoming state dict for robustness.
+        """
+        target = self.accelerator.unwrap_model(model)
+        cleaned = self._clean_state_dict(state_dict)
+        if hasattr(target, "_orig_mod"):
+            target._orig_mod.load_state_dict(cleaned, strict=strict)
+        else:
+            target.load_state_dict(cleaned, strict=strict)
 
-        actor_state = self._pre_eval_env_step(actor_state)
+    def load(self, ckpt_path):
+        """Load checkpoint using Accelerate's built-in methods when available.
 
-        # Create metrics directory on all processes with iteration number
-        try:
-            metrics_dump_dir = os.path.join(
-                self.log_dir,
-                f"eval_metrics_iter-{self.current_learning_iteration}",
-            )
-        except Exception:
-            metrics_dump_dir = os.path.join(
-                self.env.config.eval_log_dir,
-                f"eval_metrics_iter-{self.current_learning_iteration}",
-            )
-        os.makedirs(metrics_dump_dir, exist_ok=True)
-
-        # Each process maintains its own metrics list
-        tracking_metrics_list = []
-
-        # Only show progress bar on main process
-        last_eval_batch = False
-        total_eval_clips = len(self.env._motion_lib.eval_allocation_schedule)
-
-        if self.is_main_process:
-            pbar = tqdm(
-                total=total_eval_clips, desc="holomotion Evaluation Progress"
-            )
-
-        while not last_eval_batch:
-            cached_max_frame_len = self.env._motion_lib.cache.max_frame_length
-            last_eval_batch = self.env.resample_motion_eval()
-
-            # Track motion metrics for each environment
-            env_tracking_metrics = [{} for _ in range(self.env.num_envs)]
-
-            # Only show inner progress bar on main process
-            inner_range = range(cached_max_frame_len)
+        Supports both Accelerate format (actor/ and critic/ directories) and
+        legacy formats for backward compatibility.
+        """
+        if ckpt_path is not None:
             if self.is_main_process:
-                inner_range = tqdm(
-                    inner_range, desc="Evaluating holomotion Batch "
-                )
+                logger.info(f"Loading checkpoint from {ckpt_path}")
 
-            for step in inner_range:
-                self.env.is_evaluating = True
-                self.env.commands = torch.zeros(
-                    self.env.num_envs, 4, device=self.device
-                )
-                self.env.commands[:, 0] = 1.0
-                actor_state["step"] = step
-                actor_state = self._pre_eval_env_step(actor_state)
-                actor_state = self.env_step(actor_state)
-                actor_state = self._post_eval_env_step(actor_state)
+            base_path = ckpt_path.replace(".pt", "")
+            actor_model_path = os.path.join(base_path, "actor")
+            critic_model_path = os.path.join(base_path, "critic")
 
-                # Collect motion tracking metrics at specific intervals
-                if step % 50 == 0 or step == cached_max_frame_len - 1:
-                    # Calculate motion tracking metrics
-                    self.env._log_motion_tracking_info()
-                    self.env._log_motion_tracking_holomotion_metrics()
+            # Check if this is an Accelerate-saved checkpoint (new format)
+            is_accelerate_format = os.path.exists(
+                actor_model_path
+            ) and os.path.exists(critic_model_path)
 
-                    # Extract metrics for each environment
-                    for env_idx in range(self.env.num_envs):
-                        for k, v in self.env.log_dict_nonreduced.items():
-                            if k not in env_tracking_metrics[env_idx]:
-                                env_tracking_metrics[env_idx][k] = []
-                            env_tracking_metrics[env_idx][k].append(
-                                v[env_idx].item()
-                            )
+            if is_accelerate_format:
+                # Accelerate format checkpoint detected
+                # accelerator.save_model() saves state dicts, so we load them manually
+                # Find the actual model file (Accelerate may save as
+                # pytorch_model.bin or model.safetensors)
+                actor_files = [
+                    f
+                    for f in os.listdir(actor_model_path)
+                    if f.endswith((".bin", ".safetensors"))
+                ]
+                critic_files = [
+                    f
+                    for f in os.listdir(critic_model_path)
+                    if f.endswith((".bin", ".safetensors"))
+                ]
 
-                        if hasattr(self.env, "log_dict_nonreduced_holomotion"):
-                            for (
-                                k,
-                                v,
-                            ) in (
-                                self.env.log_dict_nonreduced_holomotion.items()
-                            ):
-                                if k not in env_tracking_metrics[env_idx]:
-                                    env_tracking_metrics[env_idx][k] = []
-                                env_tracking_metrics[env_idx][k].append(
-                                    v[env_idx].item()
-                                )
-
-                        for k, v in self.env.log_dict.items():
-                            if k not in env_tracking_metrics[env_idx]:
-                                env_tracking_metrics[env_idx][k] = []
-                            env_tracking_metrics[env_idx][k].append(v.item())
-
-                        if hasattr(self.env, "log_dict_holomotion"):
-                            for k, v in self.env.log_dict_holomotion.items():
-                                if k not in env_tracking_metrics[env_idx]:
-                                    env_tracking_metrics[env_idx][k] = []
-                                env_tracking_metrics[env_idx][k].append(
-                                    v.item()
-                                )
-
-                # Save input/output sample at step 500
-                if (
-                    self.is_main_process
-                    and step == 500
-                    and len(self.dump_inoutput["input"]) == 0
-                ):
-                    self.dump_inoutput = {
-                        "input": actor_state["obs"],
-                        "output": {"actions": actor_state["actions"]},
-                        "step": 500,
-                    }
-
-            # Each process collects metrics for its environments
-            for i, clip_info in enumerate(
-                self.env._motion_lib.cache.cached_clip_info
-            ):
-                if i < self.env.num_envs:  # Safety check
-                    # Add motion tracking metrics
-                    tracking_dict = {"clip_info": clip_info}
-                    for k, v in env_tracking_metrics[i].items():
-                        if len(v) > 0:
-                            tracking_dict[f"{k}_mean"] = sum(v) / len(v)
-                            tracking_dict[f"{k}_min"] = min(v)
-                            tracking_dict[f"{k}_max"] = max(v)
-                    tracking_metrics_list.append(tracking_dict)
-
-            # Each process writes its own metrics files
-            process_rank = (
-                self.process_rank if hasattr(self, "process_rank") else 0
-            )
-            tracking_metrics_filename = (
-                f"eval_tracking_metrics_rank_{process_rank}.json"
-            )
-
-            with open(
-                os.path.join(metrics_dump_dir, tracking_metrics_filename), "w+"
-            ) as f:
-                json.dump(tracking_metrics_list, f, indent=2)
-
-            # Only the main process aggregates metrics for reporting
-            if self.is_main_process:
-                # Calculate average holomotion metrics across all environments
-                holomotion_metrics_mean = {}
-                if hasattr(self.env, "log_dict_holomotion"):
-                    for k in self.env.log_dict_holomotion.keys():
-                        values = [
-                            sum(env_metrics.get(k, [0]))
-                            / max(len(env_metrics.get(k, [0])), 1)
-                            for env_metrics in env_tracking_metrics
-                        ]
-                        holomotion_metrics_mean[k] = sum(values) / max(
-                            len(values), 1
-                        )
-
-                if holomotion_metrics_mean:
-                    holomotion_metrics = {
-                        "MPJPE_G": f"{holomotion_metrics_mean.get('mpjpe_g', 0):.4f}",  # noqa: E501
-                        "MPJPE_L": f"{holomotion_metrics_mean.get('mpjpe_l', 0):.4f}",  # noqa: E501
-                        "MPJPE_PA": f"{holomotion_metrics_mean.get('mpjpe_pa', 0):.4f}",  # noqa: E501
-                        "ACCELERATION_DIST": f"{holomotion_metrics_mean.get('accel_dist', 0):.4f}",  # noqa: E501
-                        "VELOCITY_DIST": f"{holomotion_metrics_mean.get('vel_dist', 0):.4f}",  # noqa: E501
-                        "UPPER_BODY_JOINTS_DIST": f"{holomotion_metrics_mean.get('upper_body_joints_dist', 0):.4f}",  # noqa: E501
-                        "LOWER_BODY_JOINTS_DIST": f"{holomotion_metrics_mean.get('lower_body_joints_dist', 0):.4f}",  # noqa: E501
-                        "ROOT_Roll_ERROR": f"{holomotion_metrics_mean.get('root_r_error', 0):.4f}",  # noqa: E501
-                        "ROOT_Pitch_ERROR": f"{holomotion_metrics_mean.get('root_p_error', 0):.4f}",  # noqa: E501
-                        "ROOT_Yaw_ERROR": f"{holomotion_metrics_mean.get('root_y_error', 0):.4f}",  # noqa: E501
-                        "ROOT_VEL_ERROR": f"{holomotion_metrics_mean.get('root_vel_error', 0):.4f}",  # noqa: E501
-                        "ROOT_HEIGHT_ERROR": f"{holomotion_metrics_mean.get('root_height_error', 0):.4f}",  # noqa: E501
-                    }
-                    logger.info(
-                        "\n"
-                        + tabulate(
-                            [[k, v] for k, v in holomotion_metrics.items()],
-                            headers=["Metric", "Value"],
-                            tablefmt="simple_outline",
-                        )
-                        + "\n"
+                if not actor_files or not critic_files:
+                    raise FileNotFoundError(
+                        f"Model files not found in Accelerate checkpoint format. "
+                        f"Actor dir: {actor_model_path}, "
+                        f"Critic dir: {critic_model_path}"
                     )
 
-                # Save global metrics to a separate file
-                global_metrics = {
-                    "iteration": self.current_learning_iteration,
-                }
+                # Prefer pytorch_model.bin, fallback to first file
+                actor_file = next(
+                    (f for f in actor_files if f == "pytorch_model.bin"),
+                    actor_files[0],
+                )
+                critic_file = next(
+                    (f for f in critic_files if f == "pytorch_model.bin"),
+                    critic_files[0],
+                )
 
-                # Add holomotion metrics to global metrics
-                if holomotion_metrics_mean:
-                    global_metrics.update(holomotion_metrics_mean)
+                # Load model state dicts from Accelerate format
+                actor_file_path = os.path.join(actor_model_path, actor_file)
+                critic_file_path = os.path.join(critic_model_path, critic_file)
 
-                with open(
-                    os.path.join(metrics_dump_dir, "global_metrics.json"), "w+"
-                ) as f:
-                    json.dump(global_metrics, f, indent=2)
+                if actor_file.endswith(".safetensors") or critic_file.endswith(
+                    ".safetensors"
+                ):
+                    try:
+                        from safetensors import safe_open
 
-                # Save input/output sample if available
-                if self.dump_inoutput["input"]:
-                    with open(
-                        os.path.join(
-                            metrics_dump_dir, "eval_inoutput_step-500.pkl"
-                        ),
-                        "wb",
-                    ) as f:
-                        pickle.dump(self.dump_inoutput, f)
+                        actor_state = {}
+                        critic_state = {}
 
-            # Update progress bar on main process
-            if self.is_main_process:
-                pbar.update(self.env.num_envs)
+                        if actor_file.endswith(".safetensors"):
+                            with safe_open(
+                                actor_file_path,
+                                framework="pt",
+                                device=str(self.device),
+                            ) as f:
+                                for key in f.keys():
+                                    actor_state[key] = f.get_tensor(key)
+                        else:
+                            actor_state = torch.load(
+                                actor_file_path, map_location=self.device
+                            )
 
-        # Sync all processes after writing files
-        if self.use_accelerate and hasattr(self, "accelerator"):
-            self.accelerator.wait_for_everyone()
+                        if critic_file.endswith(".safetensors"):
+                            with safe_open(
+                                critic_file_path,
+                                framework="pt",
+                                device=str(self.device),
+                            ) as f:
+                                for key in f.keys():
+                                    critic_state[key] = f.get_tensor(key)
+                        else:
+                            critic_state = torch.load(
+                                critic_file_path, map_location=self.device
+                            )
+                    except ImportError:
+                        raise ImportError(
+                            "safetensors library required to load "
+                            ".safetensors files. Install with: pip install safetensors"
+                        )
+                else:
+                    actor_state = torch.load(
+                        actor_file_path, map_location=self.device
+                    )
+                    critic_state = torch.load(
+                        critic_file_path, map_location=self.device
+                    )
 
-        # Close progress bar on main process only
-        if self.is_main_process:
-            pbar.close()
-            logger.info(
-                f"holomotion evaluation metrics saved to {metrics_dump_dir}"
-            )
+                # Load state dicts with proper unwrapping/compile handling
+                self._load_model_state(self.actor, actor_state, strict=True)
+                self._load_model_state(self.critic, critic_state, strict=True)
 
-        self._post_evaluate_policy()
+                # Load custom state (optimizers, normalizers, etc.)
+                loaded_dict = torch.load(ckpt_path, map_location=self.device)
 
-        # Return holomotion metrics if main process
-        if self.is_main_process:
-            return global_metrics
-        else:
-            return None
+                if "actor_optimizer_state_dict" in loaded_dict:
+                    self.actor_optimizer.load_state_dict(
+                        loaded_dict["actor_optimizer_state_dict"]
+                    )
+                if "critic_optimizer_state_dict" in loaded_dict:
+                    self.critic_optimizer.load_state_dict(
+                        loaded_dict["critic_optimizer_state_dict"]
+                    )
 
+                if self.obs_norm_enabled:
+                    if "obs_norm_state_dict" in loaded_dict and hasattr(
+                        self, "obs_normalizer"
+                    ):
+                        self.obs_normalizer.load_state_dict(
+                            loaded_dict["obs_norm_state_dict"],
+                            strict=False,
+                        )
+                    if (
+                        "privileged_obs_norm_state_dict" in loaded_dict
+                        and hasattr(self, "privileged_obs_normalizer")
+                    ):
+                        self.privileged_obs_normalizer.load_state_dict(
+                            loaded_dict["privileged_obs_norm_state_dict"],
+                            strict=False,
+                        )
 
-class RolloutStorage(nn.Module):
-    def __init__(self, num_envs, num_transitions_per_env, device="cpu"):
-        super().__init__()
+                self.current_learning_iteration = loaded_dict.get("iter", 0)
+                return loaded_dict.get("infos", None)
 
-        self.device = device
+            # Fallback to old format (backward compatibility)
+            loaded_dict = torch.load(ckpt_path, map_location=self.device)
 
-        self.num_transitions_per_env = num_transitions_per_env
-        self.num_envs = num_envs
+            # Handle both old and new checkpoint formats
+            if "actor_model_state_dict" in loaded_dict:
+                # Separate actor/critic format (preferred)
+                actor_state = self._clean_state_dict(
+                    loaded_dict["actor_model_state_dict"]
+                )
+                critic_state = self._clean_state_dict(
+                    loaded_dict["critic_model_state_dict"]
+                )
 
-        # rnn
-        # self.saved_hidden_states_a = None
-        # self.saved_hidden_states_c = None
+                # Load state dicts with unwrapping/compile handling
+                self._load_model_state(self.actor, actor_state, strict=True)
+                self._load_model_state(self.critic, critic_state, strict=True)
 
-        self.step = 0
-        self.stored_keys = list()
+                # Load optimizers (new format with separate optimizers)
+                if "actor_optimizer_state_dict" in loaded_dict:
+                    self.actor_optimizer.load_state_dict(
+                        loaded_dict["actor_optimizer_state_dict"]
+                    )
+                if "critic_optimizer_state_dict" in loaded_dict:
+                    self.critic_optimizer.load_state_dict(
+                        loaded_dict["critic_optimizer_state_dict"]
+                    )
+                # Backward compatibility: single optimizer
+                if (
+                    "optimizer_state_dict" in loaded_dict
+                    and "actor_optimizer_state_dict" not in loaded_dict
+                ):
+                    logger.warning(
+                        "Loading from old checkpoint format with combined optimizer. "
+                        "Only actor optimizer state will be loaded."
+                    )
+                    self.actor_optimizer.load_state_dict(
+                        loaded_dict["optimizer_state_dict"]
+                    )
 
-    def register_key(self, key: str, shape=(), dtype=torch.float):
-        # This class was partially copied from https://github.com/NVlabs/ProtoMotions/blob/94059259ba2b596bf908828cc04e8fc6ff901114/phys_anim/agents/utils/data_utils.py
-        assert not hasattr(self, key), key
-        assert isinstance(shape, (list, tuple)), (
-            "shape must be a list or tuple"
-        )
-        buffer = torch.zeros(
-            (self.num_transitions_per_env, self.num_envs) + shape,
-            dtype=dtype,
-            device=self.device,
-        )
-        self.register_buffer(key, buffer, persistent=False)
-        self.stored_keys.append(key)
+                self.current_learning_iteration = loaded_dict.get("iter", 0)
+            elif "model_state_dict" in loaded_dict:
+                # rsl_rl format (single policy)
+                cleaned_state_dict = self._clean_state_dict(
+                    loaded_dict["model_state_dict"]
+                )
 
-    def increment_step(self):
-        self.step += 1
+                # Split into actor and critic parts
+                actor_state = {}
+                critic_state = {}
+                for key, value in cleaned_state_dict.items():
+                    if key.startswith("actor."):
+                        actor_state[key[6:]] = value
+                    elif key.startswith("critic."):
+                        critic_state[key[7:]] = value
 
-    def update_key(self, key: str, data: torch.Tensor):
-        # This class was partially copied from https://github.com/NVlabs/ProtoMotions/blob/94059259ba2b596bf908828cc04e8fc6ff901114/phys_anim/agents/utils/data_utils.py
-        assert not data.requires_grad
-        assert self.step < self.num_transitions_per_env, (
-            "Rollout buffer overflow"
-        )
-        getattr(self, key)[self.step].copy_(data)
+                # Load state dicts with unwrapping/compile handling
+                if actor_state:
+                    self._load_model_state(
+                        self.actor, actor_state, strict=False
+                    )
+                if critic_state:
+                    self._load_model_state(
+                        self.critic, critic_state, strict=False
+                    )
 
-    def batch_update_data(self, key: str, data: torch.Tensor):
-        # This class was partially copied from https://github.com/NVlabs/ProtoMotions/blob/94059259ba2b596bf908828cc04e8fc6ff901114/phys_anim/agents/utils/data_utils.py
-        assert not data.requires_grad
-        getattr(self, key)[:] = data
-        # self.store_dict[key] += self.total_sum()
+                # Load optimizer - try separate optimizers first, then combined
+                if "actor_optimizer_state_dict" in loaded_dict:
+                    self.actor_optimizer.load_state_dict(
+                        loaded_dict["actor_optimizer_state_dict"]
+                    )
+                if "critic_optimizer_state_dict" in loaded_dict:
+                    self.critic_optimizer.load_state_dict(
+                        loaded_dict["critic_optimizer_state_dict"]
+                    )
+                if (
+                    "optimizer_state_dict" in loaded_dict
+                    and "actor_optimizer_state_dict" not in loaded_dict
+                ):
+                    logger.warning(
+                        "Loading from old checkpoint format with combined optimizer. "
+                        "Only actor optimizer state will be loaded."
+                    )
+                    self.actor_optimizer.load_state_dict(
+                        loaded_dict["optimizer_state_dict"]
+                    )
 
-    def _save_hidden_states(self, hidden_states):
-        assert NotImplementedError
-        if hidden_states is None or hidden_states == (None, None):
+                self.current_learning_iteration = loaded_dict.get("iter", 0)
+
+            # Load normalizers if present
+            if self.obs_norm_enabled:
+                if "obs_norm_state_dict" in loaded_dict and hasattr(
+                    self, "obs_normalizer"
+                ):
+                    self.obs_normalizer.load_state_dict(
+                        loaded_dict["obs_norm_state_dict"],
+                        strict=False,
+                    )
+                if "privileged_obs_norm_state_dict" in loaded_dict and hasattr(
+                    self, "privileged_obs_normalizer"
+                ):
+                    self.privileged_obs_normalizer.load_state_dict(
+                        loaded_dict["privileged_obs_norm_state_dict"],
+                        strict=False,
+                    )
+
+            return loaded_dict.get("infos", None)
+
+    def save(self, path, infos=None):
+        """Save checkpoint using Accelerate's built-in methods when available."""
+        if not self.is_main_process:
             return
-        # make a tuple out of GRU hidden state sto match the LSTM format
-        hid_a = (
-            hidden_states[0]
-            if isinstance(hidden_states[0], tuple)
-            else (hidden_states[0],)
-        )
-        hid_c = (
-            hidden_states[1]
-            if isinstance(hidden_states[1], tuple)
-            else (hidden_states[1],)
-        )
 
-        # initialize if needed
-        if self.saved_hidden_states_a is None:
-            self.saved_hidden_states_a = [
-                torch.zeros(
-                    self.observations.shape[0],
-                    *hid_a[i].shape,
-                    device=self.device,
-                )
-                for i in range(len(hid_a))
-            ]
-            self.saved_hidden_states_c = [
-                torch.zeros(
-                    self.observations.shape[0],
-                    *hid_c[i].shape,
-                    device=self.device,
-                )
-                for i in range(len(hid_c))
-            ]
-        # copy the states
-        for i in range(len(hid_a)):
-            self.saved_hidden_states_a[i][self.step].copy_(hid_a[i])
-            self.saved_hidden_states_c[i][self.step].copy_(hid_c[i])
+        logger.info(f"Saving checkpoint to {path}")
 
-    def clear(self):
-        self.step = 0
-
-    def get_statistics(self):
-        raise NotImplementedError
-
-    def query_key(self, key: str):
-        assert hasattr(self, key), key
-        return getattr(self, key)
-
-    def mini_batch_generator(self, num_mini_batches, num_epochs=8):
-        batch_size = self.num_envs * self.num_transitions_per_env
-        mini_batch_size = batch_size // num_mini_batches
-        indices = torch.randperm(
-            num_mini_batches * mini_batch_size,
-            requires_grad=False,
-            device=self.device,
+        # Always use Accelerate's save_model() which handles unwrapping and compilation
+        # Save models separately with Accelerate (handles compilation automatically)
+        base_path = path.replace(".pt", "")
+        os.makedirs(
+            os.path.dirname(base_path) if os.path.dirname(base_path) else ".",
+            exist_ok=True,
         )
 
-        _buffer_dict = {
-            key: getattr(self, key)[:].flatten(0, 1)
-            for key in self.stored_keys
+        self.accelerator.save_model(
+            self.actor, os.path.join(base_path, "actor")
+        )
+        self.accelerator.save_model(
+            self.critic, os.path.join(base_path, "critic")
+        )
+
+        # Save optimizers and custom state separately
+        custom_state = {
+            "actor_optimizer_state_dict": self.actor_optimizer.state_dict(),
+            "critic_optimizer_state_dict": self.critic_optimizer.state_dict(),
+            "iter": self.current_learning_iteration,
+            "infos": infos,
         }
 
-        for _ in range(num_epochs):
-            for i in range(num_mini_batches):
-                start = i * mini_batch_size
-                end = (i + 1) * mini_batch_size
-                batch_idx = indices[start:end]
+        if self.obs_norm_enabled and hasattr(self, "obs_normalizer"):
+            custom_state["obs_norm_state_dict"] = (
+                self.obs_normalizer.state_dict()
+            )
+        if self.obs_norm_enabled and hasattr(
+            self, "privileged_obs_normalizer"
+        ):
+            custom_state["privileged_obs_norm_state_dict"] = (
+                self.privileged_obs_normalizer.state_dict()
+            )
 
-                _batch_buffer_dict = {
-                    key: _buffer_dict[key][batch_idx]
-                    for key in self.stored_keys
-                }
-                yield _batch_buffer_dict
+        torch.save(custom_state, path)
 
+    @property
+    def inference_model(self):
+        """Return the separate actor and critic for inference."""
+        return {
+            "actor": self.actor,
+            "critic": self.critic,
+        }
 
-class TensorAverageMeter:
-    def __init__(self):
-        self.tensors = []
-
-    def add(self, x):
-        if len(x.shape) == 0:
-            x = x.unsqueeze(0)
-        self.tensors.append(x)
-
-    def mean(self):
-        if len(self.tensors) == 0:
-            return 0
-        cat = torch.cat(self.tensors, dim=0)
-        if cat.numel() == 0:
-            return 0
-        else:
-            return cat.mean()
-
-    def clear(self):
-        self.tensors = []
-
-    def mean_and_clear(self):
-        mean = self.mean()
-        self.clear()
-        return mean
-
-
-class TensorAverageMeterDict:
-    def __init__(self):
-        self.data = {}
-
-    def add(self, data_dict):
-        for k, v in data_dict.items():
-            # Originally used a defaultdict, this had lambda
-            # pickling issues with DDP.
-            if k not in self.data:
-                self.data[k] = TensorAverageMeter()
-            self.data[k].add(v)
-
-    def mean(self):
-        mean_dict = {k: v.mean() for k, v in self.data.items()}
-        return mean_dict
-
-    def clear(self):
-        self.data = {}
-
-    def mean_and_clear(self):
-        mean = self.mean()
-        self.clear()
-        return mean
+    def synchronize_normalizers(self):
+        """Synchronize observation normalizers across all processes."""
+        if self.obs_norm_enabled:
+            self.obs_normalizer.sync_stats_across_processes(self.accelerator)
+            self.privileged_obs_normalizer.sync_stats_across_processes(
+                self.accelerator
+            )
+            # Ensure all ranks have synced before proceeding
+            self.accelerator.wait_for_everyone()

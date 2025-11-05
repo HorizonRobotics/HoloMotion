@@ -1,0 +1,75 @@
+# @package _global_
+
+env:
+  _target_: holomotion.src.env.velocity_tracking.VelocityTrackingEnv
+  _recursive_: False
+  config:
+    experiment_name: ${experiment_name}
+    num_envs: ${num_envs}
+    env_spacing: 2.5
+    replicate_physics: true
+    headless: ${headless}
+    num_processes: ${num_processes}
+    main_process: ${main_process}
+    process_id: ${process_id}
+    ckpt_dir: null
+    disable_ref_viz: false
+    eval_log_dir: null
+    save_rendering_dir: null
+
+    robot: ${robot}
+    domain_rand: ${domain_rand}
+    rewards: ${rewards}
+    terrain: ${terrain}
+    obs: ${obs}
+    terminations: ${terminations}
+
+    simulation:
+      episode_length_s: 20
+      sim_freq: 200
+      control_decimation: 4
+      physx:
+        bounce_threshold_velocity: 0.5
+        gpu_max_rigid_patch_count: 327680
+
+    scene:
+      terrain: ${terrain}
+      lighting:
+        distant_light_intensity: 3000.0
+        dome_light_intensity: 1000.0
+      contact_sensor:
+        history_length: 3
+        force_threshold: 10.0
+        track_air_time: true
+        debug_vis: false
+
+    actions:
+      dof_pos:
+        type: joint_position
+        params:
+          asset_name: robot
+          joint_names:
+            - ".*"
+          use_default_offset: true
+          scale: ${robot.actuators.action_scale}
+
+    commands:
+      base_velocity:
+        type: UniformLevelVelocityCommandCfg
+        params:
+          asset_name: robot
+          resampling_time_range: [3, 10.0]
+          rel_standing_envs: 0.25
+          rel_heading_envs: 1.0
+          heading_command: false
+          debug_vis: true
+          ranges:
+            lin_vel_x: [-0.6, 1.0]
+            lin_vel_y: [-0.4, 0.4]
+            ang_vel_z: [-0.5, 0.5]
+            heading: null
+          limit_ranges:
+            lin_vel_x: [-0.5, 1.0]
+            lin_vel_y: [-0.3, 0.3]
+            ang_vel_z: [-0.2, 0.2]
+            heading: null

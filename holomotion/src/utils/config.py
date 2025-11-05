@@ -18,6 +18,7 @@ import copy
 import math
 from pathlib import Path
 
+import torch
 from accelerate import Accelerator
 from loguru import logger
 from omegaconf import OmegaConf
@@ -62,7 +63,9 @@ def setup_hydra_resolvers():
 
 
 def compile_config(
-    config: OmegaConf, accelerator: Accelerator, eval: bool = False
+    config: OmegaConf,
+    accelerator: Accelerator = None,
+    eval: bool = False,
 ) -> None:
     """Compile the configuration.
 
@@ -79,10 +82,14 @@ def compile_config(
     config = compile_config_hf_accelerate(config, accelerator)
     config = compile_config_directories(config, eval)
     config = compile_config_obs(config)
+    config = compile_config_devices(config)
     return config
 
 
-def compile_config_hf_accelerate(config, accelerator: Accelerator) -> None:
+def compile_config_hf_accelerate(
+    config,
+    accelerator: Accelerator = None,
+) -> None:
     """Compile the configuration for HF Accelerate.
 
     Args:
@@ -93,26 +100,67 @@ def compile_config_hf_accelerate(config, accelerator: Accelerator) -> None:
         Compiled configuration.
 
     """
-    device = accelerator.device
-    is_main_process = accelerator.is_main_process
-    process_idx = accelerator.process_index
-    total_processes = accelerator.num_processes
+    if accelerator is not None:
+        device = accelerator.device
+        is_main_process = accelerator.is_main_process
+        process_idx = accelerator.process_index
+        total_processes = accelerator.num_processes
+    else:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        is_main_process = True
+        process_idx = 0
+        total_processes = 1
 
     config.process_id = process_idx
     config.num_processes = total_processes
     config.main_process = is_main_process
-    # config.device = device
 
-    # config.env.config.process_id = process_idx
-    # config.env.config.num_processes = total_processes
-    # config.env.config.main_process = is_main_process
-    # config.env.config.device = device
+    if hasattr(config, "device"):
+        config.device = str(device)
 
     logger.info(f"Using device: {device}")
     if is_main_process:
-        logger.info(
-            f"Using Accelerate - Process {process_idx} on device: {device}"
+        logger.info(f"Process {process_idx} on device: {device}")
+
+    return config
+
+
+def compile_config_devices(config):
+    """Propagate device and process metadata into the environment configuration."""
+    config = copy.deepcopy(config)
+    if hasattr(config, "device"):
+        device_str = str(config.device)
+    else:
+        device_str = str(
+            torch.device("cuda" if torch.cuda.is_available() else "cpu")
         )
+    world_size = getattr(config, "num_processes", 1)
+    process_rank = getattr(config, "process_id", 0)
+    is_main_process = getattr(config, "main_process", True)
+
+    if hasattr(config, "env") and hasattr(config.env, "config"):
+        env_cfg = config.env.config
+        env_cfg_struct = OmegaConf.is_struct(env_cfg)
+        OmegaConf.set_struct(env_cfg, False)
+        env_cfg.num_processes = world_size
+        env_cfg.process_id = process_rank
+        env_cfg.main_process = is_main_process
+        env_cfg.simulation_device = device_str
+        for key in [
+            "sim_device",
+            "rl_device",
+            "compute_device",
+            "physx_device",
+        ]:
+            setattr(env_cfg, key, device_str)
+        if hasattr(env_cfg, "simulation"):
+            for sim_key in ["device", "compute_device", "rl_device"]:
+                sim_cfg = env_cfg.simulation
+                sim_struct = OmegaConf.is_struct(sim_cfg)
+                OmegaConf.set_struct(sim_cfg, False)
+                setattr(sim_cfg, sim_key, device_str)
+                OmegaConf.set_struct(sim_cfg, sim_struct)
+        OmegaConf.set_struct(env_cfg, env_cfg_struct)
 
     return config
 
@@ -159,11 +207,6 @@ def compile_config_obs(config) -> None:
     obs_dim_dict = dict()
     _obs_key_list = config.env.config.obs.obs_dict
     _aux_obs_key_list = config.env.config.obs.obs_auxiliary
-
-    # import ipdb; ipdb.set_trace()
-    # assert set(config.env.config.obs.noise_scales.keys()) == set(
-    #     config.env.config.obs.obs_scales.keys()
-    # )
 
     each_dict_obs_dims = {
         k: v for d in config.env.config.obs.obs_dims for k, v in d.items()

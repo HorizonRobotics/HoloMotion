@@ -1,0 +1,16 @@
+# @package _global_
+
+defaults:
+  - /training: train_base
+  - /algo: ppo
+  - /robot: unitree/G1/29dof/29dof_training_isaaclab
+  - /env: velocity_tracking
+  - /env/terminations: termination_velocity_tracking
+  - /env/observations: velocity_tracking/obs_velocity_tracking
+  - /env/rewards: velocity_tracking/rew_velocity_tracking
+  - /env/domain_randomization: domain_rand_small
+  - /env/terrain: isaaclab_cobblestone
+
+project_name: HoloMotionVelocityTracking
+
+motion_h5_path: null

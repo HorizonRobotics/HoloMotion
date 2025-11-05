@@ -1,0 +1,293 @@
+device: "cuda"
+policy_freq: 50 # Hz
+control_freq: 200 # Hz
+lowstate_topic: "/lowstate"
+action_topic: "/humanoid/action"
+
+# walking policy
+velocity_tracking_model_folder: "velocity_tracking_model"
+# motion policy
+motion_tracking_model_folder: "motion_tracking_model"  
+
+# motion data
+dance_motions_dir: "motion_data"  
+
+complete_dof_order:
+  - left_hip_pitch_joint
+  - left_hip_roll_joint
+  - left_hip_yaw_joint
+  - left_knee_joint
+  - left_ankle_pitch_joint
+  - left_ankle_roll_joint
+  - right_hip_pitch_joint
+  - right_hip_roll_joint
+  - right_hip_yaw_joint
+  - right_knee_joint
+  - right_ankle_pitch_joint
+  - right_ankle_roll_joint
+  - waist_yaw_joint
+  - waist_roll_joint
+  - waist_pitch_joint
+  - left_shoulder_pitch_joint
+  - left_shoulder_roll_joint
+  - left_shoulder_yaw_joint
+  - left_elbow_joint
+  - left_wrist_roll_joint
+  - left_wrist_pitch_joint
+  - left_wrist_yaw_joint
+  - right_shoulder_pitch_joint
+  - right_shoulder_roll_joint
+  - right_shoulder_yaw_joint
+  - right_elbow_joint
+  - right_wrist_roll_joint
+  - right_wrist_pitch_joint
+  - right_wrist_yaw_joint
+
+policy_dof_order:
+  - left_hip_pitch_joint
+  - left_hip_roll_joint
+  - left_hip_yaw_joint
+  - left_knee_joint
+  - left_ankle_pitch_joint
+  - left_ankle_roll_joint
+  - right_hip_pitch_joint
+  - right_hip_roll_joint
+  - right_hip_yaw_joint
+  - right_knee_joint
+  - right_ankle_pitch_joint
+  - right_ankle_roll_joint
+  - waist_yaw_joint
+  - waist_roll_joint
+  - waist_pitch_joint
+  - left_shoulder_pitch_joint
+  - left_shoulder_roll_joint
+  - left_shoulder_yaw_joint
+  - left_elbow_joint
+  - left_wrist_roll_joint
+  - left_wrist_pitch_joint
+  - left_wrist_yaw_joint
+  - right_shoulder_pitch_joint
+  - right_shoulder_roll_joint
+  - right_shoulder_yaw_joint
+  - right_elbow_joint
+  - right_wrist_roll_joint
+  - right_wrist_pitch_joint
+  - right_wrist_yaw_joint
+
+dof2motor_idx_mapping:
+  # https://support.unitree.com/home/zh/G1_developer/about_G1
+  left_hip_pitch_joint: 0
+  left_hip_roll_joint: 1
+  left_hip_yaw_joint: 2
+  left_knee_joint: 3
+  left_ankle_pitch_joint: 4
+  left_ankle_roll_joint: 5
+  right_hip_pitch_joint: 6
+  right_hip_roll_joint: 7
+  right_hip_yaw_joint: 8
+  right_knee_joint: 9
+  right_ankle_pitch_joint: 10
+  right_ankle_roll_joint: 11
+  waist_yaw_joint: 12
+  waist_roll_joint: 13
+  waist_pitch_joint: 14
+  left_shoulder_pitch_joint: 15
+  left_shoulder_roll_joint: 16
+  left_shoulder_yaw_joint: 17
+  left_elbow_joint: 18
+  left_wrist_roll_joint: 19
+  left_wrist_pitch_joint: 20
+  left_wrist_yaw_joint: 21
+  right_shoulder_pitch_joint: 22
+  right_shoulder_roll_joint: 23
+  right_shoulder_yaw_joint: 24
+  right_elbow_joint: 25
+  right_wrist_roll_joint: 26
+  right_wrist_pitch_joint: 27
+  right_wrist_yaw_joint: 28
+
+
+default_joint_angles:
+  # Left leg joints (indices 0-5)
+  left_hip_pitch_joint: -0.312
+  left_hip_roll_joint: 0.0
+  left_hip_yaw_joint: 0.0
+  left_knee_joint: 0.669
+  left_ankle_pitch_joint: -0.33
+  left_ankle_roll_joint: 0.0
+
+  # Right leg joints (indices 6-11)
+  right_hip_pitch_joint: -0.312
+  right_hip_roll_joint: 0.0
+  right_hip_yaw_joint: 0.0
+  right_knee_joint: 0.669
+  right_ankle_pitch_joint: -0.33
+  right_ankle_roll_joint: 0.0
+
+  # Waist joints (indices 12-14)
+  waist_yaw_joint: 0.0
+  waist_roll_joint: 0.0
+  waist_pitch_joint: 0.2
+
+  # Left arm joints (indices 15-21)
+  left_shoulder_pitch_joint: 0.2
+  left_shoulder_roll_joint: 0.2
+  left_shoulder_yaw_joint: 0.0
+  left_elbow_joint: 0.6
+  left_wrist_roll_joint: 0.0
+  left_wrist_pitch_joint: 0.0
+  left_wrist_yaw_joint: 0.0
+
+  # Right arm joints (indices 22-28)
+  right_shoulder_pitch_joint: 0.2
+  right_shoulder_roll_joint: -0.2
+  right_shoulder_yaw_joint: 0.0
+  right_elbow_joint: 0.6
+  right_wrist_roll_joint: 0.0
+  right_wrist_pitch_joint: 0.0
+  right_wrist_yaw_joint: 0.0
+
+# Joint limits 
+joint_limits:
+  position:
+    # Left leg joints
+    left_hip_pitch_joint: [-2.5307, 2.8798]
+    left_hip_roll_joint: [-0.5236, 2.9671]
+    left_hip_yaw_joint: [-2.7576, 2.7576]
+    left_knee_joint: [-0.087267, 2.8798]
+    left_ankle_pitch_joint: [-0.87267, 0.5236]
+    left_ankle_roll_joint: [-0.2618, 0.2618]
+    
+    # Right leg joints
+    right_hip_pitch_joint: [-2.5307, 2.8798]
+    right_hip_roll_joint: [-2.9671, 0.5236]
+    right_hip_yaw_joint: [-2.7576, 2.7576]
+    right_knee_joint: [-0.087267, 2.8798]
+    right_ankle_pitch_joint: [-0.87267, 0.5236]
+    right_ankle_roll_joint: [-0.2618, 0.2618]
+    
+    # Waist joints
+    waist_yaw_joint: [-2.618, 2.618]
+    waist_roll_joint: [-0.52, 0.52]
+    waist_pitch_joint: [-0.52, 0.52]
+    
+    # Left arm joints
+    left_shoulder_pitch_joint: [-3.0892, 2.6704]
+    left_shoulder_roll_joint: [-1.5882, 2.2515]
+    left_shoulder_yaw_joint: [-2.618, 2.618]
+    left_elbow_joint: [-1.0472, 2.0944]
+    left_wrist_roll_joint: [-1.972222054, 1.972222054]
+    left_wrist_pitch_joint: [-1.614429558, 1.614429558]
+    left_wrist_yaw_joint: [-1.614429558, 1.614429558]
+    
+    # Right arm joints
+    right_shoulder_pitch_joint: [-3.0892, 2.6704]
+    right_shoulder_roll_joint: [-2.2515, 1.5882]
+    right_shoulder_yaw_joint: [-2.618, 2.618]
+    right_elbow_joint: [-1.0472, 2.0944]
+    right_wrist_roll_joint: [-1.972222054, 1.972222054]
+    right_wrist_pitch_joint: [-1.614429558, 1.614429558]
+    right_wrist_yaw_joint: [-1.614429558, 1.614429558]
+
+  velocity:
+    # Left leg joints
+    left_hip_pitch_joint: 32
+    left_hip_roll_joint: 20
+    left_hip_yaw_joint: 32
+    left_knee_joint: 20
+    left_ankle_pitch_joint: 30
+    left_ankle_roll_joint: 30
+    
+    # Right leg joints
+    right_hip_pitch_joint: 32
+    right_hip_roll_joint: 20
+    right_hip_yaw_joint: 32
+    right_knee_joint: 20
+    right_ankle_pitch_joint: 30
+    right_ankle_roll_joint: 30
+    
+    # Waist joints
+    waist_yaw_joint: 32
+    waist_roll_joint: 30
+    waist_pitch_joint: 30
+    
+    # Left arm joints
+    left_shoulder_pitch_joint: 37
+    left_shoulder_roll_joint: 37
+    left_shoulder_yaw_joint: 37
+    left_elbow_joint: 37
+    left_wrist_roll_joint: 37
+    left_wrist_pitch_joint: 22
+    left_wrist_yaw_joint: 22
+    
+    # Right arm joints
+    right_shoulder_pitch_joint: 37
+    right_shoulder_roll_joint: 37
+    right_shoulder_yaw_joint: 37
+    right_elbow_joint: 37
+    right_wrist_roll_joint: 37
+    right_wrist_pitch_joint: 22
+    right_wrist_yaw_joint: 22
+
+  effort:
+    # Left leg joints
+    left_hip_pitch_joint: 88
+    left_hip_roll_joint: 139
+    left_hip_yaw_joint: 88
+    left_knee_joint: 139
+    left_ankle_pitch_joint: 35
+    left_ankle_roll_joint: 35
+    
+    # Right leg joints
+    right_hip_pitch_joint: 88
+    right_hip_roll_joint: 139
+    right_hip_yaw_joint: 88
+    right_knee_joint: 139
+    right_ankle_pitch_joint: 35
+    right_ankle_roll_joint: 35
+    
+    # Waist joints
+    waist_yaw_joint: 88
+    waist_roll_joint: 35
+    waist_pitch_joint: 35
+    
+    # Left arm joints
+    left_shoulder_pitch_joint: 25
+    left_shoulder_roll_joint: 25
+    left_shoulder_yaw_joint: 25
+    left_elbow_joint: 25
+    left_wrist_roll_joint: 25
+    left_wrist_pitch_joint: 5
+    left_wrist_yaw_joint: 5
+    
+    # Right arm joints
+    right_shoulder_pitch_joint: 25
+    right_shoulder_roll_joint: 25
+    right_shoulder_yaw_joint: 25
+    right_elbow_joint: 25
+    right_wrist_roll_joint: 25
+    right_wrist_pitch_joint: 5
+    right_wrist_yaw_joint: 5
+    
+limit_scales:
+  position: 2.0 # Allows 50% more range of motion
+  velocity: 2.0 
+  effort: 2.0 
+
+# move to default position
+# joint_names and default_position are auto-generated from complete_dof_order and default_joint_angles
+# Only kp and kd arrays need to be specified here
+
+kp:
+  [ 350.0, 200.0, 200.0, 300.0, 300.0, 150.0,
+    350.0, 200.0, 200.0, 300.0, 300.0, 150.0,
+    200.0, 200.0, 200.0,
+    40.0, 40.0, 40.0, 40.0, 40.0, 40.0, 40.0,
+    40.0, 40.0, 40.0, 40.0, 40.0, 40.0, 40.0 ]
+
+kd:
+  [ 5.0, 5.0, 5.0, 10.0, 5.0, 5.0,
+    5.0, 5.0, 5.0, 10.0, 5.0, 5.0,
+    5.0, 5.0, 5.0,
+    3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0,
+    3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0 ]
