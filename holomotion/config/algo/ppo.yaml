@@ -3,6 +3,7 @@ algo:
   _recursive_: false
   config:
     # --- General Settings ---
+    enable_online_eval: false
     num_learning_iterations: 300000
     log_interval: 5
     save_interval: 500
@@ -66,6 +67,8 @@ algo:
     rl_warmup_degree: 1.0e-05
     load_critic_when_dagger: false
     # ---
+
+    algo_obs_dim_dict: ???
 
     # --- Module Settings ---
     module_dict:

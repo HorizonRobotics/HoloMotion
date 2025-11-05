@@ -511,8 +511,8 @@ class PPO:
 
     def _setup_configs(self):
         self.num_envs: int = self.env.config.num_envs
-        self.num_obs = self.env.config.robot.algo_obs_dim_dict["policy"]
-        self.num_privileged_obs = self.env.config.robot.algo_obs_dim_dict[
+        self.num_obs = self.config.algo_obs_dim_dict["policy"]
+        self.num_privileged_obs = self.config.algo_obs_dim_dict[
             "critic"
         ]
         self.num_actions = self.env.config.robot.actions_dim

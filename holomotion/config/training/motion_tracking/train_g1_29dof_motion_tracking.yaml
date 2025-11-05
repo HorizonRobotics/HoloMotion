@@ -31,8 +31,7 @@ algo:
               - 1024
               - 512
               - 512
-          clamp_output:
-            enabled: false
+
         critic:
           type: MLP
           layer_config:

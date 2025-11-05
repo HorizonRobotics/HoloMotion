@@ -240,7 +240,7 @@ def compile_config_obs(config) -> None:
                 logger.info(
                     f"{obs_key}: {key} has dim: {auxiliary_obs_dims[key]}"
                 )
-    config.robot.algo_obs_dim_dict = obs_dim_dict
-    logger.info(f"algo_obs_dim_dict: {config.robot.algo_obs_dim_dict}")
+    config.algo.algo.config.algo_obs_dim_dict = obs_dim_dict
+    logger.info(f"algo_obs_dim_dict: {config.algo.algo.config.algo_obs_dim_dict}")
 
     return config
