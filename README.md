@@ -5,7 +5,7 @@
 ---
 
 [![Safari](https://img.shields.io/badge/Website-006CFF?logo=safari&logoColor=fff)](https://horizonrobotics.github.io/robot_lab/holomotion/)
-[![Python](https://img.shields.io/badge/Python3.8-3776AB?logo=python&logoColor=fff)](#)
+[![Python](https://img.shields.io/badge/Python3.11-3776AB?logo=python&logoColor=fff)](#)
 [![Ubuntu](https://img.shields.io/badge/Ubuntu22.04-E95420?logo=ubuntu&logoColor=white)](#)
 [![License](https://img.shields.io/badge/License-Apache_2.0-green?logo=apache&logoColor=white)](./LICENSE)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/HorizonRobotics/HoloMotion)

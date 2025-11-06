@@ -1,5 +1,5 @@
 # Machine Learning Runtime  
-onnxruntime
+onnxruntime-gpu
 
 # SMPL/SMPLX support
 smplx==0.1.28
