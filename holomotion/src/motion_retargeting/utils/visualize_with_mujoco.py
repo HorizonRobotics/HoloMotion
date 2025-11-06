@@ -206,10 +206,8 @@ def process_single_motion_remote_npz(
             for t in range(0, T, max(1, int(skip_frames))):
                 # Root position and quaternion: take from body 0
                 root_pos = gpos[t, 0]
-                # root_quat_xyzw = grot[t, 0]
-                # # MuJoCo expects wxyz
-                # root_quat_wxyz = root_quat_xyzw[[3, 0, 1, 2]]
-                root_quat_wxyz = grot[t, 0]
+                root_quat_xyzw = grot[t, 0]
+                root_quat_wxyz = root_quat_xyzw[[3, 0, 1, 2]]
 
                 mj_data.qpos[:3] = root_pos
                 mj_data.qpos[3:7] = root_quat_wxyz
@@ -277,9 +275,8 @@ class MotionRendererNPZ:
                 desc=f"Rendering {motion_name}",
             ):
                 root_pos = gpos[t, 0]
-                # root_quat_xyzw = grot[t, 0]
-                # root_quat_wxyz = root_quat_xyzw[[3, 0, 1, 2]]
-                root_quat_wxyz = grot[t, 0]
+                root_quat_xyzw = grot[t, 0]
+                root_quat_wxyz = root_quat_xyzw[[3, 0, 1, 2]]
 
                 mj_data.qpos[:3] = root_pos
                 mj_data.qpos[3:7] = root_quat_wxyz
