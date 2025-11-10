@@ -51,6 +51,8 @@ __pycache__/
 **/usd/
 assets/isaac/
 
+not_for_commit/
+
 thirdparties/smpl_models/
 
 # allow certain files
