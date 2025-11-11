@@ -119,6 +119,11 @@ fi
 echo "🔧 Compiling ROS2 workspace..."
 cd "$PROJECT_ROOT/holomotion/deployment/unitree_g1_ros2_29dof"
 
+# Create necessary directories
+echo "📁 Creating required directories..."
+mkdir -p src/models
+mkdir -p src/motion_data
+
 # Clean previous build
 rm -rf build install log
 
