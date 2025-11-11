@@ -154,9 +154,28 @@ class PolicyNodeJustDance(Node):
         # Use device from main config, fallback to CUDA/CPU
         device = self.config_yaml.get("device", None)
         if device:
+            # If config specifies cuda but torch doesn't have CUDA support, fallback to cpu
+            if device == "cuda":
+                try:
+                    if torch.cuda.is_available():
+                        return "cuda"
+                    else:
+                        self.get_logger().warn("Config specifies CUDA but torch doesn't have CUDA support, using CPU instead")
+                        return "cpu"
+                except Exception as e:
+                    self.get_logger().warn(f"Error checking CUDA availability: {e}, using CPU instead")
+                    return "cpu"
             return device
         else:
-            return "cuda" if torch.cuda.is_available() else "cpu"
+            # Try to use CUDA if available, otherwise use CPU
+            try:
+                if torch.cuda.is_available():
+                    return "cuda"
+                else:
+                    return "cpu"
+            except Exception as e:
+                self.get_logger().warn(f"Error checking CUDA availability: {e}, using CPU instead")
+                return "cpu"
 
 
     def _init_obs_buffers(self):

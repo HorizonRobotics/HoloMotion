@@ -57,7 +57,7 @@ colcon build
 source install/setup.bash
 
 # Configure conda environment paths for CUDA and library linking
-CONDA_PREFIX="$HOME/anaconda3/envs/holomotion_deploy"
+CONDA_PREFIX="$HOME/miniconda3/envs/holomotion_deploy"
 if [ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]; then
     . "$HOME/miniconda3/etc/profile.d/conda.sh"
     conda activate holomotion_deploy || true
