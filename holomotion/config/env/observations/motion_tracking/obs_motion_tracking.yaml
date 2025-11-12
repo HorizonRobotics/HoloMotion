@@ -1,7 +1,7 @@
 # @package _global_
 
 obs:
-  context_length: 10
+  context_length: 4
   n_fut_frames: 0
   target_fps: 50
 
