@@ -18,10 +18,10 @@
 # HoloMotion: A Foundation Model for Whole-Body Humanoid Control
 
 ## NEWS
-- [2025.11.05] The v1.0 version of HoloMotion has been released, and the WeChat user group is now open!
-<p align="center">
+- [2025.11.05] The v1.0 version of HoloMotion has been released, and the WeChat user group is now open! Please scan the [QR Code](https://horizonrobotics.feishu.cn/docx/Xs3cdEI8bo1EZuxUfzjckTgKn2c) to join.
+<!-- <p align="center">
   <img width="150" height="230" src="assets/media/wechat_group_20251125.jpg" hspace="10">
-</p>
+</p> -->
 
 - [2025.08.05] Join us to build HoloMotion and shape the future of humanoid robots. We're hiring full-time, new grads, and interns. Send your resume to yucheng.wang@horizon.auto or scan the QR code with **WeChat**.
 
