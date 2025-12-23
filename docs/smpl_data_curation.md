@@ -22,8 +22,9 @@ The dataset preparation pipeline has the following steps:
    - Use the included visualization utility to preview and inspect the generated AMASS-compatible `.npz` motion files.
    - Quickly check for anomalies or errors before training.
 5. **Generate Motion from Monocular Video**
-   - You can also generate SMPL-format motion capture files **directly from monocular RGB videos** using the provided tracking pipeline.
+   - You can also generate SMPL-format motion capture files **directly from monocular RGB videos** using GVHMR.
    - This allows you to create training data or test the model with real-world video footage.
+   - Pipeline are given follow.
 
 ### Directory Structure After Full Setup
 
@@ -166,3 +167,34 @@ The output `.yaml` files will be placed in `holomotion/config/data_curation/`.
 ---
 
 This guide assumes that you only need the basic configuration to run the complete pipeline. For further customization, refer to the relevant scripts in the repository and optional steps in the documentation.
+
+## Video2SMPL Instructions
+### 1. Environment setup
+Create a new conda environment named 'gvhmr' following the official installation guide  
+[[GVHMR setup doc](../thirdparties/GVHMR/docs/INSTALL.md)]
+> Reminder: If you encounter 'hmr4d' missing module errors during runtime, install the following dependency separately in gvhmr env
+```bash
+pip install hmr4d
+```
+
+Rename the SMPL model files as follows  
+basicmodel_{GENDER}_lbs_*.pkl  →  SMPL_{GENDER}.pkl  
+Place the SMPL and SMPL-X model files into the directory structure below
+
+```
+thirdparties/GVHMR/inputs/checkpoints/
+├── body_models/smplx
+│   └── SMPLX_{GENDER}.npz
+└── body_models/smpl
+    └── SMPL_{GENDER}.pkl
+```
+
+### 2. Video to SMPL motion data
+```bash
+bash ./holomotion/scripts/motion_retargeting/video2SMPL_gvhmr.sh
+```
+> Reminder: Set the directory in the .sh file to an absolute path.
+
+### 3. Convert SMPL data to SMPLX
+Motion data from GVHMR are SMPL format.
+Use ./thirdparties/GMR/scripts/smpl_to_smplx.py converting format to SMPLX for retargeting.

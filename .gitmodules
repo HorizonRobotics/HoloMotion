@@ -50,3 +50,6 @@ url = https://huggingface.co/datasets/HorizonRobotics/HoloMotion_assets
 [submodule "thirdparties/smplx"]
 	path = thirdparties/smplx
 	url = https://github.com/vchoutas/smplx
+[submodule "thirdparties/GVHMR"]
+	path = thirdparties/GVHMR
+	url = https://github.com/zju3dv/GVHMR.git

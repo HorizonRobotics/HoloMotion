@@ -1,4 +1,4 @@
-# Project RoboOrchard
+# Project HoloMotion
 #
 # Copyright (c) 2024-2025 Horizon Robotics. All Rights Reserved.
 #
@@ -81,6 +81,55 @@ class OffscreenRenderer:
         self.ctx.free()
 
 
+def _get_key_prefix_order(cfg: DictConfig) -> List[str]:
+    """
+    Determine the key prefix order used to extract arrays from NPZ files.
+    Priority:
+      1) cfg.key_prefix_order (list or single value)
+      2) cfg.key_prefix (single value)
+      3) default ["ref_", "", "robot_"]
+    """
+    configured = cfg.get("key_prefix_order", None)
+    if configured is not None:
+        order_list = (
+            [str(p) for p in configured]
+            if isinstance(configured, (list, tuple))
+            else [str(configured)]
+        )
+    else:
+        single = cfg.get("key_prefix", None)
+        if single is not None:
+            order_list = [str(single)]
+        else:
+            order_list = ["ref_", "", "robot_"]
+    print(f"Using key_prefix_order: {order_list}")
+    return order_list
+
+
+def _pick_with_prefixes(
+    arrays: Dict[str, np.ndarray],
+    base_name: str,
+    prefixes: List[str],
+) -> np.ndarray | None:
+    """
+    Return arrays[prefix + base_name] for the first matching prefix in order.
+    For non-empty prefixes, also attempts "<prefix.rstrip('_')>_<base_name>".
+    """
+    for prefix in prefixes:
+        if prefix == "":
+            candidate = base_name
+            if candidate in arrays:
+                return arrays[candidate]
+        else:
+            cand1 = f"{prefix}{base_name}"
+            if cand1 in arrays:
+                return arrays[cand1]
+            cand2 = f"{prefix.rstrip('_')}_{base_name}"
+            if cand2 in arrays:
+                return arrays[cand2]
+    return None
+
+
 def _load_npz_as_motion(
     npz_path: str,
 ) -> Tuple[Dict[str, np.ndarray], Dict[str, Any], str]:
@@ -120,10 +169,22 @@ def _collect_all_npz(
 ) -> List[Tuple[Dict[str, np.ndarray], Dict[str, Any], str]]:
     """Collect all NPZ files to process based on configuration."""
     print("Collecting NPZ files...", npz_root, motion_name)
+    base = (
+        os.path.join(npz_root, "clips")
+        if os.path.isdir(os.path.join(npz_root, "clips"))
+        else npz_root
+    )
     if motion_name == "all":
-        npz_files = glob.glob(os.path.join(npz_root, "*.npz"))
+        npz_files = [
+            p
+            for p in glob.glob(
+                os.path.join(base, "**", "*.npz"), recursive=True
+            )
+        ]
     else:
-        npz_files = [os.path.join(npz_root, f"{motion_name}.npz")]
+        # try both base and base/clips
+        candidate = os.path.join(base, f"{motion_name}.npz")
+        npz_files = [candidate]
 
     motions = []
     for f in tqdm(npz_files, desc="Loading npz files"):
@@ -136,7 +197,7 @@ def _collect_all_npz(
 
 
 def _infer_fps_from_meta(
-    metadata: Dict[str, Any], default_fps: float = 30.0
+    metadata: Dict[str, Any], default_fps: float = 50.0
 ) -> float:
     """Infer FPS value from metadata."""
     try:
@@ -174,7 +235,7 @@ def process_single_motion_remote_npz(
         renderer = OffscreenRenderer(mj_model, height, width)
 
         # FPS
-        src_fps = _infer_fps_from_meta(metadata, default_fps=30.0)
+        src_fps = _infer_fps_from_meta(metadata, default_fps=50.0)
         skip_frames = getattr(cfg, "skip_frames", 1)
         actual_fps = src_fps / max(1, int(skip_frames))
 
@@ -185,9 +246,15 @@ def process_single_motion_remote_npz(
         out = cv2.VideoWriter(out_path, fourcc, actual_fps, (width, height))
 
         try:
-            dof_pos = arrays.get("dof_pos", None)
-            gpos = arrays.get("global_translation", None)  # (T, nb, 3)
-            grot = arrays.get("global_rotation_quat", None)  # (T, nb, 4) xyzw
+            # alias resolution via configurable prefix order
+            prefix_order = _get_key_prefix_order(cfg)
+            dof_pos = _pick_with_prefixes(arrays, "dof_pos", prefix_order)
+            gpos = _pick_with_prefixes(
+                arrays, "global_translation", prefix_order
+            )  # (T, nb, 3)
+            grot = _pick_with_prefixes(
+                arrays, "global_rotation_quat", prefix_order
+            )  # (T, nb, 4) xyzw
 
             if (
                 not isinstance(dof_pos, np.ndarray)
@@ -214,6 +281,13 @@ def process_single_motion_remote_npz(
                 mj_data.qpos[7:] = dof_pos[t]
 
                 mujoco.mj_forward(mj_model, mj_data)
+                safe_lookat = np.array(renderer.cam.lookat)  # 当前相机中心，先取出来
+                safe_lookat[0] = root_pos[0]
+                safe_lookat[1] = root_pos[1]
+
+                min_height = 1.0
+                safe_lookat[2] = max(root_pos[2], min_height)
+                renderer.cam.lookat[:] = safe_lookat
                 frame = renderer.render(mj_data)
                 # Convert RGB (MuJoCo) -> BGR (OpenCV) before writing
                 frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
@@ -243,7 +317,7 @@ class MotionRendererNPZ:
         width, height = 1280, 720
         renderer = OffscreenRenderer(mj_model, height, width)
 
-        src_fps = _infer_fps_from_meta(metadata, default_fps=30.0)
+        src_fps = _infer_fps_from_meta(metadata, default_fps=50.0)
         skip_frames = getattr(cfg, "skip_frames", 1)
         actual_fps = src_fps / max(1, int(skip_frames))
 
@@ -253,9 +327,14 @@ class MotionRendererNPZ:
         out = cv2.VideoWriter(out_path, fourcc, actual_fps, (width, height))
 
         try:
-            dof_pos = arrays.get("dof_pos", None)
-            gpos = arrays.get("global_translation", None)
-            grot = arrays.get("global_rotation_quat", None)
+            prefix_order = _get_key_prefix_order(cfg)
+            dof_pos = _pick_with_prefixes(arrays, "dof_pos", prefix_order)
+            gpos = _pick_with_prefixes(
+                arrays, "global_translation", prefix_order
+            )
+            grot = _pick_with_prefixes(
+                arrays, "global_rotation_quat", prefix_order
+            )
 
             if (
                 not isinstance(dof_pos, np.ndarray)
@@ -283,6 +362,13 @@ class MotionRendererNPZ:
                 mj_data.qpos[7:] = dof_pos[t]
 
                 mujoco.mj_forward(mj_model, mj_data)
+                safe_lookat = np.array(renderer.cam.lookat)  # 当前相机中心，先取出来
+                safe_lookat[0] = root_pos[0]
+                safe_lookat[1] = root_pos[1]
+
+                min_height = 1.0
+                safe_lookat[2] = max(root_pos[2], min_height)
+                renderer.cam.lookat[:] = safe_lookat
                 frame = renderer.render(mj_data)
                 frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
                 out.write(frame_bgr)
@@ -296,8 +382,9 @@ class MotionRendererNPZ:
 @hydra.main(
     version_base=None,
     config_path="../../../config/motion_retargeting",
-    config_name="unitree_G1_29dof_retargeting",
+    config_name="unitree_G1_29dof_retargeting"
 )
+
 def main(cfg: DictConfig) -> None:
     """
     Required config fields:
@@ -306,6 +393,9 @@ def main(cfg: DictConfig) -> None:
     - cfg.motion_npz_root : Directory containing NPZ files
     - cfg.motion_name : "all" or a specific clip name (without extension)
     - cfg.skip_frames : Frame step size (>=1)
+    Optional:
+    - cfg.key_prefix_order : List[str] or str for key prefix matching order
+    - cfg.key_prefix : Single prefix to use (overridden by key_prefix_order)
     """
     try:
         # NPZ input

@@ -37,7 +37,6 @@ Check data paths in the configuration scripts:
 - `holomotion/scripts/motion_retargeting/run_motion_retargeting_gmr.sh`
 
 ## Quick Start
-
 ### 1. Motion Retargeting
 
 ```bash

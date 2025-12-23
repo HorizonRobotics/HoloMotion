@@ -1,4 +1,4 @@
-# Project RoboOrchard
+# Project HoloMotion
 #
 # Copyright (c) 2024-2025 Horizon Robotics. All Rights Reserved.
 #

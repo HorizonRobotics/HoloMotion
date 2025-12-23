@@ -8,4 +8,5 @@ dependencies:
   - pip:
       - -r requirements_torch_cu118.txt
       - -r requirements_base.txt
+      - -e ../thirdparties/SMPLSim
       - -e ../
