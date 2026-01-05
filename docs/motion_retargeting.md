@@ -8,7 +8,7 @@ Before running the motion retargeting pipeline, ensure you have:
 
 ### 1. Environment Setup
 
-Please make sure the smplx and GMR are properly installed according to [[environment setup doc](docs/environment_setup.md)].
+Please make sure the smplx and GMR are properly installed according to [[environment setup doc](./environment_setup.md)].
 
 ### 2. Data Preparation
 

@@ -21,9 +21,10 @@ from types import SimpleNamespace
 from typing import Optional
 
 import torch
-import torch.distributions as dist
+import torch.distributed as dist
 import torch.nn as nn
 import torch.nn.functional as F
+import torch.utils.checkpoint as checkpoint
 from einops import rearrange
 from loguru import logger
 
@@ -36,15 +37,35 @@ class MLP(nn.Module):
         self.obs_seq_len_dict = obs_serializer.obs_seq_len_dict
         self.module_config_dict = module_config_dict
         self.input_dim = obs_serializer.obs_flat_dim
-
-        self.use_layernorm = module_config_dict.get("use_layernorm", False)
-
         self._calculate_output_dim()
-        self._build_mlp(self.module_config_dict.layer_config)
+        self.use_layernorm = module_config_dict.get("use_layernorm", False)
+        self.add_linear_output_layer = module_config_dict.get(
+            "add_linear_output_layer", False
+        )
+
+        self._build_mlp(self.module_config_dict["layer_config"])
 
     def _calculate_output_dim(self):
+        output_schema = self.module_config_dict.get("output_schema", None)
+        if output_schema is not None:
+            heads_cfg = output_schema.get("heads", {})
+            output_dim = 0
+            for head_name, head_cfg in heads_cfg.items():
+                dim = head_cfg.get("dim", None)
+                if not isinstance(dim, (int, float)):
+                    current_function_name = (
+                        inspect.currentframe().f_code.co_name
+                    )
+                    raise ValueError(
+                        f"{current_function_name} - Unknown head dim "
+                        f"for '{head_name}': {dim}"
+                    )
+                output_dim += int(dim)
+            self.output_dim = output_dim
+            return
+
         output_dim = 0
-        for each_output in self.module_config_dict["output_dim"]:
+        for each_output in self.module_config_dict.get("output_dim", []):
             if isinstance(each_output, (int, float)):
                 output_dim += each_output
             else:
@@ -75,5 +96,4 @@ class MLP(nn.Module):
         self.module = nn.Sequential(*layers)
 
     def forward(self, input):
-        output = self.module(input)
-        return output
+        return self.module(input)

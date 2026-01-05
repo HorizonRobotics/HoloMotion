@@ -1,0 +1,45 @@
+# @package _global_
+
+defaults:
+  - _self_
+
+hydra:
+  job:
+    chdir: false
+
+io:
+  src_root: ???
+  out_root: ???
+
+preprocess:
+  # Available stages:
+  # ['filename_as_motionkey','legacy_to_ref_keys','add_legacy_keys',
+  #  'slicing','apply_butterworth_filter','add_padding','tagging']
+  pipeline: []  
+
+slicing:
+  window_size: 500
+  overlap: 50
+
+filtering:
+  type: butterworth
+  butter_cutoff_hz: 3.0
+  butter_order: 4
+
+padding:
+  # Robot config path for FK and default joint angles
+  robot_config_path: ""
+  # Duration of stand-still padding before/after motion (seconds)
+  stand_still_time: 1.0
+  # Duration of transition between default pose and motion (seconds)
+  transition_time: 1.0
+
+tagging:
+  # when empty, write tags to: <out_root>/kinematic_tags.json
+  output_json_path: ""
+
+ray:
+  enabled: true
+  num_workers: 2  # 0 = use all available CPUs
+  ray_address: ""  # empty = local; otherwise connect to existing Ray cluster
+

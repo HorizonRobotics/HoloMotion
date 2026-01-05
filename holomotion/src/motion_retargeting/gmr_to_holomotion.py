@@ -1,27 +1,12 @@
-# Project HoloMotion
-#
-# Copyright (c) 2024-2025 Horizon Robotics. All Rights Reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#       http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
-# implied. See the License for the specific language governing
-# permissions and limitations under the License.
-
-import argparse, json, os, sys
+import json, os, sys
 from pathlib import Path
 from typing import Dict, Tuple, Optional, List
 
 import joblib
 import numpy as np
 import torch
-from omegaconf import OmegaConf
+import hydra
+from omegaconf import OmegaConf, DictConfig, ListConfig
 from tqdm import tqdm
 
 from loguru import logger
@@ -32,7 +17,12 @@ from holomotion.src.motion_retargeting.utils.torch_humanoid_batch import (
 from holomotion.src.motion_retargeting.utils import (
     rotation_conversions as rot_conv,
 )
+from holomotion.src.motion_retargeting.holomotion_preprocess import (
+    HoloMotionPreprocessor,
+    ProcessedClip,
+)
 import ray
+import logging
 
 
 def quaternion_to_axis_angle(q: torch.Tensor) -> torch.Tensor:
@@ -59,7 +49,7 @@ def dof_to_pose_aa(
         return np.zeros((T, 27, 3), dtype=np.float32)
 
     robot_cfg = OmegaConf.load(robot_config_path)
-    print("Loaded robot config for FK from:", robot_config_path)
+    logger.info(f"Loaded robot config for FK from: {robot_config_path}")
     fk = HumanoidBatch(robot_cfg.robot)
     num_aug = len(robot_cfg.robot.extend_config)
 
@@ -670,133 +660,136 @@ class InMemoryAlignedLoader:
         return self._map.get(k, default)
 
 
-def arrays_for_npz(sample: Dict) -> Dict[str, np.ndarray]:
-    wanted = [
-        "dof_pos",
-        "dof_vels",
-        "global_translation",
-        "global_rotation_quat",
-        "global_velocity",
-        "global_angular_velocity",
-        "frame_flag",
-    ]
-    out = {}
-    for k in wanted:
-        v = sample.get(k, None)
+def arrays_for_npz(
+    sample: Dict, emit_prefixed: bool = True, emit_legacy: bool = False
+) -> Dict[str, np.ndarray]:
+    """
+    Build NPZ arrays:
+    - Always include frame_flag if present
+    - If emit_prefixed: write ref_* arrays mapped from base keys
+    - If emit_legacy: also include legacy, unprefixed keys for compatibility
+    """
+    base_to_ref = {
+        "dof_pos": "ref_dof_pos",
+        "dof_vel": "ref_dof_vel",
+        "global_translation": "ref_global_translation",
+        "global_rotation_quat": "ref_global_rotation_quat",
+        "global_velocity": "ref_global_velocity",
+        "global_angular_velocity": "ref_global_angular_velocity",
+    }
+    out: Dict[str, np.ndarray] = {}
+    if isinstance(sample.get("frame_flag"), np.ndarray):
+        out["frame_flag"] = sample["frame_flag"]
+    for base, ref_name in base_to_ref.items():
+        v = sample.get(base, None)
         if isinstance(v, np.ndarray):
-            out[k] = v
+            if emit_prefixed:
+                out[ref_name] = v
+            if emit_legacy:
+                out[base] = v
     return out
 
 
 @ray.remote
-def process_pkl_remote(
-    p_str: str,
-    src_dir_str: str,
-    robot_cfg_path: str,
-    out_root_str: str,
-    target_fps: int,
-    fast_interpolate: bool,
-    debug_mode: bool,
-    schema: Dict[str, Tuple[Tuple[int, ...], np.dtype]],
-) -> str:
-    p = Path(p_str)
-    src_dir = Path(src_dir_str)
-    out_root = Path(out_root_str)
-    motion_key_rel = make_motion_key(p, src_dir)
-    flat_key = motion_key_rel.replace("/", "_")
+class MotionProcessorActor:
+    """
+    Persistent Ray actor that loads robot config once and processes PKLs asynchronously.
+    """
 
-    obj = load_any_pkl(p)
-    inner = unwrap_source(obj)
-    T_default = infer_T(inner) or 1
-    aligned = build_inner_from_source(inner, schema, T_default)
+    def __init__(
+        self,
+        robot_cfg_path: str,
+        schema: Dict[str, Tuple[Tuple[int, ...], np.dtype]],
+    ):
+        cfg = OmegaConf.load(robot_cfg_path)
+        self.robot_cfg = cfg.robot
+        self.schema = schema
+        # Cached FK holder for DOF → axis-angle conversion (uses dof_axis)
+        self._fk_for_dof = HumanoidBatch(self.robot_cfg)
 
-    dof = aligned.get("dof")
-    if isinstance(dof, np.ndarray) and dof.size > 0:
-        root_rot = aligned.get("root_rot", None)
-        aligned["pose_aa"] = dof_to_pose_aa(dof, robot_cfg_path, root_rot)
+    def _dof_to_pose_aa_cached(
+        self, dof_pos: np.ndarray, root_rot: Optional[np.ndarray]
+    ) -> np.ndarray:
+        dof_t = torch.as_tensor(dof_pos, dtype=torch.float32)
+        if dof_t.dim() == 3 and dof_t.shape[-1] == 1:
+            dof_t = dof_t.squeeze(-1)
+        T = int(dof_t.shape[0])
 
-    loader = InMemoryAlignedLoader({flat_key: aligned})
-    robot_cfg = OmegaConf.load(robot_cfg_path)
-    sample = process_single_motion(
-        robot_cfg.robot,
-        loader,
-        flat_key,
-        int(target_fps),
-        bool(fast_interpolate),
-        bool(debug_mode),
-    )
+        if root_rot is None:
+            root_aa = torch.zeros((T, 3), dtype=torch.float32)
+        else:
+            rr = torch.as_tensor(root_rot, dtype=torch.float32)
+            root_aa = quaternion_to_axis_angle(rr) if rr.shape[-1] == 4 else rr
 
-    meta = {
-        "motion_key": flat_key,
-        "motion_fps": float(sample["motion_fps"]),
-        "num_frames": int(sample["num_frames"]),
-        "wallclock_len": float(sample["wallclock_len"]),
-        "num_dofs": int(sample["num_dofs"]),
-        "num_bodies": int(sample["num_bodies"]),
-        "num_extended_bodies": int(sample["num_extended_bodies"]),
-    }
-    arrays = arrays_for_npz(sample)
-    out_path = out_root / f"{flat_key}.npz"
-    np.savez_compressed(out_path, metadata=json.dumps(meta), **arrays)
-    return str(out_path)
+        num_aug = len(self.robot_cfg.extend_config)
+        joint_aa = self._fk_for_dof.dof_axis * dof_t[:, :, None]
+        pose_aa = torch.cat(
+            [root_aa[:, None, :], joint_aa, torch.zeros((T, num_aug, 3))],
+            dim=1,
+        )
+        return pose_aa.numpy().astype(np.float32, copy=False)
+
+    def process_pkl(
+        self,
+        p_str: str,
+        src_dir_str: str,
+        target_fps: int,
+        fast_interpolate: bool,
+        debug_mode: bool,
+    ) -> Tuple[bool, Dict[str, object]]:
+        """
+        Returns (success, payload). On success, payload contains:
+          { "flat_key": str, "sample": Dict[str, np.ndarray|scalar] }
+        """
+        p = Path(p_str)
+        src_dir = Path(src_dir_str)
+        motion_key_rel = make_motion_key(p, src_dir)
+        flat_key = motion_key_rel.replace("/", "_")
+
+        obj = load_any_pkl(p)
+        inner = unwrap_source(obj)
+        T_default = infer_T(inner) or 1
+        aligned = build_inner_from_source(inner, self.schema, T_default)
+
+        dof = aligned.get("dof")
+        if isinstance(dof, np.ndarray) and dof.size > 0:
+            root_rot = aligned.get("root_rot", None)
+            aligned["pose_aa"] = self._dof_to_pose_aa_cached(dof, root_rot)
+
+        loader = InMemoryAlignedLoader({flat_key: aligned})
+        sample = process_single_motion(
+            self.robot_cfg,
+            loader,
+            flat_key,
+            int(target_fps),
+            bool(fast_interpolate),
+            bool(debug_mode),
+        )
+        payload: Dict[str, object] = {"flat_key": flat_key, "sample": sample}
+        return True, payload
 
 
-def main():
-    ap = argparse.ArgumentParser(
-        description="Align GMR PKLs → Holomotion schema and export NPZ (Ray-parallel; flattened outputs)"
-    )
-    ap.add_argument(
-        "--src_dir",
-        default="data/gmr_retargeted/g1_29dof/GMRRepoTest/Walk_B10_-_Walk_turn_left_45_stageii.pkl",
-        help="Raw PKL directory OR a single .pkl file",
-    )
-    ap.add_argument(
-        "--ref_dir",
-        default="holomotion/src/motion_retargeting/utils",
-        help="Directory containing _schema.json",
-    )
-    ap.add_argument(
-        "--robot_config",
-        default="holomotion/config/robot/unitree/G1/29dof/29dof_training_isaaclab.yaml",
-        help="Robot config YAML (OmegaConf)",
-    )
-    ap.add_argument(
-        "--out_root",
-        default=os.path.join(os.getcwd(), "data/retargeted_aligned"),
-        help="Output root",
-    )
-    ap.add_argument("--target_fps", type=int, default=50)
-    ap.add_argument("--fast_interpolate", action="store_true")
-    ap.add_argument("--debug_mode", action="store_true")
-    ap.add_argument(
-        "--num_workers",
-        type=int,
-        default=0,
-        help="Number of Ray workers/CPUs to use (0 = auto)",
-    )
-    ap.add_argument(
-        "--ray_address",
-        type=str,
-        default="",
-        help="Ray address for connecting to an existing cluster (empty = local)",
-    )
-    ap.add_argument(
-        "--skip_existing",
-        action="store_true",
-        help="Skip processing if the flattened NPZ output already exists",
-    )
-
-    args = ap.parse_args()
-
+@hydra.main(
+    config_path="../../config",
+    config_name="motion_retargeting/gmr_to_holomotion",
+    version_base=None,
+)
+def main(cfg: DictConfig) -> None:
     # Setup logging
     logger.remove()
-    log_level = "DEBUG" if args.debug_mode else "INFO"
+    log_level = "DEBUG" if bool(cfg.processing.debug_mode) else "INFO"
     logger.add(sys.stderr, level=log_level, colorize=True)
 
-    src_path = Path(args.src_dir)
-    ref_dir = Path(args.ref_dir)
-    out_root = Path(args.out_root)
-    out_root.mkdir(parents=True, exist_ok=True)
+    src_path = Path(str(cfg.io.src_dir)).expanduser().resolve()
+    ref_dir = Path(str(cfg.io.ref_dir)).expanduser().resolve()
+    out_root = Path(str(cfg.io.out_root)).expanduser().resolve()
+    clips_dir = out_root / "clips"
+    clips_dir.mkdir(parents=True, exist_ok=True)
+
+    # dump resolved config used
+    (out_root).mkdir(parents=True, exist_ok=True)
+    with open(out_root / "config_used.yaml", "w") as f:
+        f.write(OmegaConf.to_yaml(cfg))
 
     # 1) schema from _schema.json
     schema, _ = get_ref_schema(ref_dir)
@@ -816,48 +809,189 @@ def main():
         src_pkls = sorted(src_pkls)
         root_for_keys = src_path
 
-    # 3) initialize Ray
-    if args.ray_address:
-        ray.init(address=args.ray_address, ignore_reinit_error=True)
+    # 3) quiet third-party DEBUG logs (e.g., filelock/Ray)
+    logging.getLogger("filelock").setLevel(logging.WARNING)
+    logging.getLogger("ray").setLevel(logging.ERROR)
+    os.environ.setdefault("RAY_BACKEND_LOG_LEVEL", "error")
+
+    # 4) initialize Ray
+    if str(cfg.ray.ray_address):
+        ray.init(
+            address=str(cfg.ray.ray_address),
+            ignore_reinit_error=True,
+            log_to_driver=False,
+            include_dashboard=False,
+            logging_level=logging.ERROR,
+        )
     else:
         num_cpus = (
-            None if int(args.num_workers) <= 0 else int(args.num_workers)
+            None if int(cfg.ray.num_workers) <= 0 else int(cfg.ray.num_workers)
         )
-        ray.init(num_cpus=num_cpus, ignore_reinit_error=True)
+        ray.init(
+            num_cpus=num_cpus,
+            ignore_reinit_error=True,
+            log_to_driver=False,
+            include_dashboard=False,
+            logging_level=logging.ERROR,
+        )
 
-    # 4) submit remote tasks
-    tasks = []
+    # 5) build work list (skip existing if requested)
+    skip_existing = bool(cfg.processing.skip_existing)
+    work_list: List[Path] = []
     for p in src_pkls:
         motion_key = make_motion_key(p, root_for_keys)
         out_name = key_to_filename(motion_key)
-        if bool(args.skip_existing) and (out_root / out_name).exists():
+        if skip_existing and (clips_dir / out_name).exists():
             continue
-        tasks.append(
-            process_pkl_remote.remote(
-                str(p),
-                str(root_for_keys),
-                str(args.robot_config),
-                str(out_root),
-                int(args.target_fps),
-                bool(args.fast_interpolate),
-                bool(args.debug_mode),
-                schema,
-            )
-        )
+        work_list.append(p)
 
-    if not tasks:
-        print("No tasks to run (all outputs exist or no PKLs found).")
+    if not work_list:
+        logger.info("No tasks to run (all outputs exist or no PKLs found).")
+        ray.shutdown()
         return
 
-    # 5) wait for completion with progress
-    remaining = list(tasks)
-    with tqdm(total=len(remaining), desc="Ray: PKL→NPZ") as pbar:
-        while remaining:
-            done, remaining = ray.wait(remaining, num_returns=1)
-            ray.get(done[0])
-            pbar.update(1)
+    # 6) create persistent actors (each loads robot config once)
+    if int(cfg.ray.num_workers) > 0:
+        num_actors = min(len(work_list), int(cfg.ray.num_workers))
+    else:
+        available_cpus = int(ray.available_resources().get("CPU", 1))
+        num_actors = min(len(work_list), max(1, available_cpus))
+    actors = [
+        MotionProcessorActor.remote(str(cfg.io.robot_config), schema)
+        for _ in range(num_actors)
+    ]
 
-    print(f"Done. NPZ written to: {out_root}")
+    # Parse pipeline config
+    pipeline_cfg = cfg.get("preprocess", None)
+    pipeline = None
+    if pipeline_cfg is not None:
+        pipeline_val = pipeline_cfg.get("pipeline", None)
+        if pipeline_val is not None:
+            if isinstance(pipeline_val, (list, tuple, ListConfig)):
+                pipeline = [str(s) for s in pipeline_val]
+            elif isinstance(pipeline_val, str):
+                import ast
+                pipeline = ast.literal_eval(pipeline_val)
+            else:
+                logger.warning(f"Unexpected pipeline type: {type(pipeline_val)}, value: {pipeline_val}")
+                pipeline = []
+        else:
+            pipeline = []
+    else:
+        pipeline = []
+
+    # Separate per-clip stages from dataset-level stages
+    per_clip_pipeline = [s for s in pipeline if s != "tagging"] if pipeline else []
+    tagging_enabled = pipeline and "tagging" in pipeline
+
+    logger.info("=" * 80)
+    logger.info("Preprocessing Configuration:")
+    if pipeline:
+        logger.info(f"  Pipeline stages: {pipeline}")
+        logger.info(f"  Number of stages: {len(pipeline)}")
+        for i, stage in enumerate(pipeline, 1):
+            logger.info(f"    {i}. {stage}")
+        if tagging_enabled:
+            logger.info("  Note: 'tagging' is a dataset-level operation and will run after all clips are processed")
+    else:
+        logger.info("  No preprocessing pipeline specified - no processors will be applied")
+    logger.info("=" * 80)
+
+    preprocessor = HoloMotionPreprocessor(
+        slicing_cfg=cfg.slicing,
+        filtering_cfg=cfg.filtering,
+        tagging_cfg=cfg.tagging,
+        padding_cfg=cfg.get("padding", None),
+        pipeline=per_clip_pipeline if per_clip_pipeline else None,
+    )
+
+    # 7) asynchronously schedule PKLs to actors (round-robin)
+    pending = {}
+    next_idx = 0
+    # prime the queue
+    for i in range(min(num_actors, len(work_list))):
+        p = work_list[next_idx]
+        next_idx += 1
+        ref = actors[i].process_pkl.remote(
+            str(p),
+            str(root_for_keys),
+            int(cfg.processing.target_fps),
+            bool(cfg.processing.fast_interpolate),
+            bool(cfg.processing.debug_mode),
+        )
+        pending[ref] = i
+
+    # 8) collect results and keep feeding new tasks (post-process in-memory, then write)
+    total_outputs = 0
+    with tqdm(total=len(work_list), desc="Ray: PKL→NPZ (Hydra)") as pbar:
+        while pending:
+            done, _ = ray.wait(list(pending.keys()), num_returns=1)
+            ref = done[0]
+            actor_idx = pending.pop(ref)
+            ok, payload = ray.get(ref)
+            if ok:
+                flat_key: str = payload["flat_key"]  # type: ignore[assignment]
+                sample: Dict = payload["sample"]  # type: ignore[assignment]
+                arrays_ref = arrays_for_npz(
+                    sample,
+                    emit_prefixed=bool(cfg.naming.emit_prefixed),
+                    emit_legacy=bool(cfg.naming.emit_legacy),
+                )
+                base_meta = {
+                    "motion_key": flat_key,
+                    "raw_motion_key": flat_key,
+                    "motion_fps": float(sample["motion_fps"]),
+                    "num_frames": int(sample["num_frames"]),
+                    "wallclock_len": float(sample["wallclock_len"]),
+                    "num_dofs": int(sample["num_dofs"]),
+                    "num_bodies": int(sample["num_bodies"]),
+                    "num_extended_bodies": int(sample["num_extended_bodies"]),
+                    "slice_start": 0,
+                    "slice_end": int(sample["num_frames"]),
+                }
+                base_clip = ProcessedClip(
+                    motion_key=flat_key,
+                    metadata=base_meta,
+                    arrays=arrays_ref,
+                )
+                clips = preprocessor.process_clip(base_clip)
+                for clip in clips:
+                    out_name = f"{clip.motion_key}.npz"
+                    out_path = clips_dir / out_name
+                    np.savez_compressed(
+                        out_path,
+                        metadata=json.dumps(clip.metadata),
+                        **clip.arrays,
+                    )
+                    total_outputs += 1
+            else:
+                logger.warning(f"Processing failed: {payload}")
+            pbar.update(1)
+            if next_idx < len(work_list):
+                p = work_list[next_idx]
+                next_idx += 1
+                new_ref = actors[actor_idx].process_pkl.remote(
+                    str(p),
+                    str(root_for_keys),
+                    int(cfg.processing.target_fps),
+                    bool(cfg.processing.fast_interpolate),
+                    bool(cfg.processing.debug_mode),
+                )
+                pending[new_ref] = actor_idx
+
+    # 9) Optional kinematic tagging (write to out_root level)
+    if tagging_enabled:
+        tags_path = (
+            Path(str(cfg.tagging.output_json_path)).expanduser().resolve()
+            if str(cfg.tagging.output_json_path)
+            else (out_root / "kinematic_tags.json")
+        )
+        preprocessor.tag_directory(clips_dir, tags_path)
+
+    logger.info(
+        f"Done. NPZ written to: {clips_dir} (total clips: {total_outputs})"
+    )
+    ray.shutdown()
 
 
 if __name__ == "__main__":

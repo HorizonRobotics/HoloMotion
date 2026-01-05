@@ -16,6 +16,7 @@
 
 import torch
 import time
+import os
 import yaml
 from functools import wraps
 from easydict import EasyDict
@@ -48,6 +49,12 @@ from holomotion.src.env.isaaclab_components import (
     build_rewards_config,
     build_scene_config,
     build_terminations_config,
+)
+from holomotion.src.env.isaaclab_components.isaaclab_observation import (
+    ObservationFunctions,
+)
+from holomotion.src.env.isaaclab_components.isaaclab_utils import (
+    resolve_holo_config,
 )
 from holomotion.src.modules.agent_modules import ObsSeqSerializer
 import isaaclab.envs.mdp as isaaclab_mdp
@@ -330,7 +337,8 @@ class MotionTrackingEnv:
 
         isaaclab_env_cfg = MotionTrackingEnvCfg()
 
-        # dump_yaml("./isaaclab_env_cfg.yaml", isaaclab_env_cfg)
+        isaaclab_envconfig_dump_path = os.path.join(self.log_dir, "isaaclab_env_cfg.yaml")
+        dump_yaml(isaaclab_envconfig_dump_path, isaaclab_env_cfg)
 
         self._env = ManagerBasedRLEnv(isaaclab_env_cfg, self.render_mode)
 
@@ -338,11 +346,6 @@ class MotionTrackingEnv:
         return self._env
 
     def _init_motion_tracking_components(self):
-        self.num_extend_bodies = len(
-            getattr(self.config, "robot", {})
-            .get("motion", {})
-            .get("extend_config", [])
-        )
         self.n_fut_frames = self.config.commands.ref_motion.params.n_fut_frames
         self.target_fps = self.config.commands.ref_motion.params.target_fps
         self._init_serializers()
@@ -368,28 +371,134 @@ class MotionTrackingEnv:
         self.is_evaluating = True
 
     def _init_serializers(self):
-        if hasattr(self.config, "obs"):
-            obs_config = self.config.obs
+        if not hasattr(self.config, "obs"):
+            return
+        obs_config = self.config.obs
 
-            if obs_config.get("serialization_schema", None):
-                self.obs_serializer = ObsSeqSerializer(
-                    obs_config.serialization_schema
+        # New path: build serializers from obs_schema when provided. This allows
+        # using IsaacLab obs_groups as the single source of truth and only
+        # treating the schema as a logical view of the flat observation vector.
+        obs_schema_cfg = obs_config.get("obs_schema", None)
+        if obs_schema_cfg is not None:
+            self._build_serializers_from_schema()
+            return
+
+        # Backward-compatible path: use explicit serialization_schema entries.
+        if obs_config.get("serialization_schema", None):
+            self.obs_serializer = ObsSeqSerializer(
+                obs_config.serialization_schema
+            )
+
+        if obs_config.get("critic_serialization_schema", None):
+            self.critic_obs_serializer = ObsSeqSerializer(
+                obs_config.critic_serialization_schema
+            )
+
+        if obs_config.get("teacher_serialization_schema", None):
+            self.teacher_obs_serializer = ObsSeqSerializer(
+                obs_config.teacher_serialization_schema
+            )
+
+        if obs_config.get("command_serilization_schema", None):
+            self.command_obs_serializer = ObsSeqSerializer(
+                obs_config.command_serilization_schema
+            )
+
+    def _build_serializers_from_schema(self) -> None:
+        obs_cfg_dict = OmegaConf.to_container(self.config.obs, resolve=True)
+        obs_groups_cfg = obs_cfg_dict["obs_groups"]
+        obs_schema_cfg = obs_cfg_dict.get("obs_schema", {})
+        context_length = int(obs_cfg_dict.get("context_length", 1))
+        n_fut_frames = int(obs_cfg_dict.get("n_fut_frames", 0))
+
+        # Ensure env state is initialized so that observation functions can be
+        # evaluated to infer base feature dimensions.
+        self.reset_all()
+
+        def _build_group_serializer(group_name: str) -> ObsSeqSerializer:
+            group_cfg = obs_groups_cfg[group_name]
+            schema_group_cfg = obs_schema_cfg.get(group_name, {})
+            # Support both flat schemas (seq_name -> cfg) and legacy
+            # schemas with an extra "sequences" nesting.
+            if "sequences" in schema_group_cfg:
+                sequences_cfg = schema_group_cfg["sequences"]
+            else:
+                sequences_cfg = schema_group_cfg
+
+            # Map obs term name -> its config dict (params, history_length, etc.).
+            term_cfg_map = {}
+            for term_dict in group_cfg["atomic_obs_list"]:
+                for term_name, term_cfg in term_dict.items():
+                    term_cfg_map[term_name] = term_cfg or {}
+
+            def _infer_base_dim(term_name: str) -> int:
+                term_cfg = term_cfg_map.get(term_name, {})
+                params_cfg = term_cfg.get("params", {})
+                params = resolve_holo_config(params_cfg)
+                method_name = f"_get_obs_{term_name}"
+                func = getattr(ObservationFunctions, method_name, None)
+                if func is None:
+                    func = getattr(isaaclab_mdp, term_name, None)
+                if func is None:
+                    raise ValueError(
+                        f"Unknown observation function for term: {term_name}"
+                    )
+                out = func(self._env, **params)
+                if out.ndim != 2:
+                    raise ValueError(
+                        f"Expected obs term '{term_name}' to return 2D tensor, "
+                        f"got shape {tuple(out.shape)}"
+                    )
+
+                # Base per-step feature dim from the observation function.
+                per_step_dim = int(out.shape[-1])
+
+                # IsaacLab history stacking and flattening are configured via
+                # `history_length` and `flatten_history_dim` on each atomic term.
+                # Mirror that logic here so the serializer sees the same flat dim
+                # as the observation manager.
+                history_length = int(term_cfg.get("history_length", 1))
+                flatten_history = bool(term_cfg.get("flatten_history_dim", False))
+
+                if flatten_history and history_length > 1:
+                    base_dim = per_step_dim * history_length
+                else:
+                    base_dim = per_step_dim
+
+                return base_dim
+
+            schema_list = []
+            for seq_name, seq_cfg in sequences_cfg.items():
+                seq_len = int(seq_cfg.get("seq_len", 1))
+                if seq_len <= 0:
+                    raise ValueError(
+                        f"Sequence '{seq_name}' in group '{group_name}' "
+                        f"must have positive seq_len, got {seq_len}"
+                    )
+                term_names = seq_cfg.get("terms", [])
+                feat_dim = 0
+                for term_name in term_names:
+                    base_dim = _infer_base_dim(term_name)
+                    if base_dim % seq_len != 0:
+                        raise ValueError(
+                            f"Sequence '{seq_name}' term '{term_name}' "
+                            f"flattened dim {base_dim} not divisible by "
+                            f"seq_len {seq_len}"
+                        )
+                    feat_dim += int(base_dim // seq_len)
+
+                schema_list.append(
+                    {
+                        "obs_name": seq_name,
+                        "seq_len": seq_len,
+                        "feat_dim": feat_dim,
+                    }
                 )
 
-            if obs_config.get("critic_serialization_schema", None):
-                self.critic_obs_serializer = ObsSeqSerializer(
-                    obs_config.critic_serialization_schema
-                )
+            return ObsSeqSerializer(schema_list)
 
-            if obs_config.get("teacher_serialization_schema", None):
-                self.teacher_obs_serializer = ObsSeqSerializer(
-                    obs_config.teacher_serialization_schema
-                )
-
-            if obs_config.get("command_serilization_schema", None):
-                self.command_obs_serializer = ObsSeqSerializer(
-                    obs_config.command_serilization_schema
-                )
+        self.obs_serializer = _build_group_serializer("policy")
+        self.critic_obs_serializer = _build_group_serializer("critic")
 
     def seed(self, seed: int):
         """Seed python, numpy and torch RNGs for this env wrapper and IsaacLab.

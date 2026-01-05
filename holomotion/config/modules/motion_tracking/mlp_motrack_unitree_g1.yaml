@@ -1,0 +1,73 @@
+# @package _global_
+
+modules:
+  actor:
+    type: MLP
+
+    use_layernorm: false
+    layer_config:
+      hidden_dims:
+        - 1024
+        - 2048
+        - 1024
+        - 512
+      activation: SiLU
+
+    obs_schema:
+      policy:
+        flattened_obs:
+          seq_len: ${obs.context_length}
+          terms:
+            - ref_dof_pos_cur
+            - projected_gravity
+            - rel_robot_root_ang_vel
+            - dof_pos
+            - dof_vel
+            - last_action
+        flattened_obs_fut:
+          seq_len: 1
+          terms:
+            - ref_dof_pos_fut
+
+    output_schema:
+      heads:
+        action:
+          dim: robot_action_dim
+
+  critic:
+    type: MLP
+
+    use_layernorm: false
+    layer_config:
+      hidden_dims:
+        - 1024
+        - 2048
+        - 1024
+        - 512
+      activation: SiLU
+
+    obs_schema:
+      critic:
+        flattened_obs:
+          seq_len: 1
+          terms:
+            - ref_dof_pos_cur
+            - global_anchor_diff
+            - rel_robot_root_lin_vel
+            - rel_robot_root_ang_vel
+            - global_robot_bodylink_lin_vel_flat
+            - global_robot_bodylink_ang_vel_flat
+            - root_rel_robot_bodylink_pos_flat
+            - root_rel_robot_bodylink_rot_mat_flat
+            - dof_pos
+            - dof_vel
+            - last_action
+        flattened_obs_fut:
+          seq_len: 1
+          terms:
+            - ref_dof_pos_fut
+
+    output_schema:
+      heads:
+        value:
+          dim: 1

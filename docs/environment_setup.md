@@ -77,6 +77,8 @@ Install smplx and GMR into the conda environment:
 ```shell
 cd thirdparties
 
+conda activate holomotion_train
+
 pip install -e ./smplx
 
 # use --no-deps to avoid pulling GMR's dependencies

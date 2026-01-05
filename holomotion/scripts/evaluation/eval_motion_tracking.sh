@@ -1,3 +1,4 @@
+#!/bin/bash
 # Project HoloMotion
 #
 # Copyright (c) 2024-2025 Horizon Robotics. All Rights Reserved.
@@ -17,19 +18,18 @@
 source train.env
 export CUDA_VISIBLE_DEVICES="0"
 
-config_name="eval_isaaclab"
-
+CONFIG_NAME="eval_isaaclab"
+CKPT_PATH="logs/HoloMotionMotionTracking/20260104_150135-train_g1_29dof_motion_tracking/model_3000.pt"
+eval_h5_dataset_path="data/hdf5_datasets/processed_datasets/h5_AMASS_test"
 num_envs=1
 
-ckpt_path="your_pretrained_model_ckpt"
-eval_h5_dataset_path="data/hdf5_datasets/h5_g1_29dof_amass_test"
-
 ${Train_CONDA_PREFIX}/bin/accelerate launch \
-    holomotion/src/evaluation/eval_motion_tracking.py \
-    --config-name=evaluation/${config_name} \
+    holomotion/src/evaluation/eval_motion_tracking_single.py \
+    --config-name=evaluation/${CONFIG_NAME} \
+    checkpoint=$CKPT_PATH \
     headless=false \
     project_name="HoloMotionMotionTracking" \
     num_envs=${num_envs} \
-    experiment_name=${config_name} \
-    checkpoint=${ckpt_path} \
+    export_policy=true \
+    dump_npzs=true \
     motion_h5_path=${eval_h5_dataset_path}

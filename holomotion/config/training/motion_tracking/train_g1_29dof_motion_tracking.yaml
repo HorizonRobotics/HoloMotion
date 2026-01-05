@@ -9,58 +9,21 @@ defaults:
   - /env/observations: motion_tracking/obs_motion_tracking
   - /env/rewards: motion_tracking/rew_motion_tracking
   - /env/domain_randomization: domain_rand_small
-  - /env/terrain: isaaclab_plane
+  - /env/terrain: isaaclab_rough_lite
+  - /modules: motion_tracking/mlp_motrack_unitree_g1
 
 project_name: HoloMotionMotionTracking
 
-motion_h5_path: data/hdf5_datasets/h5_g1_29dof_amass_test
-val_motion_h5_path: data/hdf5_datasets/h5_g1_29dof_amass_test
-
-algo:
-  algo:
-    config:
-      enable_online_eval: false
-      module_dict:
-        actor:
-          type: MLP
-          layer_config:
-            hidden_dims:
-              - 2048
-              - 1536
-              - 1024
-              - 1024
-              - 512
-              - 512
-
-        critic:
-          type: MLP
-          layer_config:
-            hidden_dims:
-              - 2048
-              - 1536
-              - 1024
-              - 1024
-              - 512
-              - 512
-
 robot:
   motion:
-    hdf5_root: ${motion_h5_path}
-    val_hdf5_root: ${val_motion_h5_path}
-  key_bodies:
-    [
-      "pelvis",
-      "left_hip_roll_link",
-      "left_knee_link",
-      "left_ankle_pitch_link",
-      "right_hip_roll_link",
-      "right_knee_link",
-      "right_ankle_pitch_link",
-      "torso_link",
-      "left_shoulder_roll_link",
-      "left_elbow_link",
-      "left_wrist_yaw_link",
-      "right_shoulder_roll_link",
-      "right_elbow_link",
-      "right_wrist_yaw_link",
-    ]
+    train_hdf5_roots:
+      - data/hdf5_datasets/processed_datasets/h5_AMASS_test
+
+algo:
+  config:
+    save_interval: 500
+    dynamo_backend: "inductor"
+
+    module_dict:
+      actor: ${modules.actor}
+      critic: ${modules.critic}

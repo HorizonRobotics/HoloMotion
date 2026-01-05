@@ -13,7 +13,7 @@ import h5py
 import hydra
 import numpy as np
 from loguru import logger
-from omegaconf import OmegaConf
+from omegaconf import OmegaConf, ListConfig
 from tqdm import tqdm
 
 
@@ -155,28 +155,42 @@ class Hdf5ShardWriter:
         return summary
 
 
+def _discover_all_array_keys(npz_path: str) -> List[str]:
+    """Discover all array keys in an NPZ file (excluding metadata)."""
+    data = np.load(npz_path, allow_pickle=False)
+    array_keys: List[str] = []
+    for key in data.files:
+        if key != "metadata":
+            arr = data[key]
+            if isinstance(arr, np.ndarray) and arr.ndim >= 1:
+                array_keys.append(key)
+    return array_keys
+
+
 def _discover_specs_from_npz(
-    first_npz_path: str, wanted: List[str]
+    first_npz_path: str, all_keys: List[str]
 ) -> List[ArraySpec]:
+    """Discover array specs from NPZ file for all provided keys."""
     data = np.load(first_npz_path, allow_pickle=False)
     specs: List[ArraySpec] = []
-    for n in wanted:
-        if n in data:
-            arr = data[n]
-            specs.append(
-                ArraySpec(
-                    name=n, shape_tail=tuple(arr.shape[1:]), dtype=arr.dtype
+
+    for key in all_keys:
+        if key in data:
+            arr = data[key]
+            if isinstance(arr, np.ndarray) and arr.ndim >= 1:
+                shape_tail = tuple(arr.shape[1:])
+                specs.append(
+                    ArraySpec(name=key, shape_tail=shape_tail, dtype=arr.dtype)
                 )
-            )
     return specs
 
 
 def _estimate_bytes_for_motion(npz_path: str, array_names: List[str]) -> int:
     data = np.load(npz_path, allow_pickle=False)
     total = 0
-    for n in array_names:
-        if n in data:
-            total += int(data[n].nbytes)
+    for key in array_names:
+        if key in data:
+            total += int(data[key].nbytes)
     return total
 
 
@@ -186,10 +200,21 @@ def _estimate_bytes_for_motion(npz_path: str, array_names: List[str]) -> int:
     version_base=None,
 )
 def main(cfg: OmegaConf) -> None:
-    npz_root = cfg.get(
-        "precomputed_npz_root",
-        os.path.join(os.getcwd(), "motion_kinematics_npz"),
-    )
+    # Input directories (single string or list of strings)
+    dirs_cfg = cfg.get("holomotion_retargeted_dirs", None)
+    if dirs_cfg is None:
+        # Backwards-compat: fall back to legacy key if provided
+        legacy_dir = cfg.get(
+            "precomputed_npz_root",
+            os.path.join(os.getcwd(), "motion_kinematics_npz"),
+        )
+        holomotion_retargeted_dirs: List[str] = [str(legacy_dir)]
+    else:
+        if isinstance(dirs_cfg, (list, tuple, ListConfig)):
+            holomotion_retargeted_dirs = [str(p) for p in list(dirs_cfg)]
+        else:
+            holomotion_retargeted_dirs = [str(dirs_cfg)]
+
     hdf5_root = cfg.get(
         "hdf5_root", os.path.join(os.getcwd(), "holomotion_hdf5")
     )
@@ -200,33 +225,48 @@ def main(cfg: OmegaConf) -> None:
         cfg.get("shard_target_bytes", shard_target_gb * (1 << 30))
     )
 
-    clips_dir = npz_root
-    assert os.path.isdir(clips_dir), (
-        f"NPZ clips directory not found: {clips_dir}"
-    )
+    # Validate input directories
+    for d in holomotion_retargeted_dirs:
+        assert os.path.isdir(d), f"NPZ clips directory not found: {d}"
 
     # Discover motions
-    motion_keys: List[str] = []
-    for fname in os.listdir(clips_dir):
-        if fname.endswith(".npz"):
-            motion_keys.append(os.path.splitext(fname)[0])
-    motion_keys.sort()
-    assert len(motion_keys) > 0, "No motion NPZ files found"
-
-    # Base arrays to write (present in NPZs produced by preprocessing)
-    base_arrays = [
-        "dof_pos",
-        "dof_vels",
-        "global_translation",
-        "global_rotation_quat",
-        "global_velocity",
-        "global_angular_velocity",
-        "frame_flag",
+    # Each motion entry: (motion_key, base_key, npz_path) where motion_key is prefixed with parent dir name
+    motion_key_to_path: Dict[str, str] = {}
+    for d in holomotion_retargeted_dirs:
+        # Extract parent directory name (last component of path)
+        parent_dir_name = os.path.basename(os.path.normpath(d))
+        base_dir = (
+            os.path.join(d, "clips")
+            if os.path.isdir(os.path.join(d, "clips"))
+            else d
+        )
+        for dirpath, _, filenames in os.walk(base_dir):
+            for fname in filenames:
+                if fname.endswith(".npz"):
+                    base_key = os.path.splitext(fname)[0]
+                    motion_key = f"{parent_dir_name}_{base_key}"
+                    npz_path = os.path.join(dirpath, fname)
+                    assert motion_key not in motion_key_to_path, (
+                        f"Duplicate motion key across dirs: {motion_key}"
+                    )
+                    motion_key_to_path[motion_key] = npz_path
+    motion_entries: List[Tuple[str, str, str]] = [
+        (k, os.path.splitext(os.path.basename(v))[0], v)
+        for k, v in motion_key_to_path.items()
     ]
+    motion_entries.sort(key=lambda x: x[0])
+    assert len(motion_entries) > 0, "No motion NPZ files found"
+    motion_keys: List[str] = [e[0] for e in motion_entries]
 
-    # Specs from first file (only arrays present are created)
-    first_npz = os.path.join(clips_dir, f"{motion_keys[0]}.npz")
-    specs = _discover_specs_from_npz(first_npz, base_arrays)
+    # Discover all array keys from first NPZ file
+    first_npz = motion_entries[0][2]
+    all_array_keys = _discover_all_array_keys(first_npz)
+    logger.info(
+        f"Discovered {len(all_array_keys)} array keys in first NPZ: {all_array_keys}"
+    )
+
+    # Specs from first file (all arrays present are created)
+    specs = _discover_specs_from_npz(first_npz, all_array_keys)
     array_names_created = [s.name for s in specs]
     logger.info(f"Creating datasets for arrays: {array_names_created}")
 
@@ -260,8 +300,7 @@ def main(cfg: OmegaConf) -> None:
     writer: Optional[Hdf5ShardWriter] = None
     pbar = tqdm(total=len(motion_keys), desc="Packing HDF5 shards")
 
-    for clip_idx_global, key in enumerate(motion_keys):
-        npz_path = os.path.join(clips_dir, f"{key}.npz")
+    for key, _base_key, npz_path in motion_entries:
         motion_bytes = _estimate_bytes_for_motion(
             npz_path, array_names_created
         )
@@ -295,11 +334,17 @@ def main(cfg: OmegaConf) -> None:
         data = np.load(npz_path, allow_pickle=False)
         assert "metadata" in data, f"metadata missing in {npz_path}"
         metadata_json = str(data["metadata"])
-        arrays_present = [n for n in array_names_created if n in data]
+        # Use keys directly from NPZ
+        arrays_present = []
+        resolved_arrays: Dict[str, np.ndarray] = {}
+        for array_key in array_names_created:
+            if array_key in data:
+                arrays_present.append(array_key)
+                resolved_arrays[array_key] = data[array_key]
         start, length = writer.append_motion(
             motion_id=motion_key2id[key],
             motion_key=key,
-            npz_data=data,
+            npz_data=resolved_arrays,
             arrays_present=arrays_present,
             metadata_json=metadata_json,
         )

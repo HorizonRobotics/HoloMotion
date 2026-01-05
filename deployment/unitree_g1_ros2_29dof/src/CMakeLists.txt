@@ -64,10 +64,7 @@ install(PROGRAMS
   DESTINATION lib/${PROJECT_NAME}
   RENAME policy_node_29dof
 )
-install(PROGRAMS
-  scripts/close_ai_sport.py
-  DESTINATION share/${PROJECT_NAME}/scripts
-)
+
 # Install your models directory
 install(DIRECTORY
   models/
@@ -88,7 +85,6 @@ install(DIRECTORY
   motion_data/
   DESTINATION share/${PROJECT_NAME}/motion_data
 )
-
 # Install launch files
 install(
   DIRECTORY launch/

@@ -18,12 +18,14 @@
 from __future__ import annotations
 from copy import deepcopy
 from typing import List, Union
+import math
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.distributions import Normal
 
-from holomotion.src.modules.network_modules import MLP
+import holomotion.src.modules.network_modules as NM
 
 from loguru import logger
 
@@ -122,15 +124,24 @@ class PPOActor(nn.Module):
         )
 
         self.actor_net_type = module_config_dict.get("type", "MLP")
-        print(self.actor_net_type)
 
-        if self.actor_net_type == "MLP":
-            self.actor_module = MLP(
-                obs_serializer=obs_dim_dict,
-                module_config_dict=module_config_dict,
+        logger.info(f"actor_net_type: {self.actor_net_type}")
+
+        actor_net_class = getattr(NM, self.actor_net_type, None)
+        if actor_net_class is None or not isinstance(actor_net_class, type):
+            available_classes = [
+                name
+                for name in dir(NM)
+                if isinstance(getattr(NM, name, None), type)
+            ]
+            raise NotImplementedError(
+                f"Unknown actor_net_type: {self.actor_net_type}. "
+                f"Available classes in network_modules: {available_classes}"
             )
-        else:
-            raise NotImplementedError
+        self.actor_module = actor_net_class(
+            obs_serializer=obs_dim_dict,
+            module_config_dict=module_config_dict,
+        )
 
         self.fix_sigma = module_config_dict.get("fix_sigma", False)
         self.max_sigma = module_config_dict.get("max_sigma", 1.0)
@@ -161,9 +172,27 @@ class PPOActor(nn.Module):
         Normal.set_default_validate_args = False
 
     def _process_module_config(self, module_config_dict, num_actions):
-        for idx, output_dim in enumerate(module_config_dict["output_dim"]):
-            if output_dim == "robot_action_dim":
-                module_config_dict["output_dim"][idx] = num_actions
+        # Resolve legacy output_dim placeholders when present.
+        if "output_dim" in module_config_dict:
+            for idx, output_dim in enumerate(module_config_dict["output_dim"]):
+                if output_dim == "robot_action_dim":
+                    module_config_dict["output_dim"][idx] = num_actions
+
+        # Resolve placeholders inside output_schema heads (new-style modules).
+        output_schema = module_config_dict.get("output_schema", None)
+        if output_schema is not None:
+            # Support both flat heads and nested actor/critic schemas.
+            if "heads" in output_schema:
+                groups = {"actor": output_schema}
+            else:
+                groups = output_schema
+            for _, group_cfg in groups.items():
+                heads = group_cfg.get("heads", {})
+                for head_name, head_cfg in heads.items():
+                    dim = head_cfg.get("dim", None)
+                    if dim == "robot_action_dim":
+                        head_cfg["dim"] = num_actions
+
         return module_config_dict
 
     @property
@@ -240,13 +269,21 @@ class PPOCritic(nn.Module):
     def __init__(self, obs_dim_dict, module_config_dict):
         super(PPOCritic, self).__init__()
         self.critic_net_type = module_config_dict.get("type", "MLP")
-        if self.critic_net_type == "MLP":
-            self.critic_module = MLP(
-                obs_serializer=obs_dim_dict,
-                module_config_dict=module_config_dict,
+        critic_net_class = getattr(NM, self.critic_net_type, None)
+        if critic_net_class is None or not isinstance(critic_net_class, type):
+            available_classes = [
+                name
+                for name in dir(NM)
+                if isinstance(getattr(NM, name, None), type)
+            ]
+            raise NotImplementedError(
+                f"Unknown critic_net_type: {self.critic_net_type}. "
+                f"Available classes in network_modules: {available_classes}"
             )
-        else:
-            raise NotImplementedError
+        self.critic_module = critic_net_class(
+            obs_serializer=obs_dim_dict,
+            module_config_dict=module_config_dict,
+        )
 
     def reset(self, dones=None):
         pass

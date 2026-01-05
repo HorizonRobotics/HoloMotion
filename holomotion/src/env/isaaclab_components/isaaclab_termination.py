@@ -36,10 +36,13 @@ def global_bodylink_pos_far(
     threshold: float,
     command_name: str = "ref_motion",
     keybody_names: list[str] | None = None,
+    ref_prefix: str = "",
 ) -> torch.Tensor:
     """Any body link position deviates more than threshold (world frame)."""
     command: RefMotionCommand = env.command_manager.get_term(command_name)
-    ref_pos_w = command.ref_motion_bodylink_global_pos_cur  # [B, Nb, 3]
+    ref_pos_w = command.get_ref_motion_bodylink_global_pos_cur(
+        prefix=ref_prefix
+    )  # [B, Nb, 3]
     robot_pos_w = command.robot.data.body_pos_w  # [B, Nb, 3]
 
     keybody_idxs = _get_body_indices(command.robot, keybody_names)
@@ -61,10 +64,13 @@ def anchor_ref_z_far(
     env: ManagerBasedRLEnv,
     threshold: float,
     command_name: str = "ref_motion",
+    ref_prefix: str = "",
 ) -> torch.Tensor:
     """Anchor link z difference exceeds threshold (world frame)."""
     command: RefMotionCommand = env.command_manager.get_term(command_name)
-    ref_z = command.ref_motion_anchor_bodylink_global_pos_cur[:, -1]
+    ref_z = command.get_ref_motion_anchor_bodylink_global_pos_cur(
+        prefix=ref_prefix
+    )[:, -1]
     robot_z = command.global_robot_anchor_pos_cur[:, -1]
     return (ref_z - robot_z).abs() > threshold
 
@@ -74,6 +80,7 @@ def ref_gravity_projection_far(
     threshold: float,
     asset_name: str = "robot",
     command_name: str = "ref_motion",
+    ref_prefix: str = "",
 ) -> torch.Tensor:
     """Difference in projected gravity z-component between ref and robot exceeds threshold.
 
@@ -84,9 +91,9 @@ def ref_gravity_projection_far(
     g_w = env.scene[asset_name].data.GRAVITY_VEC_W  # [B, 3]
 
     # Reference anchor orientation (xyzw) from motion cache
-    ref_anchor_quat_xyzw = command.ref_motion_bodylink_global_rot_wxyz_cur[
-        :, command.anchor_bodylink_idx
-    ]  # [B, 4]
+    ref_anchor_quat_xyzw = command.get_ref_motion_anchor_bodylink_global_rot_wxyz_cur(
+        prefix=ref_prefix
+    )  # [B, 4]
 
     motion_projected_gravity_b = isaaclab_math.quat_apply_inverse(
         ref_anchor_quat_xyzw, g_w
@@ -119,10 +126,13 @@ def keybody_ref_z_far(
     threshold: float,
     command_name: str = "ref_motion",
     keybody_names: list[str] | None = None,
+    ref_prefix: str = "",
 ) -> torch.Tensor:
     """Any key body link z difference exceeds threshold (world frame)."""
     command: RefMotionCommand = env.command_manager.get_term(command_name)
-    ref_pos_w = command.ref_motion_bodylink_global_pos_cur  # [B, Nb, 3]
+    ref_pos_w = command.get_ref_motion_bodylink_global_pos_cur(
+        prefix=ref_prefix
+    )  # [B, Nb, 3]
     robot_pos_w = command.robot.data.body_pos_w  # [B, Nb, 3]
 
     keybody_idxs = _get_body_indices(command.robot, keybody_names)

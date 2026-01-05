@@ -9,7 +9,8 @@ defaults:
   - /env/observations: velocity_tracking/obs_velocity_tracking
   - /env/rewards: velocity_tracking/rew_velocity_tracking
   - /env/domain_randomization: domain_rand_small
-  - /env/terrain: isaaclab_cobblestone
+  - /env/terrain: isaaclab_rough_lite
+  - /modules: velocity_tracking/mlp_velotrack_unitree_g1
 
 project_name: HoloMotionVelocityTracking
 

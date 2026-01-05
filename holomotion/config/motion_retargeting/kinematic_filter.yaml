@@ -1,0 +1,22 @@
+# @package _global_
+
+defaults:
+  - _self_
+
+hydra:
+  job:
+    chdir: false
+
+io:
+  dataset_root: "" # absolute path to dataset root containing kinematic_tags.json
+
+filtering:
+  output_yaml: "" # optional; defaults to <dataset_root>/excluded_kinematic_motion_names.yaml
+
+schema:
+  across: union
+  thresholds:
+    kinematic_features.root_linear_speed.max: { op: ">", value: 10.0 }
+    kinematic_features.root_angular_speed.max: { op: ">", value: 20.0 }
+    kinematic_features.root_delta_z.max: { op: ">", value: 2.0 }
+    kinematic_features.jerk.max: { op: ">", value: 2000.0 }

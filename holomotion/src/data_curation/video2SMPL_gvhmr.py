@@ -52,9 +52,42 @@ from tqdm import tqdm
 from hmr4d.utils.geo_transform import apply_T_on_points, compute_T_ayfz2ay
 from einops import einsum, rearrange
 
+import shutil
+
+import subprocess
+
 from scipy.spatial.transform import Rotation as sRot
 
 CRF = 23  # 17 is lossless, every +6 halves the mp4 size
+
+
+def get_video_fps(video_path: Path) -> float:
+    cap = cv2.VideoCapture(str(video_path))
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    cap.release()
+    if fps is None or fps <= 1e-6:
+        raise RuntimeError(f"Failed to read FPS from video: {video_path}")
+    return float(fps)
+
+def is_close_fps(a: float, b: float, tol: float = 0.02) -> bool:
+    return abs(a - b) <= tol
+
+
+def transcode_to_30fps_cfr(src: Path, dst: Path, crf: int) -> None:
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", str(src),
+        "-vf", "fps=30",
+        "-vsync", "cfr",
+        "-c:v", "libx264",
+        "-crf", str(crf),
+        "-preset", "medium",
+        "-c:a", "copy",
+        str(dst),
+    ]
+    subprocess.run(cmd, check=True)
+
 
 
 def parse_args_to_cfg(args=None):
@@ -105,14 +138,24 @@ def parse_args_to_cfg(args=None):
     Path(cfg.preprocess_dir).mkdir(parents=True, exist_ok=True)
 
     # Copy raw-input-video to video_path
-    Log.info(f"[Copy Video] {video_path} -> {cfg.video_path}")
-    if not Path(cfg.video_path).exists() or get_video_lwh(video_path)[0] != get_video_lwh(cfg.video_path)[0]:
-        reader = get_video_reader(video_path)
-        writer = get_writer(cfg.video_path, fps=30, crf=CRF)
-        for img in tqdm(reader, total=get_video_lwh(video_path)[0], desc=f"Copy"):
-            writer.write_frame(img)
-        writer.close()
-        reader.close()
+    Log.info(f"[Prepare Video] {video_path} -> {cfg.video_path}")
+
+    src_len = get_video_lwh(video_path)[0]
+    dst_path = Path(cfg.video_path)
+
+    need_regen = (not dst_path.exists()) or (get_video_lwh(dst_path)[0] != src_len)
+
+    src_fps = get_video_fps(video_path)
+    Log.info(f"[Input FPS]: {src_fps:.4f}")
+
+    if need_regen:
+        if is_close_fps(src_fps, 30.0):
+            Log.info("[FPS OK] ~30fps, copy without re-encoding.")
+            dst_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(video_path, dst_path)
+        else:
+            Log.info("[FPS CONVERT] transcoding to 30fps with constant speed.")
+            transcode_to_30fps_cfr(video_path, Path(cfg.video_path), CRF)
 
     return cfg
 

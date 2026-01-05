@@ -13,10 +13,19 @@ precomputed_npz_root: ???
 hdf5_root: ???
 
 # Runtime
+# Optimal parameters for distributed JuiceFS training with millions of clips:
+# - chunks_t: Larger chunks (2048-4096) reduce metadata overhead and improve sequential read performance on JuiceFS
+#   Balance: larger chunks = better sequential I/O, but too large wastes memory
 chunks_t: 1024
+# - compression: lzf provides fast decompression suitable for training workloads
+#   Alternatives: gzip (better compression, slower), none (fastest but largest files)
 compression: lzf  # lzf|gzip|none
-shard_target_gb: 2.0
-num_jobs: 8
+# - shard_target_gb: Larger shards (5-10 GB) reduce shard count and metadata overhead for millions of clips
+#   Balance: fewer shards = less metadata overhead, better for distributed access; more shards = better parallelism
+#   For millions of clips, 5-10 GB reduces shard count while maintaining good parallelism
+shard_target_gb: 1.0
+# - num_jobs: Parallel workers for packing process (should match available CPU cores)
+num_jobs: 16
 debug_local_mode: false
 
 

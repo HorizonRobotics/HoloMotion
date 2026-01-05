@@ -16,6 +16,22 @@ from omegaconf import DictConfig, ListConfig, OmegaConf
 from loguru import logger
 
 
+def _get_dof_indices(
+    robot: Articulation,
+    key_dofs: list[str] | None,
+) -> list[int] | None:
+    if key_dofs is None:
+        return list(range(len(robot.dof_names)))
+    dof_indices = []
+    for name in key_dofs:
+        if name not in robot.joint_names:
+            raise ValueError(
+                f"DOF '{name}' not found in robot.joint_names: {robot.joint_names}"
+            )
+        dof_indices.append(robot.joint_names.index(name))
+    return dof_indices
+
+
 def _get_body_indices(
     robot: Articulation,
     keybody_names: list[str] | None,
@@ -46,9 +62,7 @@ def _get_body_indices(
 def resolve_holo_config(value):
     def _sanitize_config_object(obj):
         for attr, attr_value in vars(obj).items():
-            sanitized_value = resolve_holo_config(
-                attr_value
-            )
+            sanitized_value = resolve_holo_config(attr_value)
             setattr(obj, attr, sanitized_value)
         return obj
 
@@ -63,16 +77,10 @@ def resolve_holo_config(value):
             ):
                 return _sanitize_config_object(instantiated)
             return instantiated
-        return {
-            key: resolve_holo_config(item)
-            for key, item in value.items()
-        }
+        return {key: resolve_holo_config(item) for key, item in value.items()}
 
     if isinstance(value, list):
-        return [
-            resolve_holo_config(item)
-            for item in value
-        ]
+        return [resolve_holo_config(item) for item in value]
 
     if hasattr(value, "__dict__") and not callable(value):
         return _sanitize_config_object(value)

@@ -1,6 +1,6 @@
 source train.env
 
-smplx_src_dir="assets/test_data/motion_retargeting"
+smplx_src_dir="assets/test_data/motion_retargeting/"
 gmr_tgt_dir="data/gmr_retargeted/AMASS_test/"
 
 

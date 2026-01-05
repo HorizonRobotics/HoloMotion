@@ -115,11 +115,11 @@ Our ROS2 package facilitates the deployment of the exported ONNX models, enablin
 
 ```
 @software{holomotion_2025,
-  author = {Maiyue Chen, Kaihui Wang, Bo Zhang, Yi Ren, Zihao Zhu, Yucheng Wang, Zhizhong Su},
+  author = {Maiyue Chen, Kaihui Wang, Bo Zhang, Yi Ren, Zihao Zhu, Xihan Ma, Qijun Huang, Zhiyuan Yang, Yucheng Wang, Zhizhong Su},
   title = {HoloMotion: A Foundation Model for Whole-Body Humanoid Control},
   year = {2025},
   month = November,
-  version = {1.0.0},
+  version = {1.1.0},
   url = {https://github.com/HorizonRobotics/HoloMotion},
   license = {Apache-2.0}
 }

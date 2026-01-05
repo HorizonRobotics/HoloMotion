@@ -204,6 +204,16 @@ def compile_config_obs(config) -> None:
     """
     config = copy.deepcopy(config)
 
+    # Older configs provide obs_dims and expect algo_obs_dim_dict to be built here.
+    # Newer serialization-aware configs may omit obs_dims entirely and let the
+    # environment / serializers define observation dimensions at runtime.
+    if not hasattr(config.env.config.obs, "obs_dims"):
+        logger.info(
+            "config.env.config.obs.obs_dims not found; "
+            "skipping algo_obs_dim_dict pre-computation"
+        )
+        return config
+
     obs_dim_dict = dict()
     _obs_key_list = config.env.config.obs.obs_dict
     _aux_obs_key_list = config.env.config.obs.obs_auxiliary
@@ -240,7 +250,24 @@ def compile_config_obs(config) -> None:
                 logger.info(
                     f"{obs_key}: {key} has dim: {auxiliary_obs_dims[key]}"
                 )
-    config.algo.algo.config.algo_obs_dim_dict = obs_dim_dict
-    logger.info(f"algo_obs_dim_dict: {config.algo.algo.config.algo_obs_dim_dict}")
+    # Attach to algo config only when the key already exists (older configs).
+    # This avoids struct errors for minimal eval configs that don't declare it.
+    if not hasattr(config, "algo") or not hasattr(config.algo, "config"):
+        logger.info(
+            "config.algo.config not found; skipping algo_obs_dim_dict pre-computation"
+        )
+        return config
+
+    algo_cfg = config.algo.config
+    algo_container = OmegaConf.to_container(algo_cfg, resolve=False)
+    if "algo_obs_dim_dict" not in algo_container:
+        logger.info(
+            "config.algo.config.algo_obs_dim_dict not present; "
+            "skipping algo_obs_dim_dict pre-computation"
+        )
+        return config
+
+    algo_cfg.algo_obs_dim_dict = obs_dim_dict
+    logger.info(f"algo_obs_dim_dict: {algo_cfg.algo_obs_dim_dict}")
 
     return config

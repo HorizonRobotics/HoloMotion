@@ -1,0 +1,34 @@
+# @package _global_
+
+defaults:
+  - _self_
+
+# Evaluation toggles
+headless: false               # true to run without GUI
+record_video: false           # true to save MP4 recordings
+video_width: 1280
+video_height: 720
+video_fps: 30
+camera_tracking: true         # true to make camera follow robot root body
+camera_height_offset: 0.3     # small offset (meters) above robot root for camera lookat point
+                              # NOTE: This offsets where camera LOOKS AT, not camera position
+                              # Use small values (0.2-0.5m) for proper framing, not large values
+camera_distance: 4.0          # camera distance from lookat point (meters)
+                              # Larger values = camera further away, smaller values = closer
+camera_azimuth: 150.0          # default viewer/offscreen azimuth (deg), side-ish view
+camera_elevation: -20.0       # default viewer/offscreen elevation (deg), slight downward angle
+
+# Termination / scheduling
+max_policy_steps: 0        # 0 = unlimited; used in headless if no motion
+unitree_viewer_dt: 0.0167  # ~60 Hz viewer sync
+unitree_domain_id: 0
+unitree_interface: "lo"
+unitree_use_joystick: false
+unitree_joystick_type: "xbox"
+unitree_print_scene_information: false
+
+# Debug options
+debug_anchor_obs: false           # when true, dump anchor pose/obs debug CSV for sim2sim
+debug_anchor_obs_interval: 50     # log every N policy steps (>=1)
+use_isaac_root_alignment: true    # align free root state to IsaacLab reference root at frame 0
+isaac_action_playback: false      # when true, use per-frame actions recorded from IsaacLab instead of ONNX policy

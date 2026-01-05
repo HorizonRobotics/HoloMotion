@@ -1,0 +1,57 @@
+# @package _global_
+
+defaults:
+  - _self_
+
+hydra:
+  job:
+    chdir: false
+
+io:
+  src_dir: ???
+  robot_config: ???
+  out_root: ???
+  ref_dir: holomotion/src/motion_retargeting/utils
+
+processing:
+  target_fps: 50
+  fast_interpolate: true
+  skip_existing: true
+  debug_mode: false
+
+ray:
+  num_workers: 0
+  ray_address: ""
+
+naming:
+  emit_prefixed: true
+  emit_legacy: false
+
+preprocess:
+  # Available stages:
+  # ['filename_as_motionkey','legacy_to_ref_keys','add_legacy_keys',
+  #  'slicing','apply_butterworth_filter','add_padding','tagging']
+  # Empty list [] means no preprocessing stages applied
+  pipeline: []
+
+slicing:
+  window_size: 500
+  overlap: 50
+
+filtering:
+  type: butterworth
+  butter_cutoff_hz: 3.0
+  butter_order: 4
+
+padding:
+  # Robot config path for FK and default joint angles
+  # If empty, uses io.robot_config
+  robot_config_path: ${io.robot_config}
+  # Duration of stand-still padding before/after motion (seconds)
+  stand_still_time: 1.0
+  # Duration of transition between default pose and motion (seconds)
+  transition_time: 1.5
+
+tagging:
+  # when empty, write tags to: <out_root>/kinematic_tags.json
+  output_json_path: ""

@@ -28,7 +28,11 @@ output_dir: ${experiment_dir}/output
 experiment_save_dir: ???
 
 dump_npzs: false
-export_policy: true
+export_policy: false
+
+algo:
+  config:
+    dynamo_backend: null
 
 env:
   config:

@@ -82,8 +82,8 @@ If you would like to run training on a specific GPU, just modify the GPU id in t
 
 You may want to have more or less frequent logging and model dumping intervals. You can alter these intervals by adding the following options:
 
-- `algo.algo.config.save_interval=X` : The checkpoint will be saved every `X` learning iterations.
-- `algo.algo.config.log_interval=Y`: The logging information will be displayed every `Y` learning iterations.
+- `algo.config.save_interval=X` : The checkpoint will be saved every `X` learning iterations.
+- `algo.config.log_interval=Y`: The logging information will be displayed every `Y` learning iterations.
 
 #### Where is the checkpoint dumped ?
 

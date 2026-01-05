@@ -62,7 +62,7 @@ env:
           urdf_dof_names: ${robot.dof_names}
           urdf_body_names: ${robot.body_names}
           arm_dof_names: ${robot.arm_dof_names}
-          torso_dof_names: ${robot.torso_dof_names}
+          waist_dof_names: ${robot.waist_dof_names}
           leg_dof_names: ${robot.leg_dof_names}
           arm_body_names: ${robot.arm_body_names}
           torso_body_names: ${robot.torso_body_names}

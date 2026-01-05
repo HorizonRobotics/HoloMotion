@@ -61,15 +61,16 @@ env:
           resampling_time_range: [3, 10.0]
           rel_standing_envs: 0.25
           rel_heading_envs: 1.0
-          heading_command: false
+          heading_command: true
+          heading_control_stiffness: 0.5
           debug_vis: true
           ranges:
             lin_vel_x: [-0.6, 1.0]
             lin_vel_y: [-0.4, 0.4]
             ang_vel_z: [-0.5, 0.5]
-            heading: null
+            heading: [-3.14, 3.14]
           limit_ranges:
             lin_vel_x: [-0.5, 1.0]
             lin_vel_y: [-0.3, 0.3]
             ang_vel_z: [-0.2, 0.2]
-            heading: null
+            heading: [-3.14, 3.14]

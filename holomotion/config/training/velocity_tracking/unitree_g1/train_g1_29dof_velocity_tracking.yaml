@@ -1,0 +1,31 @@
+# @package _global_
+
+defaults:
+  - /training: train_base
+  - /algo: ppo
+  - /robot: unitree/G1/29dof/29dof_training_isaaclab
+  - /env: velocity_tracking
+  - /env/terminations: termination_velocity_tracking
+  - /env/observations: velocity_tracking/obs_velocity_tracking_unitree_g1
+  - /env/rewards: velocity_tracking/rew_velocity_tracking_unitree_g1
+  - /env/domain_randomization: domain_rand_small_with_pd
+  - /env/terrain: isaaclab_rough_lite
+  - /modules: velocity_tracking/mlp_velotrack_unitree_g1
+
+project_name: HoloMotionVelocityTrackingG1
+
+checkpoint: "logs/HoloMotionVelocityTrackingG1/20251204_154602-unitree_g1/train_g1_29dof_velocity_tracking/model_11000.pt"
+
+motion_h5_path: null
+
+algo:
+  config:
+    save_interval: 100
+    dynamo_backend: "inductor"
+    # mixed_precision: "bf16"
+    # storage_dtype: bfloat16
+    enable_online_eval: false
+
+    module_dict:
+      actor: ${modules.actor}
+      critic: ${modules.critic}

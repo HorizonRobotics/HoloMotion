@@ -16,7 +16,6 @@
 
 import json
 import os
-import pickle
 import statistics
 import time
 from collections import deque
@@ -32,11 +31,11 @@ import numpy as np
 from loguru import logger
 from tabulate import tabulate
 from tqdm import tqdm
+from omegaconf import OmegaConf
 
 
 from holomotion.src.modules.agent_modules import PPOActor, PPOCritic
 from hydra.utils import get_class
-from isaaclab.app import AppLauncher
 
 
 class EmpiricalNormalization(nn.Module):
@@ -204,6 +203,7 @@ class RolloutStorage(nn.Module):
         actions_shape,
         device="cpu",
         command_name: str = None,
+        storage_dtype: torch.dtype | None = None,
     ):
         super().__init__()
         self.device = device
@@ -211,12 +211,20 @@ class RolloutStorage(nn.Module):
         self.num_envs = num_envs
         self.command_name = command_name
 
-        # Core storage
+        # Use bfloat16 for large tensors (obs, actions, mu, sigma) to save memory.
+        # Keep float32 for values used in GAE/advantage computation for precision.
+        low_prec = (
+            storage_dtype if storage_dtype is not None else torch.float32
+        )
+        high_prec = torch.float32
+
+        # Core storage (can use lower precision)
         self.observations = torch.zeros(
             num_transitions_per_env,
             num_envs,
             *actor_obs_shape,
             device=self.device,
+            dtype=low_prec,
         )
         self.privileged_observations = (
             torch.zeros(
@@ -224,59 +232,88 @@ class RolloutStorage(nn.Module):
                 num_envs,
                 *critic_obs_shape,
                 device=self.device,
+                dtype=low_prec,
             )
             if critic_obs_shape
             else None
-        )
-        self.rewards = torch.zeros(
-            num_transitions_per_env, num_envs, 1, device=self.device
         )
         self.actions = torch.zeros(
             num_transitions_per_env,
             num_envs,
             *actions_shape,
             device=self.device,
+            dtype=low_prec,
         )
         self.teacher_actions = torch.zeros(
             num_transitions_per_env,
             num_envs,
             *actions_shape,
             device=self.device,
-        )
-        self.dones = torch.zeros(
-            num_transitions_per_env, num_envs, 1, device=self.device
-        ).byte()
-
-        # PPO specific
-        self.values = torch.zeros(
-            num_transitions_per_env, num_envs, 1, device=self.device
-        )
-        self.actions_log_prob = torch.zeros(
-            num_transitions_per_env, num_envs, 1, device=self.device
+            dtype=low_prec,
         )
         self.mu = torch.zeros(
             num_transitions_per_env,
             num_envs,
             *actions_shape,
             device=self.device,
+            dtype=low_prec,
         )
         self.sigma = torch.zeros(
             num_transitions_per_env,
             num_envs,
             *actions_shape,
             device=self.device,
+            dtype=low_prec,
+        )
+        self.dones = torch.zeros(
+            num_transitions_per_env, num_envs, 1, device=self.device
+        ).byte()
+
+        # PPO specific (keep high precision for numerical stability)
+        self.rewards = torch.zeros(
+            num_transitions_per_env,
+            num_envs,
+            1,
+            device=self.device,
+            dtype=high_prec,
+        )
+        self.values = torch.zeros(
+            num_transitions_per_env,
+            num_envs,
+            1,
+            device=self.device,
+            dtype=high_prec,
+        )
+        self.actions_log_prob = torch.zeros(
+            num_transitions_per_env,
+            num_envs,
+            1,
+            device=self.device,
+            dtype=high_prec,
         )
         self.returns = torch.zeros(
-            num_transitions_per_env, num_envs, 1, device=self.device
+            num_transitions_per_env,
+            num_envs,
+            1,
+            device=self.device,
+            dtype=high_prec,
         )
         self.advantages = torch.zeros(
-            num_transitions_per_env, num_envs, 1, device=self.device
+            num_transitions_per_env,
+            num_envs,
+            1,
+            device=self.device,
+            dtype=high_prec,
         )
 
         # Store velocity commands for advantage normalization
         self.velocity_commands = (
             torch.zeros(
-                num_transitions_per_env, num_envs, 4, device=self.device
+                num_transitions_per_env,
+                num_envs,
+                4,
+                device=self.device,
+                dtype=high_prec,
             )
             if command_name == "base_velocity"
             else None
@@ -418,12 +455,64 @@ class PPO:
         self.is_offline_eval = is_offline_eval
 
         self._setup_accelerator()
+        self._preview_weighted_bin_config()
         self._setup_environment()
         self._setup_configs()
         self._setup_seeding()
         self._setup_data_buffers()
         self._setup_models_and_optimizer()
         self._setup_simulator()
+
+        # Video recording toggle for offline evaluation (env.render() rgb_array)
+        self.record_video: bool = bool(self.config.get("record_video", False))
+
+    def _preview_weighted_bin_config(self) -> None:
+        """Preview weighted-bin sampling using manifest-level stats before cache init."""
+        sampling_strategy_cfg = self.config.get("sampling_strategy", None)
+        if sampling_strategy_cfg is None:
+            curriculum_cfg = self.config.get("curriculum", {})
+            if bool(curriculum_cfg.get("enabled", False)):
+                return
+            sampling_strategy = "uniform"
+        else:
+            sampling_strategy = str(sampling_strategy_cfg).lower()
+        if sampling_strategy != "weighted_bin":
+            return
+
+        weighted_bin_cfg = dict(self.config.get("weighted_bin", {}))
+
+        # Resolve motion config and manifest path(s) from env_config without constructing env.
+        motion_cfg = self.env_config.config.robot.motion
+        backend = motion_cfg.get("backend", "hdf5_simple")
+        if backend != "hdf5_simple":
+            return
+        train_hdf5_roots = motion_cfg.get("train_hdf5_roots", None)
+        manifest_paths = []
+        if train_hdf5_roots:
+            for root in train_hdf5_roots:
+                manifest_paths.append(os.path.join(str(root), "manifest.json"))
+        else:
+            hdf5_root = motion_cfg.get("hdf5_root", None)
+            if not hdf5_root:
+                return
+            manifest_paths.append(
+                os.path.join(str(hdf5_root), "manifest.json")
+            )
+
+        cache_cfg = motion_cfg.get("cache", {})
+        batch_size = int(cache_cfg.get("max_num_clips", 1))
+
+        from holomotion.src.training.h5_dataloader import (
+            preview_weighted_bin_from_manifest,
+        )
+
+        preview_weighted_bin_from_manifest(
+            manifest_path=manifest_paths
+            if len(manifest_paths) > 1
+            else manifest_paths[0],
+            batch_size=batch_size,
+            cfg=weighted_bin_cfg,
+        )
 
     def _setup_accelerator(self):
         if not self.is_offline_eval:
@@ -490,31 +579,128 @@ class PPO:
         # Device string from accelerator (handles distributed training)
         device_str = str(self.device)
 
+        # Delayed import to ensure Accelerate is fully initialized before IsaacLab
+        from isaaclab.app import AppLauncher
+
+        # Stagger IsaacSim AppLauncher initialization across distributed ranks
+        # Use local rank per node to stagger independently on each node
+        if self.is_distributed:
+            self.accelerator.wait_for_everyone()
+            base_delay_s = float(
+                os.environ.get("HOLOMOTION_ISAAC_STAGGER_SEC", "5.0")
+            )
+            # Get local rank within the node (per-node staggering)
+            local_rank = getattr(self.accelerator, "local_process_index", None)
+            if local_rank is None:
+                # Fallback to environment variable if Accelerate doesn't provide it
+                local_rank = int(os.environ.get("LOCAL_RANK", 0))
+            delay_s = base_delay_s * float(local_rank)
+            if delay_s > 0.0:
+                logger.info(
+                    f"[Global Rank {self.gpu_global_rank}, Local Rank {local_rank}] "
+                    f"Sleeping {delay_s:.1f}s before IsaacSim AppLauncher init"
+                )
+            time.sleep(delay_s)
+
         # Create AppLauncher with accelerator device
+        # Enable cameras only when needed:
+        # - headless & recording: True (offscreen rendering)
+        # - headless & not recording: False (maximize performance)
+        # - with GUI: True
+        _record_video = bool(self.config.get("record_video", False))
+        enable_cameras = _record_video or (not self.headless)
+
+        # Explicitly disable Omniverse multi-GPU rendering to avoid per-process
+        # MGPU context creation across all visible GPUs.
+        kit_args_str = (
+            "--/renderer/multiGpu/enabled=false "
+            "--/renderer/multiGpu/autoEnable=false "
+            "--/renderer/multiGpu/maxGpuCount=1"
+        )
+
         app_launcher_flags = {
             "headless": self.headless,
-            "enable_cameras": not self.headless,
+            "enable_cameras": enable_cameras,
+            # Hint to keep viewport active in headless mode when recording
+            "video": _record_video,
             "device": device_str,
+            "kit_args": kit_args_str,
         }
         self._sim_app_launcher = AppLauncher(**app_launcher_flags)
         self._sim_app = self._sim_app_launcher.app
 
         # Create environment instance
         env_class = get_class(self.env_config._target_)
+
+        # If the actor/critic modules define obs_schema, propagate them into the
+        # environment obs config so that serializers can be built there using
+        # IsaacLab atomic observation functions as the shape oracle.
+        actor_cfg = getattr(self.config.module_dict, "actor", None)
+        critic_cfg = getattr(self.config.module_dict, "critic", None)
+        if hasattr(self.env_config, "config"):
+            env_cfg = self.env_config.config
+            if hasattr(env_cfg, "obs"):
+                env_obs_cfg = env_cfg.obs
+                merged_schema = {}
+                if actor_cfg is not None:
+                    actor_schema = actor_cfg.get("obs_schema", None)
+                    if actor_schema is not None:
+                        # Expect actor_schema to be keyed by group (e.g. "policy").
+                        for group_name, group_cfg in actor_schema.items():
+                            merged_schema[group_name] = group_cfg
+                if critic_cfg is not None:
+                    critic_schema = critic_cfg.get("obs_schema", None)
+                    if critic_schema is not None:
+                        for group_name, group_cfg in critic_schema.items():
+                            merged_schema[group_name] = group_cfg
+                if merged_schema:
+                    env_obs_struct = OmegaConf.is_struct(env_obs_cfg)
+                    OmegaConf.set_struct(env_obs_cfg, False)
+                    env_obs_cfg.obs_schema = merged_schema
+                    OmegaConf.set_struct(env_obs_cfg, env_obs_struct)
+
+        # Set render_mode="rgb_array" only when recording is requested to avoid overhead otherwise
+        render_mode = (
+            "rgb_array"
+            if bool(self.config.get("record_video", False))
+            else None
+        )
         self.env = env_class(
             config=self.env_config.config,
             device=device_str,
             headless=self.headless,
             log_dir=self.log_dir,
             accelerator=self.accelerator,
+            render_mode=render_mode,
         )
 
     def _setup_configs(self):
         self.num_envs: int = self.env.config.num_envs
-        self.num_obs = self.config.algo_obs_dim_dict["policy"]
-        self.num_privileged_obs = self.config.algo_obs_dim_dict[
-            "critic"
-        ]
+        algo_obs_dim_dict = self.config.get("algo_obs_dim_dict", None)
+        if (
+            algo_obs_dim_dict is not None
+            and "policy" in algo_obs_dim_dict
+            and "critic" in algo_obs_dim_dict
+        ):
+            self.num_obs = int(algo_obs_dim_dict["policy"])
+            self.num_privileged_obs = int(algo_obs_dim_dict["critic"])
+        else:
+            obs_serializer = getattr(self.env, "obs_serializer", None)
+            critic_obs_serializer = getattr(
+                self.env, "critic_obs_serializer", None
+            )
+            if obs_serializer is None:
+                raise RuntimeError(
+                    "algo_obs_dim_dict not set and env.obs_serializer "
+                    "is missing; cannot infer observation dimensions."
+                )
+            self.num_obs = int(obs_serializer.obs_flat_dim)
+            if critic_obs_serializer is not None:
+                self.num_privileged_obs = int(
+                    critic_obs_serializer.obs_flat_dim
+                )
+            else:
+                self.num_privileged_obs = 0
         self.num_actions = self.env.config.robot.actions_dim
 
         self.command_name = list(self.env.config.commands.keys())[0]
@@ -532,6 +718,7 @@ class PPO:
         self.critic_learning_rate = self.config.get(
             "critic_learning_rate", self.config.get("learning_rate", 3e-4)
         )
+
         self.optimizer_type = self.config.optimizer_type
         self.clip_param = self.config.clip_param
         self.num_learning_epochs = self.config.num_learning_epochs
@@ -554,6 +741,31 @@ class PPO:
         )
         self.global_advantage_norm: bool = bool(
             self.config.get("global_advantage_norm", True)
+        )
+        # Curriculum / sampling strategy config
+        self.curriculum_cfg = dict(self.config.get("curriculum", {}))
+        sampling_strategy_cfg = self.config.get("sampling_strategy", None)
+        if sampling_strategy_cfg is None:
+            if bool(self.curriculum_cfg.get("enabled", False)):
+                sampling_strategy = "curriculum"
+            else:
+                sampling_strategy = "uniform"
+        else:
+            sampling_strategy = str(sampling_strategy_cfg).lower()
+        valid_strategies = {"uniform", "weighted_bin", "curriculum"}
+        if sampling_strategy not in valid_strategies:
+            raise ValueError(
+                f"Invalid sampling_strategy '{sampling_strategy}'. "
+                f"Expected one of {sorted(valid_strategies)}."
+            )
+        self.sampling_strategy: str = sampling_strategy
+        self.curriculum_enabled: bool = self.sampling_strategy == "curriculum"
+        self.weighted_bin_cfg = dict(self.config.get("weighted_bin", {}))
+        self.dump_sampled_keys: bool = bool(
+            self.weighted_bin_cfg.get("dump_sampled_keys", False)
+        )
+        self.dump_sampled_keys_interval: int = int(
+            self.weighted_bin_cfg.get("dump_sampled_keys_interval", 0)
         )
 
         # Observation normalization
@@ -642,6 +854,15 @@ class PPO:
             device=self.device,
         )
 
+        # Storage dtype for memory efficiency (bfloat16 saves ~50% on large tensors)
+        storage_dtype_str = self.config.get("storage_dtype", "float32")
+        storage_dtype_map = {
+            "float32": torch.float32,
+            "float16": torch.float16,
+            "bfloat16": torch.bfloat16,
+        }
+        storage_dtype = storage_dtype_map.get(storage_dtype_str, torch.float32)
+
         self.storage = RolloutStorage(
             self.num_envs,
             self.num_steps_per_env,
@@ -650,6 +871,7 @@ class PPO:
             [self.num_actions],
             device=self.device,
             command_name=self.command_name,
+            storage_dtype=storage_dtype,
         )
         self.transition = RolloutStorage.Transition()
 
@@ -661,12 +883,6 @@ class PPO:
             self.use_dagger = True
         else:
             self.use_dagger = False
-        self.actor_type = self.config.module_dict.actor.get("type", "MLP")
-        self.critic_type = self.config.module_dict.critic.get("type", "MLP")
-        if self.actor_type == "ConvMoEMLPV2":
-            self.use_MoE = True
-        else:
-            self.use_MoE = False
         self.actor = PPOActor(
             obs_dim_dict=self.obs_serializer,
             module_config_dict=self.config.module_dict.actor,
@@ -678,8 +894,6 @@ class PPO:
             obs_dim_dict=self.critic_obs_serializer,
             module_config_dict=self.config.module_dict.critic,
         ).to(self.device)
-
-        optimizer_class = getattr(optim, self.optimizer_type)
 
         if self.is_main_process:
             logger.info("Actor:\n" + str(self.actor))
@@ -701,7 +915,7 @@ class PPO:
                 )
             )
 
-        # Create separate optimizers for actor and critic
+        optimizer_class = getattr(optim, self.optimizer_type)
         self.actor_optimizer = optimizer_class(
             self.actor.parameters(),
             lr=self.actor_learning_rate,
@@ -800,16 +1014,100 @@ class PPO:
             eps=self.obs_norm_epsilon,
         ).to(self.device)
 
+    def _normalize_advantages_global_by_move_mask(self) -> None:
+        """Global advantage normalization split by move vs static for base_velocity.
+
+        Assumes:
+        - self.storage.advantages: [T, N, 1]
+        - self.storage.velocity_commands: [T, N, 4] with first channel as move_mask
+          (1.0 for move, 0.0 for static) and remaining channels [vx, vy, vyaw].
+        """
+        if self.storage.velocity_commands is None:
+            return
+
+        advantages_flat = self.storage.advantages.view(-1).float()
+        if advantages_flat.numel() == 0:
+            return
+
+        vel_flat = self.storage.velocity_commands.view(
+            -1, self.storage.velocity_commands.shape[-1]
+        )
+        move_channel = vel_flat[:, 0]
+        move_mask = move_channel > 0.5
+        static_mask = ~move_mask
+
+        count_all = torch.tensor(
+            [advantages_flat.numel()],
+            device=self.device,
+            dtype=torch.float32,
+        )
+        sum_all_local = advantages_flat.sum()
+        sqsum_all_local = (advantages_flat * advantages_flat).sum()
+        if self.is_distributed:
+            count_all_g = self.accelerator.reduce(count_all, reduction="sum")
+            sum_all_g = self.accelerator.reduce(sum_all_local, reduction="sum")
+            sqsum_all_g = self.accelerator.reduce(
+                sqsum_all_local, reduction="sum"
+            )
+        else:
+            count_all_g = count_all
+            sum_all_g = sum_all_local
+            sqsum_all_g = sqsum_all_local
+        mean_all = sum_all_g / count_all_g
+        var_all = (sqsum_all_g / count_all_g) - mean_all * mean_all
+        std_all = torch.sqrt(var_all.clamp_min(1.0e-8))
+
+        def _group_stats(mask: torch.Tensor):
+            if not mask.any():
+                return mean_all, std_all
+            mask_f = mask.float()
+            count_local = mask_f.sum()
+            sum_local = (advantages_flat * mask_f).sum()
+            sqsum_local = (advantages_flat * advantages_flat * mask_f).sum()
+            if self.is_distributed:
+                count_g = self.accelerator.reduce(count_local, reduction="sum")
+                sum_g = self.accelerator.reduce(sum_local, reduction="sum")
+                sqsum_g = self.accelerator.reduce(sqsum_local, reduction="sum")
+            else:
+                count_g = count_local
+                sum_g = sum_local
+                sqsum_g = sqsum_local
+            if count_g.item() <= 0:
+                return mean_all, std_all
+            mean = sum_g / count_g
+            var = (sqsum_g / count_g) - mean * mean
+            std = torch.sqrt(var.clamp_min(1.0e-8))
+            return mean, std
+
+        move_mean, move_std = _group_stats(move_mask)
+        static_mean, static_std = _group_stats(static_mask)
+
+        advantages_norm = advantages_flat.clone()
+        if move_mask.any():
+            advantages_norm[move_mask] = (
+                advantages_flat[move_mask] - move_mean
+            ) / move_std
+        if static_mask.any():
+            advantages_norm[static_mask] = (
+                advantages_flat[static_mask] - static_mean
+            ) / static_std
+
+        self.storage.advantages = advantages_norm.view_as(
+            self.storage.advantages
+        )
+
     def _setup_simulator(self):
         _ = self.env.reset_all()
 
     def act(self, obs, critic_obs):
         """Act function using separate actor and critic."""
-        actions, actions_log_prob, mu, sigma, _ = self.actor(
-            obs, actions=None, mode="sampling"
-        )
+        with self.accelerator.autocast():
+            actions, actions_log_prob, mu, sigma, _ = self.actor(
+                obs, actions=None, mode="sampling"
+            )
+            values = self.critic(critic_obs)
         self.transition.actions = actions.detach()
-        self.transition.values = self.critic(critic_obs).detach()
+        self.transition.values = values.detach()
         self.transition.actions_log_prob = actions_log_prob.detach()
         self.transition.action_mean = mu.detach()
         self.transition.action_sigma = sigma.detach()
@@ -845,7 +1143,9 @@ class PPO:
 
     def compute_returns(self, last_critic_obs):
         """Compute returns and optionally normalize advantages (RSL-style)."""
-        last_values = self.critic(last_critic_obs).detach()
+        with self.accelerator.autocast():
+            last_values = self.critic(last_critic_obs)
+        last_values = last_values.detach()
         self.storage.compute_returns(
             last_values,
             self.gamma,
@@ -861,10 +1161,8 @@ class PPO:
         """Update function that matches rsl_rl exactly."""
         mean_value_loss = 0
         mean_surrogate_loss = 0
-        mean_actor_load_balancing_loss = 0
         mean_entropy = 0
         mean_dagger_loss = 0
-        actor_load_balancing_loss = None
 
         adaptive_kl_enabled = (
             self.desired_kl is not None and self.schedule == "adaptive"
@@ -914,11 +1212,20 @@ class PPO:
                         std = flat.std().clamp_min(1.0e-8)
                     advantages_batch = (advantages_batch - mean) / std
 
-            _, actions_log_prob_batch, mu_batch, sigma_batch, entropy_batch = (
-                self.actor(obs_batch, actions=actions_batch, mode="logp")
-            )
+            with self.accelerator.autocast():
+                (
+                    _,
+                    actions_log_prob_batch,
+                    mu_batch,
+                    sigma_batch,
+                    entropy_batch,
+                ) = self.actor(obs_batch, actions=actions_batch, mode="logp")
+                value_pred = self.critic(critic_obs_batch)
             actions_log_prob_batch = actions_log_prob_batch.float()
-            value_batch = self.critic(critic_obs_batch)
+
+            value_batch = value_pred
+            returns_batch_norm = returns_batch
+            target_values_batch_norm = target_values_batch
 
             if adaptive_kl_enabled:
                 with torch.no_grad():
@@ -944,8 +1251,8 @@ class PPO:
 
                     km = float(kl_mean_global.item())
                     min_lr = 1e-6
-                    max_lr = 1e-2
-                    lr_scaler = 1.5
+                    max_lr = 1
+                    lr_scaler = 1.2
                     if km > self.desired_kl * 2.0:
                         self.actor_learning_rate = max(
                             min_lr, self.actor_learning_rate / lr_scaler
@@ -961,6 +1268,7 @@ class PPO:
                             max_lr, self.critic_learning_rate * lr_scaler
                         )
 
+                # Update learning rates for all param groups
                 for param_group in self.actor_optimizer.param_groups:
                     param_group["lr"] = self.actor_learning_rate
                 for param_group in self.critic_optimizer.param_groups:
@@ -979,16 +1287,18 @@ class PPO:
 
             # Value function loss
             if self.use_clipped_value_loss:
-                value_clipped = target_values_batch + (
-                    value_batch - target_values_batch
+                value_clipped = target_values_batch_norm + (
+                    value_batch - target_values_batch_norm
                 ).clamp(-self.clip_param, self.clip_param)
-                value_losses = (value_batch - returns_batch).pow(2)
-                value_losses_clipped = (value_clipped - returns_batch).pow(2)
+                value_losses = (value_batch - returns_batch_norm).pow(2)
+                value_losses_clipped = (
+                    value_clipped - returns_batch_norm
+                ).pow(2)
                 value_loss = torch.max(
                     value_losses, value_losses_clipped
                 ).mean()
             else:
-                value_loss = (returns_batch - value_batch).pow(2).mean()
+                value_loss = (returns_batch_norm - value_batch).pow(2).mean()
 
             # Separate actor and critic losses with auxiliary losses
             actor_loss = surrogate_loss
@@ -1051,10 +1361,6 @@ class PPO:
             mean_value_loss += 0.0 if self.dagger_only else value_loss.item()
             mean_surrogate_loss += surrogate_loss.item()
             mean_entropy += entropy_batch.mean().item()
-            if self.use_MoE and actor_load_balancing_loss is not None:
-                mean_actor_load_balancing_loss += (
-                    actor_load_balancing_loss.item()
-                )
             if self.use_dagger and dagger_loss is not None:
                 mean_dagger_loss += dagger_loss.item()
 
@@ -1068,8 +1374,6 @@ class PPO:
         mean_value_loss /= denom
         mean_surrogate_loss /= denom
         mean_entropy /= denom
-        if self.use_MoE:
-            mean_actor_load_balancing_loss /= denom
         if self.use_dagger:
             mean_dagger_loss /= denom
 
@@ -1080,8 +1384,6 @@ class PPO:
             "surrogate": mean_surrogate_loss,
             "entropy": mean_entropy,
         }
-        if self.use_MoE:
-            loss_out["actor_load_balancing"] = mean_actor_load_balancing_loss
         if self.use_dagger:
             loss_out["Dagger_loss"] = mean_dagger_loss
 
@@ -1112,6 +1414,11 @@ class PPO:
         obs_dict = self.env.reset_all()[0]
         obs_raw = obs_dict["policy"].to(self.device)
         privileged_obs_raw = obs_dict["critic"].to(self.device)
+
+        # Configure motion-cache sampling strategy if available
+        motion_cmd = None
+        if self.command_name == "ref_motion":
+            motion_cmd = self.env._env.command_manager.get_term("ref_motion")
 
         # Normalize initial observations using current stats without updating
         if self.obs_norm_enabled:
@@ -1270,32 +1577,40 @@ class PPO:
                     self.global_advantage_norm
                     and not self.normalize_advantage_per_mini_batch
                 ):
-                    adv = self.storage.advantages.view(-1).float()
-                    count = torch.tensor(
-                        [adv.numel()], device=self.device, dtype=torch.float32
-                    )
-                    sum_local = adv.sum()
-                    sqsum_local = (adv * adv).sum()
-                    if self.is_distributed:
-                        count_g = self.accelerator.reduce(
-                            count, reduction="sum"
-                        )
-                        sum_g = self.accelerator.reduce(
-                            sum_local, reduction="sum"
-                        )
-                        sqsum_g = self.accelerator.reduce(
-                            sqsum_local, reduction="sum"
-                        )
+                    if (
+                        self.command_name == "base_velocity"
+                        and self.storage.velocity_commands is not None
+                    ):
+                        self._normalize_advantages_global_by_move_mask()
                     else:
-                        count_g = count
-                        sum_g = sum_local
-                        sqsum_g = sqsum_local
-                    mean = sum_g / count_g
-                    var = (sqsum_g / count_g) - mean * mean
-                    std = torch.sqrt(var.clamp_min(1.0e-8))
-                    self.storage.advantages = (
-                        self.storage.advantages - mean
-                    ) / std
+                        adv = self.storage.advantages.view(-1).float()
+                        count = torch.tensor(
+                            [adv.numel()],
+                            device=self.device,
+                            dtype=torch.float32,
+                        )
+                        sum_local = adv.sum()
+                        sqsum_local = (adv * adv).sum()
+                        if self.is_distributed:
+                            count_g = self.accelerator.reduce(
+                                count, reduction="sum"
+                            )
+                            sum_g = self.accelerator.reduce(
+                                sum_local, reduction="sum"
+                            )
+                            sqsum_g = self.accelerator.reduce(
+                                sqsum_local, reduction="sum"
+                            )
+                        else:
+                            count_g = count
+                            sum_g = sum_local
+                            sqsum_g = sqsum_local
+                        mean = sum_g / count_g
+                        var = (sqsum_g / count_g) - mean * mean
+                        std = torch.sqrt(var.clamp_min(1.0e-8))
+                        self.storage.advantages = (
+                            self.storage.advantages - mean
+                        ) / std
 
             stop = time.time()
             collection_time = stop - start
@@ -1307,9 +1622,6 @@ class PPO:
             if self.use_dagger:
                 if "Dagger_loss" not in loss_dict:
                     loss_dict["Dagger_loss"] = None
-            if self.use_MoE:
-                if "actor_load_balancing" not in loss_dict:
-                    loss_dict["actor_load_balancing"] = None
 
             stop = time.time()
             learn_time = stop - start
@@ -1349,6 +1661,13 @@ class PPO:
                             }
                             self.accelerator.log(online_eval_metrics, step=it)
 
+            # Barrier-applied motion cache swap (avoids mid-rollout teleports)
+            if self.command_name == "ref_motion":
+                motion_cmd = self.env._env.command_manager.get_term(
+                    "ref_motion"
+                )
+                motion_cmd.apply_cache_swap_if_pending_barrier()
+
             self.ep_infos.clear()
 
             # Synchronize processes after each iteration
@@ -1362,6 +1681,12 @@ class PPO:
                 )
             )
 
+        # Gracefully release motion cache resources (if any).
+        if self.command_name == "ref_motion":
+            motion_cmd = self.env._env.command_manager.get_term("ref_motion")
+            if motion_cmd is not None:
+                motion_cmd.close()
+
         # End training and finalize trackers
         if self.log_dir:
             self.accelerator.end_training()
@@ -1369,6 +1694,81 @@ class PPO:
                 logger.info(
                     f"Training completed. Model saved to {self.log_dir}"
                 )
+
+    def record_video(self, num_steps: int, out_path: str, fps: int) -> dict:
+        """Record viewport rendering to an MP4 using rgb_array frames.
+        Args:
+            num_steps: Number of simulation steps to record.
+            out_path: Absolute path to the output MP4 file.
+            fps: Target frames per second for the video.
+        Returns:
+            dict: Metadata with output path and recorded frames.
+        """
+        import imageio
+        import numpy as np
+
+        # Switch models and normalizers to eval for deterministic rollouts
+        self.actor.eval()
+        self.critic.eval()
+        if self.obs_norm_enabled:
+            self.obs_normalizer.eval()
+            self.privileged_obs_normalizer.eval()
+
+        # Reset environment
+        obs_dict = self.env.reset_all()[0]
+        obs_raw = obs_dict["policy"].to(self.device)
+        if self.obs_norm_enabled:
+            obs = self.obs_normalizer.normalize_only(obs_raw)
+            if self.obs_norm_enable_clipping:
+                obs = torch.clamp(
+                    obs, -self.obs_norm_clip_range, self.obs_norm_clip_range
+                )
+        else:
+            obs = obs_raw
+
+        # Prepare video writer; macro_block_size=None allows arbitrary resolution
+        os.makedirs(os.path.dirname(out_path), exist_ok=True)
+        writer = imageio.get_writer(
+            out_path, fps=int(fps), macro_block_size=None
+        )
+
+        # Prime a first frame
+        first_frame = self.env._env.render()
+        if isinstance(first_frame, np.ndarray):
+            writer.append_data(first_frame)
+
+        with torch.no_grad():
+            for _ in range(int(max(0, num_steps - 1))):
+                actions, _, _, _, _ = self.actor(
+                    obs, actions=None, mode="inference"
+                )
+                obs_dict, _, _, _, _ = self.env.step(actions)
+                obs_raw = obs_dict["policy"].to(self.device)
+                if self.obs_norm_enabled:
+                    obs = self.obs_normalizer.normalize_only(obs_raw)
+                    if self.obs_norm_enable_clipping:
+                        obs = torch.clamp(
+                            obs,
+                            -self.obs_norm_clip_range,
+                            self.obs_norm_clip_range,
+                        )
+                else:
+                    obs = obs_raw
+
+                frame = self.env._env.render()
+                if isinstance(frame, np.ndarray):
+                    writer.append_data(frame)
+
+        writer.close()
+        if self.is_main_process:
+            logger.info(f"Saved video to: {out_path}")
+        # Restore train mode for continued use
+        self.actor.train()
+        self.critic.train()
+        if self.obs_norm_enabled:
+            self.obs_normalizer.train()
+            self.privileged_obs_normalizer.train()
+        return {"video_path": out_path, "frames": int(num_steps)}
 
     def online_evaluate_policy(self):
         """Run online evaluation using validation motion library.
@@ -1736,7 +2136,11 @@ class PPO:
         - Iterates validation batches; env i -> clip i (deterministic) starting at frame 0.
         - Collect robot and reference sequences each step and save one NPZ per clip.
         - NPZ conforms to holomotion_retargeted format keys.
+        - Optionally records viewport MP4(s) aligned with target_fps and rollout length.
         """
+        import numpy as np
+        import imageio
+
         ckpt_path = self.config.checkpoint
         # log_dir is already set to checkpoint directory in eval script
         model_name = os.path.basename(ckpt_path).replace(".pt", "")
@@ -1787,6 +2191,7 @@ class PPO:
                     sampler_world_size=getattr(
                         cache, "_sampler_world_size", 1
                     ),
+                    allowed_prefixes=getattr(cache, "_allowed_prefixes", None),
                     swap_interval_steps=getattr(
                         cache, "swap_interval_steps", None
                     ),
@@ -1800,16 +2205,30 @@ class PPO:
                 f"Offline eval: failed to rebuild cache to batch_size={num_envs}: {e}"
             )
 
+        # Derive HDF5 dataset base name (from validation dataset root) for output naming
+        dataset_suffix = None
+        val_dataset = cache._datasets["val"]
+        dataset_root = str(val_dataset.hdf5_root).rstrip(os.sep)
+        if dataset_root:
+            dataset_suffix = os.path.basename(dataset_root)
+
         # Output directory (respect existing log_dir derived from checkpoint)
-        output_dir = os.path.join(
-            self.log_dir, f"isaaclab_eval_output_{model_name}"
-        )
+        suffix = f"isaaclab_eval_output_{model_name}"
+        if dataset_suffix is not None:
+            suffix = f"{suffix}_{dataset_suffix}"
+        output_dir = os.path.join(self.log_dir, suffix)
         os.makedirs(output_dir, exist_ok=True)
         logger.info(f"Saving evaluation outputs to: {output_dir}")
 
         # Switch to validation cache and iterate all batches
         if hasattr(cache, "set_mode"):
             cache.set_mode("val")
+        # Determine policy/video FPS from command config (align wallclock time)
+        motion_fps = int(getattr(motion_cmd.cfg, "target_fps", 50))
+        # Prepare video root under checkpoint directory
+        videos_dir = os.path.join(self.log_dir, "videos")
+        if self.record_video and self.is_main_process:
+            os.makedirs(videos_dir, exist_ok=True)
         total_batches = int(getattr(cache, "num_batches", 1))
         with torch.no_grad():
             for batch_idx in tqdm(
@@ -1856,6 +2275,26 @@ class PPO:
                     for i in range(active_count)
                 }
 
+                # Prepare video writer per batch (reflects viewport frames)
+                writer = None
+                if self.record_video and self.is_main_process:
+
+                    def _sanitize_key(key: str) -> str:
+                        return (
+                            key.replace("/", "+")
+                            .replace(" ", "_")
+                            .replace("\\", "+")
+                        )
+
+                    if active_count == 1 and 0 in env_motion_keys:
+                        vid_name = f"{_sanitize_key(env_motion_keys[0])}.mp4"
+                    else:
+                        vid_name = f"batch_{batch_idx:04d}.mp4"
+                    vid_path = os.path.join(videos_dir, vid_name)
+                    writer = imageio.get_writer(
+                        vid_path, fps=motion_fps, macro_block_size=None
+                    )
+
                 # Prepare per-env collectors
                 env_has_done = torch.zeros(
                     num_envs, dtype=torch.bool, device=self.device
@@ -1874,7 +2313,7 @@ class PPO:
                 ref_dof_pos = [[] for _ in range(active_count)]
                 ref_dof_vel = [[] for _ in range(active_count)]
                 ref_body_pos = [[] for _ in range(active_count)]
-                ref_body_rot_wxyz = [[] for _ in range(active_count)]
+                ref_body_rot_xyzw = [[] for _ in range(active_count)]
                 ref_body_vel = [[] for _ in range(active_count)]
                 ref_body_ang_vel = [[] for _ in range(active_count)]
 
@@ -1882,7 +2321,7 @@ class PPO:
                 robot_dof_pos = [[] for _ in range(active_count)]
                 robot_dof_vel = [[] for _ in range(active_count)]
                 robot_body_pos = [[] for _ in range(active_count)]
-                robot_body_rot_wxyz = [[] for _ in range(active_count)]
+                robot_body_rot_xyzw = [[] for _ in range(active_count)]
                 robot_body_vel = [[] for _ in range(active_count)]
                 robot_body_ang_vel = [[] for _ in range(active_count)]
 
@@ -1957,8 +2396,8 @@ class PPO:
                     ref_body_pos_arr = np.stack(
                         ref_body_pos[idx][:slice_len], axis=0
                     ).astype(np.float32)
-                    ref_body_rot_wxyz_arr = np.stack(
-                        ref_body_rot_wxyz[idx][:slice_len], axis=0
+                    ref_body_rot_xyzw_arr = np.stack(
+                        ref_body_rot_xyzw[idx][:slice_len], axis=0
                     ).astype(np.float32)
                     ref_body_vel_arr = np.stack(
                         ref_body_vel[idx][:slice_len], axis=0
@@ -1977,8 +2416,8 @@ class PPO:
                     robot_body_pos_arr = np.stack(
                         robot_body_pos[idx][:slice_len], axis=0
                     ).astype(np.float32)
-                    robot_body_rot_wxyz_arr = np.stack(
-                        robot_body_rot_wxyz[idx][:slice_len], axis=0
+                    robot_body_rot_xyzw_arr = np.stack(
+                        robot_body_rot_xyzw[idx][:slice_len], axis=0
                     ).astype(np.float32)
                     robot_body_vel_arr = np.stack(
                         robot_body_vel[idx][:slice_len], axis=0
@@ -2015,16 +2454,16 @@ class PPO:
                     np.savez_compressed(
                         out_path,
                         metadata=json.dumps(meta),
-                        dof_pos=robot_dof_pos_arr,
-                        dof_vel=robot_dof_vel_arr,
-                        global_translation=robot_body_pos_arr,
-                        global_rotation_quat=robot_body_rot_wxyz_arr,
-                        global_velocity=robot_body_vel_arr,
-                        global_angular_velocity=robot_body_ang_vel_arr,
+                        robot_dof_pos=robot_dof_pos_arr,
+                        robot_dof_vel=robot_dof_vel_arr,
+                        robot_global_translation=robot_body_pos_arr,
+                        robot_global_rotation_quat=robot_body_rot_xyzw_arr,
+                        robot_global_velocity=robot_body_vel_arr,
+                        robot_global_angular_velocity=robot_body_ang_vel_arr,
                         ref_dof_pos=ref_dof_pos_arr,
                         ref_dof_vel=ref_dof_vel_arr,
                         ref_global_translation=ref_body_pos_arr,
-                        ref_global_rotation_quat=ref_body_rot_wxyz_arr,
+                        ref_global_rotation_quat=ref_body_rot_xyzw_arr,
                         ref_global_velocity=ref_body_vel_arr,
                         ref_global_angular_velocity=ref_body_ang_vel_arr,
                     )
@@ -2040,32 +2479,38 @@ class PPO:
                     if len(active) > 0:
                         # Reference step tensors (URDF order)
                         ref_dp = (
-                            motion_cmd.ref_motion_dof_pos_cur_urdf_order.detach()
+                            motion_cmd.get_ref_motion_dof_pos_cur_urdf_order()
+                            .detach()
                             .cpu()
                             .numpy()
                         )
                         ref_dv = (
-                            motion_cmd.ref_motion_dof_vel_cur_urdf_order.detach()
+                            motion_cmd.get_ref_motion_dof_vel_cur_urdf_order()
+                            .detach()
                             .cpu()
                             .numpy()
                         )
                         ref_bp = (
-                            motion_cmd.ref_motion_bodylink_global_pos_cur_urdf_order.detach()
+                            motion_cmd.get_ref_motion_bodylink_global_pos_cur_urdf_order()
+                            .detach()
                             .cpu()
                             .numpy()
                         )
                         ref_br = (
-                            motion_cmd.ref_motion_bodylink_global_rot_wxyz_cur_urdf_order.detach()
+                            motion_cmd.get_ref_motion_bodylink_global_rot_xyzw_cur_urdf_order()
+                            .detach()
                             .cpu()
                             .numpy()
                         )
                         ref_bv = (
-                            motion_cmd.ref_motion_bodylink_global_lin_vel_cur_urdf_order.detach()
+                            motion_cmd.get_ref_motion_bodylink_global_lin_vel_cur_urdf_order()
+                            .detach()
                             .cpu()
                             .numpy()
                         )
                         ref_bav = (
-                            motion_cmd.ref_motion_bodylink_global_ang_vel_cur_urdf_order.detach()
+                            motion_cmd.get_ref_motion_bodylink_global_ang_vel_cur_urdf_order()
+                            .detach()
                             .cpu()
                             .numpy()
                         )
@@ -2087,7 +2532,7 @@ class PPO:
                             .numpy()
                         )
                         rob_br = (
-                            motion_cmd.robot_bodylink_global_rot_wxyz_cur_urdf_order.detach()
+                            motion_cmd.robot_bodylink_global_rot_xyzw_cur_urdf_order.detach()
                             .cpu()
                             .numpy()
                         )
@@ -2105,14 +2550,14 @@ class PPO:
                             ref_dof_pos[idx].append(ref_dp[idx])
                             ref_dof_vel[idx].append(ref_dv[idx])
                             ref_body_pos[idx].append(ref_bp[idx])
-                            ref_body_rot_wxyz[idx].append(ref_br[idx])
+                            ref_body_rot_xyzw[idx].append(ref_br[idx])
                             ref_body_vel[idx].append(ref_bv[idx])
                             ref_body_ang_vel[idx].append(ref_bav[idx])
 
                             robot_dof_pos[idx].append(rob_dp[idx])
                             robot_dof_vel[idx].append(rob_dv[idx])
                             robot_body_pos[idx].append(rob_bp[idx])
-                            robot_body_rot_wxyz[idx].append(rob_br[idx])
+                            robot_body_rot_xyzw[idx].append(rob_br[idx])
                             robot_body_vel[idx].append(rob_bv[idx])
                             robot_body_ang_vel[idx].append(rob_bav[idx])
 
@@ -2135,6 +2580,11 @@ class PPO:
                         obs, actions=None, mode="inference"
                     )
                     obs_dict, _, dones, _, infos = self.env.step(actions)
+                    # Append one rendered frame per sim step (post-step) to align wallclock time
+                    if writer is not None:
+                        frame = self.env._env.render()
+                        if isinstance(frame, np.ndarray):
+                            writer.append_data(frame)
                     obs = obs_dict["policy"].to(self.device)
                     obs = (
                         self.obs_normalizer(obs)
@@ -2155,6 +2605,9 @@ class PPO:
                         if dump_npzs:
                             for idx in range(active_count):
                                 _save_env_npz(idx)
+                        # Close batch video writer
+                        if writer is not None:
+                            writer.close()
                         break
 
                 # No manual cache.advance(); handled by command setup on next reset
@@ -2165,11 +2618,11 @@ class PPO:
 
     def offline_evaluate_velocity_tracking(self):
         """Roll out indefinitely for visualizing the velocity tracking policy.
-        
+
         This method runs a continuous rollout without time limits, suitable for
         visualization and interactive evaluation. The policy will track velocity
         commands generated by the environment's command manager.
-        
+
         Returns:
             dict: Empty dict (method runs indefinitely until interrupted)
         """
@@ -2181,7 +2634,9 @@ class PPO:
             return {}
 
         if self.is_main_process:
-            logger.info("Starting indefinite velocity tracking rollout for visualization...")
+            logger.info(
+                "Starting indefinite velocity tracking rollout for visualization..."
+            )
             logger.info("Press Ctrl+C to stop")
 
         # Set models to eval mode
@@ -2224,15 +2679,19 @@ class PPO:
                 )
 
                 # Step environment
-                obs_dict, rewards, dones, time_outs, infos = self.env.step(actions)
+                obs_dict, rewards, dones, time_outs, infos = self.env.step(
+                    actions
+                )
                 obs_raw = obs_dict["policy"].to(self.device)
                 privileged_obs_raw = obs_dict["critic"].to(self.device)
 
                 # Normalize observations
                 if self.obs_norm_enabled:
                     obs = self.obs_normalizer.normalize_only(obs_raw)
-                    privileged_obs = self.privileged_obs_normalizer.normalize_only(
-                        privileged_obs_raw
+                    privileged_obs = (
+                        self.privileged_obs_normalizer.normalize_only(
+                            privileged_obs_raw
+                        )
                     )
                     if self.obs_norm_enable_clipping:
                         obs = torch.clamp(
@@ -2339,6 +2798,12 @@ class PPO:
             )
 
         # Log all metrics using Accelerate's native logging
+        # Cache diagnostics for ref_motion command
+        if self.command_name == "ref_motion":
+            motion_cmd = self.env._env.command_manager.get_term("ref_motion")
+            metrics["Cache/swap_index"] = float(
+                motion_cmd._motion_cache.swap_index
+            )
         self.accelerator.log(metrics, step=it)
 
         # Beautiful console logging with tabulate
@@ -2531,26 +2996,20 @@ class PPO:
 
     @staticmethod
     def _clean_state_dict(state_dict):
-        """Remove the '_orig_mod.' prefix from keys if it exists.
-
-        This is needed because compiled models (torch.compile or dynamo_backend)
-        add '_orig_mod.' prefixes to parameter names. Cleaning ensures
-        compatibility when loading checkpoints regardless of compilation state.
+        """Remove '_orig_mod.' prefix from torch.compile wrapped models.
 
         Args:
             state_dict: State dict that may contain '_orig_mod.' prefixed keys
 
         Returns:
-            Cleaned state dict with '_orig_mod.' prefixes removed
+            Cleaned state dict with prefixes removed
         """
         cleaned_dict = {}
         prefix = "_orig_mod."
         prefix_len = len(prefix)
         for k, v in state_dict.items():
-            if k.startswith(prefix):
-                cleaned_dict[k[prefix_len:]] = v
-            else:
-                cleaned_dict[k] = v
+            new_k = k[prefix_len:] if k.startswith(prefix) else k
+            cleaned_dict[new_k] = v
         return cleaned_dict
 
     def _load_model_state(self, model, state_dict, *, strict: bool = True):
@@ -2867,10 +3326,13 @@ class PPO:
 
     def synchronize_normalizers(self):
         """Synchronize observation normalizers across all processes."""
+        any_synced = False
         if self.obs_norm_enabled:
             self.obs_normalizer.sync_stats_across_processes(self.accelerator)
             self.privileged_obs_normalizer.sync_stats_across_processes(
                 self.accelerator
             )
+            any_synced = True
+        if any_synced:
             # Ensure all ranks have synced before proceeding
             self.accelerator.wait_for_everyone()

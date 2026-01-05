@@ -1,0 +1,45 @@
+# @package _global_
+
+# Rough height-field terrain for locomotion training.
+# Uses random-uniform height field to create continuous noise-like terrain.
+terrain:
+  terrain_type: generator
+  prim_path: /World/ground
+  static_friction: 1.0
+  dynamic_friction: 1.0
+  restitution: 0.0
+  friction_combine_mode: multiply
+  restitution_combine_mode: multiply
+  debug_vis: false
+  max_init_terrain_level: 4
+
+  # Randomize spawn position within each sub-terrain (recommended for locomotion).
+  random_spawn: true
+
+  # TerrainGeneratorCfg parameters.
+  generator:
+    num_rows: 4              # Number of terrain rows (difficulty levels)
+    num_cols: 4              # Number of terrain columns (types)
+    size: [10.0, 10.0]         # Size of each sub-terrain in meters [length, width]
+    border_width: 8.0       # Border around terrain in meters
+    horizontal_scale: 0.1    # Resolution in x-y plane
+    vertical_scale: 0.005    # Height resolution
+    slope_threshold: null    # Slopes above this become vertical
+    difficulty_range: [0.0, 1.0]  # Min and max difficulty
+    color_scheme: height       # Use material shading instead of vertex colors
+    sub_terrains:
+      rough:
+        type: random_uniform
+        proportion: 1.0
+        noise_range: [0.0, 0.04]
+        noise_step: 0.05
+        downsampled_scale: 1.0
+
+  # Offline visual material configuration (PreviewSurface, no MDL/Nucleus).
+  visual_material:
+    type: color
+    diffuse_color: [0.25, 0.25, 0.25]
+    metallic: 0.0
+    roughness: 0.5
+
+

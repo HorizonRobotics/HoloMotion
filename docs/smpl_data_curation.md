@@ -190,6 +190,7 @@ thirdparties/GVHMR/inputs/checkpoints/
 ```
 
 ### 2. Video to SMPL motion data
+Confirm that all input videos have a frame rate of 30 FPS to avoid motion acceleration or deceleration.
 ```bash
 bash ./holomotion/scripts/motion_retargeting/video2SMPL_gvhmr.sh
 ```

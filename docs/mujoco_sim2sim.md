@@ -1,19 +1,9 @@
-We use the official unitree mujoco repo to conduct the sim2sim verification in the Mujoco simulator.
+# Sim2Sim Verification
 
-Please make sure you clone the submodules and setup the unitree mujoco's dependencies according to the official readme : https://github.com/unitreerobotics/unitree_mujoco/tree/main?tab=readme-ov-file . You should only install the python sdk and cyclonedds. We strongly suggest you to install all these packages in the `thirdparties` directory.
+After generating the ONNX file from the evaluation stage, you can verify the performance of your Isaac-trained policy in another simulator, such as Mujoco to test its performance before deploying to the real robot.
 
-After installing `unitree_sdk2_python`, please remember to modify the `thirdparties/unitree_sdk2_python/unitree_sdk2py/core/channel_config.py` file in case of permission errors:
-```xml
+The entry script is `holomotion/scripts/evaluation/eval_mujoco_sim2sim.sh`, you should set these variables before running:
 
-Modify:
-
-<OutputFile>/tmp/cdds.LOG</OutputFile>
-
----
-
-Into:
-
-<OutputFile>cdds.LOG</OutputFile>
-
-```
-
+- `robot_xml_path`: The scene mjcf .xml file for the robot
+- `ONNX_PATH`: The exported ONNX model file
+- `motion_pkl_path`: The npz file containing the reference motion

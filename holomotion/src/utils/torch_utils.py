@@ -12,40 +12,35 @@ import torch
 
 
 def to_torch(x, dtype=torch.float, device="cuda:0", requires_grad=False):
-    return torch.tensor(
-        x, dtype=dtype, device=device, requires_grad=requires_grad
-    )
+    return torch.tensor(x, dtype=dtype, device=device, requires_grad=requires_grad)
 
 
-@torch.compile
-def quat_mul(
-    a: torch.Tensor, b: torch.Tensor, w_last: bool = True
-) -> torch.Tensor:
-    """Multiply two quaternions.
+@torch.jit.script
+def quat_mul(q1: torch.Tensor, q2: torch.Tensor) -> torch.Tensor:
+    """Multiply two quaternions together.
 
     Args:
-        a (torch.Tensor): (..., 4) quaternion.
-        b (torch.Tensor): (..., 4) quaternion.
-        w_last (bool): Whether the scalar part w is the last element.
-                      If True, format is [x, y, z, w]; if False, format is [w, x, y, z].
+        q1: The first quaternion in (w, x, y, z). Shape is (..., 4).
+        q2: The second quaternion in (w, x, y, z). Shape is (..., 4).
 
     Returns:
-        torch.Tensor: (..., 4) quaternion result of a * b.
+        The product of the two quaternions in (w, x, y, z). Shape is (..., 4).
+
+    Raises:
+        ValueError: Input shapes of ``q1`` and ``q2`` are not matching.
     """
-    assert a.shape == b.shape
-    shape = a.shape
-    a = a.reshape(-1, 4)
-    b = b.reshape(-1, 4)
-
-    if w_last:
-        # Format: [x, y, z, w]
-        x1, y1, z1, w1 = a[:, 0], a[:, 1], a[:, 2], a[:, 3]
-        x2, y2, z2, w2 = b[:, 0], b[:, 1], b[:, 2], b[:, 3]
-    else:
-        # Format: [w, x, y, z]
-        w1, x1, y1, z1 = a[:, 0], a[:, 1], a[:, 2], a[:, 3]
-        w2, x2, y2, z2 = b[:, 0], b[:, 1], b[:, 2], b[:, 3]
-
+    # check input is correct
+    if q1.shape != q2.shape:
+        msg = f"Expected input quaternion shape mismatch: {q1.shape} != {q2.shape}."
+        raise ValueError(msg)
+    # reshape to (N, 4) for multiplication
+    shape = q1.shape
+    q1 = q1.reshape(-1, 4)
+    q2 = q2.reshape(-1, 4)
+    # extract components from quaternions
+    w1, x1, y1, z1 = q1[:, 0], q1[:, 1], q1[:, 2], q1[:, 3]
+    w2, x2, y2, z2 = q2[:, 0], q2[:, 1], q2[:, 2], q2[:, 3]
+    # perform multiplication
     ww = (z1 + x1) * (x2 + y2)
     yy = (w1 - y1) * (w2 + z2)
     zz = (w1 + y1) * (w2 - z2)
@@ -56,12 +51,7 @@ def quat_mul(
     y = qq - yy + (w1 - x1) * (y2 + z2)
     z = qq - zz + (z1 + y1) * (w2 - x2)
 
-    if w_last:
-        quat = torch.stack([x, y, z, w], dim=-1).view(shape)
-    else:
-        quat = torch.stack([w, x, y, z], dim=-1).view(shape)
-
-    return quat
+    return torch.stack([w, x, y, z], dim=-1).view(shape)
 
 
 @torch.jit.script
@@ -70,13 +60,47 @@ def normalize(x, eps: float = 1e-9):
 
 
 @torch.jit.script
-def quat_apply(a, b):
-    shape = b.shape
-    a = a.reshape(-1, 4)
-    b = b.reshape(-1, 3)
-    xyz = a[:, :3]
-    t = xyz.cross(b, dim=-1) * 2
-    return (b + a[:, 3:] * t + xyz.cross(t, dim=-1)).view(shape)
+def quat_apply(quat: torch.Tensor, vec: torch.Tensor) -> torch.Tensor:
+    """Apply a quaternion rotation to a vector.
+
+    Args:
+        quat: The quaternion in (w, x, y, z). Shape is (..., 4).
+        vec: The vector in (x, y, z). Shape is (..., 3).
+
+    Returns:
+        The rotated vector in (x, y, z). Shape is (..., 3).
+    """
+    # store shape
+    shape = vec.shape
+    # reshape to (N, 3) for multiplication
+    quat = quat.reshape(-1, 4)
+    vec = vec.reshape(-1, 3)
+    # extract components from quaternions
+    xyz = quat[:, 1:]
+    t = xyz.cross(vec, dim=-1) * 2
+    return (vec + quat[:, 0:1] * t + xyz.cross(t, dim=-1)).view(shape)
+
+
+@torch.jit.script
+def quat_apply_inverse(quat: torch.Tensor, vec: torch.Tensor) -> torch.Tensor:
+    """Apply an inverse quaternion rotation to a vector.
+
+    Args:
+        quat: The quaternion in (w, x, y, z). Shape is (..., 4).
+        vec: The vector in (x, y, z). Shape is (..., 3).
+
+    Returns:
+        The rotated vector in (x, y, z). Shape is (..., 3).
+    """
+    # store shape
+    shape = vec.shape
+    # reshape to (N, 3) for multiplication
+    quat = quat.reshape(-1, 4)
+    vec = vec.reshape(-1, 3)
+    # extract components from quaternions
+    xyz = quat[:, 1:]
+    t = xyz.cross(vec, dim=-1) * 2
+    return (vec - quat[:, 0:1] * t + xyz.cross(t, dim=-1)).view(shape)
 
 
 @torch.jit.script
@@ -88,9 +112,7 @@ def quat_rotate(q, v):
     b = torch.cross(q_vec, v, dim=-1) * q_w.unsqueeze(-1) * 2.0
     c = (
         q_vec
-        * torch.bmm(
-            q_vec.view(shape[0], 1, 3), v.view(shape[0], 3, 1)
-        ).squeeze(-1)
+        * torch.bmm(q_vec.view(shape[0], 1, 3), v.view(shape[0], 3, 1)).squeeze(-1)
         * 2.0
     )
     return a + b + c
@@ -105,9 +127,7 @@ def quat_rotate_inverse(q, v):
     b = torch.cross(q_vec, v, dim=-1) * q_w.unsqueeze(-1) * 2.0
     c = (
         q_vec
-        * torch.bmm(
-            q_vec.view(shape[0], 1, 3), v.view(shape[0], 3, 1)
-        ).squeeze(-1)
+        * torch.bmm(q_vec.view(shape[0], 1, 3), v.view(shape[0], 3, 1)).squeeze(-1)
         * 2.0
     )
     return a - b + c
@@ -117,7 +137,8 @@ def quat_rotate_inverse(q, v):
 def quat_conjugate(a):
     shape = a.shape
     a = a.reshape(-1, 4)
-    return torch.cat((-a[:, :3], a[:, -1:]), dim=-1).view(shape)
+    return torch.cat((a[:, 0:1], -a[:, 1:]), dim=-1).view(shape)
+    # return torch.cat((-a[:, :3], a[:, -1:]), dim=-1).view(shape)
 
 
 @torch.jit.script
@@ -167,9 +188,7 @@ def get_basis_vector(q, v):
 def get_axis_params(value, axis_idx, x_value=0.0, dtype=np.float64, n_dims=3):
     """Construct arguments to `Vec` according to axis index."""
     zs = np.zeros((n_dims,))
-    assert axis_idx < n_dims, (
-        "the axis dim should be within the vector dimensions"
-    )
+    assert axis_idx < n_dims, "the axis dim should be within the vector dimensions"
     zs[axis_idx] = 1.0
     params = np.where(zs == 1.0, value, zs)
     params[0] = x_value
@@ -321,9 +340,7 @@ def slerp(q0, q1, t):
 
     new_q = ratio_a * q0 + ratio_b * q1
 
-    new_q = torch.where(
-        torch.abs(sin_half_theta) < 0.001, 0.5 * q0 + 0.5 * q1, new_q
-    )
+    new_q = torch.where(torch.abs(sin_half_theta) < 0.001, 0.5 * q0 + 0.5 * q1, new_q)
     new_q = torch.where(torch.abs(cos_half_theta) >= 1, q0, new_q)
 
     return new_q
@@ -338,9 +355,7 @@ def my_quat_rotate(q, v):
     b = torch.cross(q_vec, v, dim=-1) * q_w.unsqueeze(-1) * 2.0
     c = (
         q_vec
-        * torch.bmm(
-            q_vec.view(shape[0], 1, 3), v.view(shape[0], 3, 1)
-        ).squeeze(-1)
+        * torch.bmm(q_vec.view(shape[0], 1, 3), v.view(shape[0], 3, 1)).squeeze(-1)
         * 2.0
     )
     return a + b + c
@@ -416,9 +431,7 @@ def axis_angle_from_quat(
     quat = quat * (1.0 - 2.0 * (quat_w_orig < 0.0))
 
     # Ensure unit quaternion for stability
-    quat = quat / torch.linalg.norm(quat, dim=-1, keepdim=True).clamp_min(
-        1.0e-9
-    )
+    quat = quat / torch.linalg.norm(quat, dim=-1, keepdim=True).clamp_min(1.0e-9)
 
     # Recompute quat_xyz and quat_w after potential sign flip
     if w_last:
@@ -505,15 +518,182 @@ def quat_error_magnitude(
     return torch.norm(axis_angle_error, dim=-1)
 
 
+@torch.jit.script
+def quat_inv(q: torch.Tensor, eps: float = 1e-9) -> torch.Tensor:
+    """Computes the inverse of a quaternion.
+
+    Args:
+        q: The quaternion orientation in (w, x, y, z). Shape is (N, 4).
+        eps: A small value to avoid division by zero. Defaults to 1e-9.
+
+    Returns:
+        The inverse quaternion in (w, x, y, z). Shape is (N, 4).
+    """
+    return quat_conjugate(q) / q.pow(2).sum(dim=-1, keepdim=True).clamp(min=eps)
+
+
+# --------------------- WXYZ helpers (torch) ---------------------
+def xyzw_to_wxyz(q: torch.Tensor) -> torch.Tensor:
+    """
+    Convert quaternion from XYZW to WXYZ.
+    Args:
+        q (torch.Tensor): (..., 4) quaternion in XYZW.
+    Returns:
+        torch.Tensor: (..., 4) quaternion in WXYZ.
+    """
+    return torch.cat([q[..., 3:4], q[..., 0:3]], dim=-1)
+
+
+def wxyz_to_xyzw(q: torch.Tensor) -> torch.Tensor:
+    """
+    Convert quaternion from WXYZ to XYZW.
+    Args:
+        q (torch.Tensor): (..., 4) quaternion in WXYZ.
+    Returns:
+        torch.Tensor: (..., 4) quaternion in XYZW.
+    """
+    return torch.cat([q[..., 1:4], q[..., 0:1]], dim=-1)
+
+
 @torch.compile
+def quat_mul_wxyz(q1: torch.Tensor, q2: torch.Tensor) -> torch.Tensor:
+    """
+    Hamilton product in WXYZ layout using fused implementation.
+    Args:
+        q1 (torch.Tensor): (..., 4) WXYZ.
+        q2 (torch.Tensor): (..., 4) WXYZ.
+    Returns:
+        torch.Tensor: (..., 4) WXYZ.
+    """
+    return quat_mul(q1, q2, w_last=False)
+
+
+def rotate_vec_wxyz(q_wxyz: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+    """
+    Rotate vector v by quaternion q (WXYZ).
+    Args:
+        q_wxyz (torch.Tensor): (..., 4) WXYZ.
+        v (torch.Tensor): (..., 3).
+    Returns:
+        torch.Tensor: (..., 3) rotated vector.
+    """
+    # Support single-vector inputs by promoting to batch
+    single = q_wxyz.ndim == 1
+    if single:
+        q_in = q_wxyz[None, :]
+        v_in = v[None, :]
+    else:
+        q_in = q_wxyz
+        v_in = v
+    q_xyzw = wxyz_to_xyzw(q_in)
+    out = quat_apply(q_xyzw, v_in)
+    if single:
+        return out[0]
+    return out
+
+
+def rotate_vec_inv_wxyz(q_wxyz: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+    """
+    Rotate vector v by inverse of quaternion q (WXYZ).
+    Args:
+        q_wxyz (torch.Tensor): (..., 4) WXYZ.
+        v (torch.Tensor): (..., 3).
+    Returns:
+        torch.Tensor: (..., 3) rotated vector in inverse rotation.
+    """
+    single = q_wxyz.ndim == 1
+    if single:
+        q_in = q_wxyz[None, :]
+        v_in = v[None, :]
+    else:
+        q_in = q_wxyz
+        v_in = v
+    q_xyzw = wxyz_to_xyzw(q_in)
+    q_inv_xyzw = quat_conjugate(q_xyzw)
+    out = quat_apply(q_inv_xyzw, v_in)
+    if single:
+        return out[0]
+    return out
+
+
 def subtract_frame_transforms(
     t01: torch.Tensor,
     q01: torch.Tensor,
-    t02: torch.Tensor,
-    q02: torch.Tensor,
-):
-    # always assume w_last=True !!
-    q10 = quat_conjugate(q01)
-    q12 = quat_mul(q10, q02, w_last=True)
-    t12 = quat_apply(q10, t02 - t01)
+    t02: torch.Tensor | None = None,
+    q02: torch.Tensor | None = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    r"""Subtract transformations between two reference frames into a stationary frame.
+
+    It performs the following transformation operation: :math:`T_{12} = T_{01}^{-1} \times T_{02}`,
+    where :math:`T_{AB}` is the homogeneous transformation matrix from frame A to B.
+
+    Args:
+        t01: Position of frame 1 w.r.t. frame 0. Shape is (N, 3).
+        q01: Quaternion orientation of frame 1 w.r.t. frame 0 in (w, x, y, z). Shape is (N, 4).
+        t02: Position of frame 2 w.r.t. frame 0. Shape is (N, 3).
+            Defaults to None, in which case the position is assumed to be zero.
+        q02: Quaternion orientation of frame 2 w.r.t. frame 0 in (w, x, y, z). Shape is (N, 4).
+            Defaults to None, in which case the orientation is assumed to be identity.
+
+    Returns:
+        A tuple containing the position and orientation of frame 2 w.r.t. frame 1.
+        Shape of the tensors are (N, 3) and (N, 4) respectively.
+    """
+    # compute orientation
+    q10 = quat_inv(q01)
+    if q02 is not None:
+        q12 = quat_mul(q10, q02)
+    else:
+        q12 = q10
+    # compute translation
+    if t02 is not None:
+        t12 = quat_apply(q10, t02 - t01)
+    else:
+        t12 = quat_apply(q10, -t01)
     return t12, q12
+
+
+@torch.compile
+def quat_normalize_wxyz(q_wxyz: torch.Tensor) -> torch.Tensor:
+    """
+    Normalize quaternion in WXYZ layout.
+    Args:
+        q_wxyz (torch.Tensor): (..., 4) WXYZ.
+    Returns:
+        torch.Tensor: (..., 4) normalized WXYZ.
+    """
+    return q_wxyz / torch.linalg.norm(q_wxyz, dim=-1, keepdim=True).clamp_min(1.0e-9)
+
+
+@torch.jit.script
+def matrix_from_quat(quaternions: torch.Tensor) -> torch.Tensor:
+    """Convert rotations given as quaternions to rotation matrices.
+
+    Args:
+        quaternions: The quaternion orientation in (w, x, y, z). Shape is (..., 4).
+
+    Returns:
+        Rotation matrices. The shape is (..., 3, 3).
+
+    Reference:
+        https://github.com/facebookresearch/pytorch3d/blob/main/pytorch3d/transforms/rotation_conversions.py#L41-L70
+    """
+    r, i, j, k = torch.unbind(quaternions, -1)
+    # pyre-fixme[58]: `/` is not supported for operand types `float` and `Tensor`.
+    two_s = 2.0 / (quaternions * quaternions).sum(-1)
+
+    o = torch.stack(
+        (
+            1 - two_s * (j * j + k * k),
+            two_s * (i * j - k * r),
+            two_s * (i * k + j * r),
+            two_s * (i * j + k * r),
+            1 - two_s * (i * i + k * k),
+            two_s * (j * k - i * r),
+            two_s * (i * k - j * r),
+            two_s * (j * k + i * r),
+            1 - two_s * (i * i + j * j),
+        ),
+        -1,
+    )
+    return o.reshape(quaternions.shape[:-1] + (3, 3))

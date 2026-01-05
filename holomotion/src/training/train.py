@@ -38,11 +38,10 @@ def main(config: OmegaConf):
 
     log_dir = config.experiment_save_dir
     headless = config.headless
-
-    algo_class = get_class(config.algo.algo._target_)
+    algo_class = get_class(config.algo._target_)
     algo = algo_class(
         env_config=config.env,
-        config=config.algo.algo.config,
+        config=config.algo.config,
         log_dir=log_dir,
         headless=headless,
     )

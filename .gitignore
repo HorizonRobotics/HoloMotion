@@ -16,6 +16,8 @@ data
 data/
 outputs/
 build/
+install/
+log/
 .DS_Store/
 **.egg-info/
 **.log
@@ -30,6 +32,10 @@ build/
 *.npz
 *.zip
 *.tar.gz
+
+*.obj
+*.dae
+*.STL
 
 # ignore video, image, etc.
 *.mp4
@@ -55,6 +61,8 @@ not_for_commit/
 
 thirdparties/smpl_models/
 
+MUJOCO_LOG.TXT
+
 # allow certain files
 !deployment/unitree_g1_ros2/src/models/*.onnx
 !deployment/unitree_g1_ros2/src/motion_data/*.pkl
@@ -64,3 +72,7 @@ thirdparties/smpl_models/
 !assets/smplx/*.npz
 !assets/test_data/**
 !assets/media/**
+
+# macOS system files
+.DS_Store
+**/.DS_Store

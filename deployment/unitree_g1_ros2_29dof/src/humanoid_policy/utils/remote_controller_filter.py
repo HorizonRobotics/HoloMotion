@@ -40,8 +40,8 @@ class RemoteController:
         self.dead_zone = 0.01  # 死区阈值
 
         # 速度映射参数
-        self.max_linear_speed_x = 1.0  # 最大线速度 (m/s)
-        self.max_linear_speed_y = 0.3  # 最大线速度 (m/s)
+        self.max_linear_speed_x = 0.5  # 最大线速度 (m/s)
+        self.max_linear_speed_y = 0.2  # 最大线速度 (m/s)
         self.max_angular_speed = 0.7  # 最大角速度 (rad/s)
         
         # 速度阈值参数 - 当速度小于阈值时设为0

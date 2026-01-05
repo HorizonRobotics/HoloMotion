@@ -1,52 +1,81 @@
 # @package _global_
 
 rewards:
+  _config:
+    reward_prefix: "ref_"
+
+  is_alive:
+    weight: 5.0
+    params: {}
+
   root_pos_xy_tracking_exp:
     weight: 1.0
     params:
       std: 0.2
+      ref_prefix: ${rewards._config.reward_prefix}
+
+  root_pos_rel_z_tracking_exp:
+    weight: 1.0
+    params:
+      std: 0.1
+      ref_prefix: ${rewards._config.reward_prefix}
 
   root_rot_tracking_exp:
     weight: 1.0
     params:
       std: 0.3
+      ref_prefix: ${rewards._config.reward_prefix}
 
   root_lin_vel_tracking_l2_exp:
     weight: 1.0
     params:
       std: 1.0
+      ref_prefix: ${rewards._config.reward_prefix}
 
   root_ang_vel_tracking_l2_exp:
     weight: 1.0
     params:
       std: 3.14
+      ref_prefix: ${rewards._config.reward_prefix}
 
   root_rel_keybodylink_pos_tracking_l2_exp:
     weight: 1.0
     params:
       keybody_names: ${robot.key_bodies}
       std: 0.10
+      ref_prefix: ${rewards._config.reward_prefix}
 
   root_rel_keybodylink_rot_tracking_l2_exp:
     weight: 1.0
     params:
       keybody_names: ${robot.key_bodies}
       std: 0.3
+      ref_prefix: ${rewards._config.reward_prefix}
 
   root_rel_keybodylink_lin_vel_tracking_l2_exp:
     weight: 1.0
     params:
       keybody_names: ${robot.key_bodies}
       std: 1.0
+      ref_prefix: ${rewards._config.reward_prefix}
 
   root_rel_keybodylink_ang_vel_tracking_l2_exp:
-    weight: 1.0
+    weight: 0.2
     params:
       keybody_names: ${robot.key_bodies}
       std: 3.14
+      ref_prefix: ${rewards._config.reward_prefix}
 
   action_rate_l2:
-    weight: -0.1
+    weight: -0.3
+    params: {}
+
+  # action_acc_l2:
+  #   weight: -0.1
+  #   params: {}
+
+  joint_acc_l2:
+    weight: -5.0e-7
     params: {}
 
   joint_pos_limits:

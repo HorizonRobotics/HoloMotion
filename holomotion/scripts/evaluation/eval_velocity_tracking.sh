@@ -19,10 +19,9 @@ export CUDA_VISIBLE_DEVICES="0"
 
 config_name="eval_velocity_tracking"
 
-
 num_envs=1
 
-ckpt_path="logs/HoloMotionVelocityTracking/20251105_161238-train_g1_29dof_velocity_tracking/model_0.pt"
+ckpt_path="logs/HoloMotionVelocityTracking/xxxxx-train_g1_29dof_velocity_tracking/model_xxx.pt"
 
 ${Train_CONDA_PREFIX}/bin/python \
     holomotion/src/evaluation/eval_velocity_tracking.py \
@@ -32,4 +31,4 @@ ${Train_CONDA_PREFIX}/bin/python \
     headless=false \
     experiment_name=${config_name} \
     checkpoint=${ckpt_path} \
-    +env.config.commands.base_velocity.params.resampling_time_range=[3,5] \
+    +env.config.commands.base_velocity.params.resampling_time_range=[3,5]

@@ -121,6 +121,49 @@ class DomainRandFunctions:
             velocity_range,
         )
 
+    @staticmethod
+    def _get_dr_randomize_actuator_gains(
+        env: ManagerBasedEnv,
+        env_ids: torch.Tensor,
+        asset_name: str = "robot",
+        body_names: str = ".*",
+        stiffness_distribution_params: tuple[float, float] | None = None,
+        damping_distribution_params: tuple[float, float] | None = None,
+        operation: Literal["add", "scale", "abs"] = "abs",
+        distribution: Literal[
+            "uniform", "log_uniform", "gaussian"
+        ] = "uniform",
+    ):
+        asset_cfg = SceneEntityCfg(asset_name, body_names=body_names)
+        asset_cfg.resolve(env.scene)
+        return isaaclab_mdp.events.randomize_actuator_gains(
+            env,
+            env_ids,
+            asset_cfg,
+            stiffness_distribution_params,
+            damping_distribution_params,
+            operation=operation,
+            distribution=distribution,
+        )
+
+    @staticmethod
+    def _get_dr_randomize_mass(
+        env: ManagerBasedEnv,
+        env_ids: torch.Tensor,
+        asset_name: str = "robot",
+        body_names: str = ".*",
+        mass_range: tuple[float, float] | None = None,
+    ):
+        asset_cfg = SceneEntityCfg(asset_name, body_names=body_names)
+        asset_cfg.resolve(env.scene)
+        return isaaclab_mdp.events.randomize_rigid_body_mass(
+            env,
+            env_ids,
+            mass_distribution_params=mass_range,
+            asset_cfg=asset_cfg,
+            operation="add",
+        )
+
 
 @configclass
 class EventsCfg:

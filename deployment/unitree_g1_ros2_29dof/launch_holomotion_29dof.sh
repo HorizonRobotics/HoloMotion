@@ -50,27 +50,17 @@ done
 
 echo "Starting HoloMotion 29DOF..."
 echo "Recording enabled: $ENABLE_RECORDING"
-
+rm -rf build/ install/ log/ 2>/dev/null || sudo rm -rf build/ install/ log/
+source ~/miniconda3/bin/activate
+while [[ ${CONDA_SHLVL:-0} -gt 0 ]]; do
+    conda deactivate
+done
+source /opt/ros/humble/setup.sh
 source ~/unitree_ros2/setup.sh
-
 colcon build
 source install/setup.bash
 
-# Configure conda environment paths for CUDA and library linking
-CONDA_PREFIX="$HOME/miniconda3/envs/holomotion_deploy"
-if [ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]; then
-    . "$HOME/miniconda3/etc/profile.d/conda.sh"
-    conda activate holomotion_deploy || true
-fi
-# Ensure the conda env python is preferred even if activation above is skipped
-export PATH="$CONDA_PREFIX/bin:$PATH"
-export PYTHON_EXECUTABLE="$CONDA_PREFIX/bin/python"
-
-export CUDA_HOME=$CONDA_PREFIX
-export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$CONDA_PREFIX/lib/
-export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$CONDA_PREFIX/lib/stubs
-export LIBRARY_PATH=$CONDA_PREFIX/lib:$LIBRARY_PATH
-export LIBRARY_PATH=$CONDA_PREFIX/lib/stubs:$LIBRARY_PATH
+source ../../deploy.env
 
 # Launch with recording parameter
 ros2 launch humanoid_control holomotion_29dof_launch.py enable_recording:=$ENABLE_RECORDING

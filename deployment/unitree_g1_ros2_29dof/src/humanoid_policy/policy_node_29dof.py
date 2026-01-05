@@ -4,42 +4,41 @@ HoloMotion Policy Node
 
 This module implements the main policy execution node for the HoloMotion humanoid robot system.
 It handles neural network policy inference, motion sequence management, remote controller input,
-and robot state coordination for complex humanoid behaviors including dancing and locomotion.
+and robot state coordination for humanoid behaviors including velocity tracking and motion tracking.
 
 The policy node serves as the high-level decision maker that:
 - Processes sensor observations and builds state representations
-- Executes trained neural network policies for motion generation
-- Manages multiple motion sequences (dance moves)
+- Executes trained neural network policies for motion generation (velocity tracking and motion tracking)
+- Manages multiple motion sequences (motion clips) loaded from offline files
 - Handles remote controller input for motion selection
 - Coordinates with the main control node for safe operation
+
+Key Features:
+- Dual policy support: velocity tracking and motion tracking
+- Offline motion file loading (.npz format)
+- Runtime policy switching with button controls
+- Separate hyperparameters (kps, kds, action_scale, default_angles) for each model
 
 Author: HoloMotion Team
 License: See project LICENSE file
 """
+import os
+
+import easydict
 import numpy as np
-import rclpy
-import torch
-import onnxruntime
 import onnx
+import onnxruntime
+import rclpy
+import yaml
+from ament_index_python.packages import get_package_share_directory
+from omegaconf import OmegaConf
 from rclpy.node import Node
 from rclpy.qos import QoSProfile
-import yaml
-import easydict
-import os
-from std_msgs.msg import Float32MultiArray
-from std_msgs.msg import String
-from std_msgs.msg import Float32
-from ament_index_python.packages import get_package_share_directory
-from unitree_hg.msg import (
-    LowState,
-    LowCmd,
-)
-from humanoid_policy.utils.remote_controller_filter import RemoteController, KeyMap
-from humanoid_policy.obs_builder import PolicyObsBuilder
+from std_msgs.msg import Float32MultiArray, String
+from unitree_hg.msg import LowState
 
-# Set up logger
-import logging
-logger = logging.getLogger(__name__)
+from humanoid_policy.obs_builder import PolicyObsBuilder
+from humanoid_policy.utils.remote_controller_filter import KeyMap, RemoteController
 
 
 class PolicyNodeJustDance(Node):
@@ -53,7 +52,7 @@ class PolicyNodeJustDance(Node):
     - Dual neural network policy inference (velocity + motion) using ONNX Runtime
     - Runtime policy switching with A/B/Y button controls
     - Velocity tracking mode with joystick control
-    - Motion tracking mode with dance sequence selection
+    - Motion tracking mode with motion clip sequence selection
     - Safety-aware state machine with motion prerequisites
     - Real-time observation processing and action generation
 
@@ -91,14 +90,14 @@ class PolicyNodeJustDance(Node):
         # Get config path from ROS parameter
         config_path = self.declare_parameter("config_path", "").value
         self.config_yaml = easydict.EasyDict(yaml.safe_load(open(config_path)))
-        # Initialize config - will be loaded from model folders later
-        self.config = None
-        self.device = self._get_device()
-        self.dt = 1.0 / 50
+        # Read policy frequency from config, default to 50 Hz if not specified
+        policy_freq = self.config_yaml.get("policy_freq", 50)
+        self.dt = 1.0 / policy_freq
+        self.get_logger().info(f"Policy frequency set to: {policy_freq} Hz (dt = {self.dt:.4f} s)")
         # Initialize basic parameters - will be updated after config loading
         self.actions_dim = 29  # Default value, will be updated from config
         self.real_dof_names = []  # Will be loaded from config
-        self.current_dance_index = 0  # Current dance motion index       
+        self.current_motion_clip_index = 0  # Current motion clip index
         # Button state tracking for preventing multiple triggers
         self.last_button_states = {
             KeyMap.up: 0,
@@ -107,7 +106,7 @@ class PolicyNodeJustDance(Node):
             KeyMap.right: 0,
             KeyMap.A: 0,
             KeyMap.B: 0,
-            KeyMap.Y: 0
+            KeyMap.Y: 0,
         }
         # Safety check related flags
         self.policy_enabled = False  # Controls whether policy is enabled
@@ -124,14 +123,13 @@ class PolicyNodeJustDance(Node):
         self.velocity_config = None
         self.motion_config = None
         # Motion data
-        self.motion_data = None
         self.motion_frame_idx = 0
+
         # Extract configuration parameters
         # These will be updated after config loading
         self.dof_names_ref_motion = []
         self.num_actions = 29  # Default value
         self.action_scale_onnx = np.ones(self.num_actions, dtype=np.float32)
-        self.context_length = 10  # Default value
 
         self.kps_onnx = np.zeros(self.num_actions, dtype=np.float32)
         self.kds_onnx = np.zeros(self.num_actions, dtype=np.float32)
@@ -144,73 +142,63 @@ class PolicyNodeJustDance(Node):
         # Desired target positions keyed by DOF name (updated after each policy step)
         self.target_dof_pos_by_name = {}
         # Don't call setup() here - it will be called after ROS2 initialization
-        self.command_mode = "velocity_tracking"  # Keep for backward compatibility
         self.motion_in_progress = False
         self.motion_mode_first_entry = True
 
-
-    def _get_device(self):
-        """Get the device to use for computation."""
-        # Use device from main config, fallback to CUDA/CPU
-        device = self.config_yaml.get("device", None)
-        if device:
-            # If config specifies cuda but torch doesn't have CUDA support, fallback to cpu
-            if device == "cuda":
-                try:
-                    if torch.cuda.is_available():
-                        return "cuda"
-                    else:
-                        self.get_logger().warn("Config specifies CUDA but torch doesn't have CUDA support, using CPU instead")
-                        return "cpu"
-                except Exception as e:
-                    self.get_logger().warn(f"Error checking CUDA availability: {e}, using CPU instead")
-                    return "cpu"
-            return device
-        else:
-            # Try to use CUDA if available, otherwise use CPU
-            try:
-                if torch.cuda.is_available():
-                    return "cuda"
-                else:
-                    return "cpu"
-            except Exception as e:
-                self.get_logger().warn(f"Error checking CUDA availability: {e}, using CPU instead")
-                return "cpu"
-
+    def _find_actor_place_holder_ndim(self):
+        n_dim = 0
+        for obs_dict in self.motion_config.obs.obs_groups.policy.atomic_obs_list:
+            if list(obs_dict.keys())[0] == "place_holder":
+                n_dim = obs_dict["place_holder"].params.n_dim
+        return n_dim
 
     def _init_obs_buffers(self):
-        # Get context_length from each model's config
-        velocity_context_length = self.velocity_config.get("obs", {}).get("context_length", 10)
-        motion_context_length = self.motion_config.get("obs", {}).get("context_length", 10)
+        """Initialize observation builders for both velocity and motion policies.
         
-        self.get_logger().info(f"Velocity model context_length: {velocity_context_length}")
-        self.get_logger().info(f"Motion model context_length: {motion_context_length}")
-        # Create separate observation builders for each mode with their own config
+        Each obs_builder uses its own model's dof_names_onnx and default_angles_onnx
+        to ensure correct observation computation for each policy.
+        """
+        # Use velocity model's parameters for velocity obs_builder
         self.velocity_obs_builder = PolicyObsBuilder(
-            dof_names_onnx=self.dof_names_onnx,
-            default_angles_onnx=self.default_angles_onnx,
-            context_length=velocity_context_length,
-            device=self.device,
-            command_mode="velocity_tracking",
+            dof_names_onnx=self.velocity_dof_names_onnx,
+            default_angles_onnx=self.velocity_default_angles_onnx,
+            evaluator=self,
+            obs_policy_cfg=self.velocity_config.obs.obs_groups.policy,
         )
-        
+
+        # Use motion model's parameters for motion obs_builder
         self.motion_obs_builder = PolicyObsBuilder(
-            dof_names_onnx=self.dof_names_onnx,
-            default_angles_onnx=self.default_angles_onnx,
-            context_length=motion_context_length,
-            device=self.device,
-            command_mode="motion_tracking",
+            dof_names_onnx=self.motion_dof_names_onnx,
+            default_angles_onnx=self.motion_default_angles_onnx,
+            evaluator=self,
+            obs_policy_cfg=self.motion_config.obs.obs_groups.policy,
         )
-        
+
         # Set default obs_builder to velocity mode
         self.obs_builder = self.velocity_obs_builder
-
 
     def _reset_counter(self):
         """Reset motion timing counters to start of sequence."""
         self.counter = 0
         self.motion_frame_idx = 0
-    
+
+    def _switch_to_velocity_mode(self, reason: str = ""):
+        """Switch to velocity tracking mode and clear action cache.
+        
+        Uses velocity model's default_angles_onnx to ensure correct initialization.
+        Also publishes velocity model's control parameters (kps/kds).
+        """
+        self.current_policy_mode = "velocity"
+        self._reset_counter()
+        self.actions_onnx = np.zeros(self.num_actions, dtype=np.float32)
+        # Use velocity model's default angles
+        self.target_dof_pos_onnx = self.velocity_default_angles_onnx.copy()
+        # Publish velocity model's control parameters
+        self._publish_control_params()
+        if reason:
+            self.get_logger().info(f"Switched to velocity tracking mode ({reason})")
+        else:
+            self.get_logger().info("Switched to velocity tracking mode")
 
     def _is_button_pressed(self, button_key):
         """Check if button was just pressed (rising edge detection)."""
@@ -221,7 +209,6 @@ class PolicyNodeJustDance(Node):
         # Return True only on rising edge (0 -> 1)
         return current_state == 1 and last_state == 0
 
-
     def load_policy(self):
         """Load both velocity and motion policy models using ONNX Runtime."""
         self.get_logger().info("Loading dual policies...")
@@ -230,7 +217,7 @@ class PolicyNodeJustDance(Node):
             (
                 "CUDAExecutionProvider",
                 {
-                    "device_id": 0,  # Or determine from self.device if needed
+                    "device_id": 0,
                 },
             ),
             "CPUExecutionProvider",
@@ -242,7 +229,7 @@ class PolicyNodeJustDance(Node):
             "models",
             velocity_model_folder,
             "exported",
-        )       
+        )
         # Find ONNX file in exported folder
         velocity_onnx_files = [f for f in os.listdir(velocity_model_path) if f.endswith('.onnx')]
         if not velocity_onnx_files:
@@ -255,7 +242,8 @@ class PolicyNodeJustDance(Node):
             str(velocity_onnx_path), providers=providers
         )
         self.get_logger().info(
-            f"Velocity policy loaded successfully using: {self.velocity_policy_session.get_providers()}"
+            f"Velocity policy loaded successfully using: "
+            f"{self.velocity_policy_session.get_providers()}"
         )
         # Load motion policy from model folder
         motion_model_folder = self.config_yaml.motion_tracking_model_folder
@@ -264,7 +252,7 @@ class PolicyNodeJustDance(Node):
             "models",
             motion_model_folder,
             "exported",
-        )      
+        )
         # Find ONNX file in exported folder
         motion_onnx_files = [f for f in os.listdir(motion_model_path) if f.endswith('.onnx')]
         if not motion_onnx_files:
@@ -277,7 +265,8 @@ class PolicyNodeJustDance(Node):
             str(motion_onnx_path), providers=providers
         )
         self.get_logger().info(
-            f"Motion policy loaded successfully using: {self.motion_policy_session.get_providers()}"
+            f"Motion policy loaded successfully using: "
+            f"{self.motion_policy_session.get_providers()}"
         )
         # Set input/output names for both policies
         self.velocity_input_name = self.velocity_policy_session.get_inputs()[0].name
@@ -286,16 +275,17 @@ class PolicyNodeJustDance(Node):
         self.motion_output_name = self.motion_policy_session.get_outputs()[0].name
         
         self.get_logger().info(
-            f"Velocity policy - Input: {self.velocity_input_name}, Output: {self.velocity_output_name}"
+            f"Velocity policy - Input: {self.velocity_input_name}, "
+            f"Output: {self.velocity_output_name}"
         )
         self.get_logger().info(
-            f"Motion policy - Input: {self.motion_input_name}, Output: {self.motion_output_name}"
+            f"Motion policy - Input: {self.motion_input_name}, "
+            f"Output: {self.motion_output_name}"
         )
         # Store ONNX paths for metadata reading
         self.velocity_onnx_path = velocity_onnx_path
         self.motion_onnx_path = motion_onnx_path
         self.get_logger().info("Dual policies loaded successfully")
-
 
     def load_model_config(self):
         """Load config.yaml from both velocity and motion model folders."""
@@ -317,18 +307,22 @@ class PolicyNodeJustDance(Node):
                 break
         
         if velocity_config_path is None:
-            raise FileNotFoundError(f"No config file found in {velocity_config_dir}. Tried: {config_names}")
-        
-        self.get_logger().info(f"Loading velocity model config from {velocity_config_path}")
-        self.velocity_config = easydict.EasyDict(yaml.safe_load(open(velocity_config_path)))
-        
+            raise FileNotFoundError(
+                f"No config file found in {velocity_config_dir}. Tried: {config_names}"
+            )
+
+        self.get_logger().info(
+            f"Loading velocity model config from {velocity_config_path}"
+        )
+        self.velocity_config = OmegaConf.load(velocity_config_path)
+
         # Load motion model config
         motion_model_folder = self.config_yaml.motion_tracking_model_folder
         motion_config_dir = os.path.join(
             get_package_share_directory("humanoid_control"),
             "models",
             motion_model_folder,
-        )       
+        )
         # Try different config file names for motion model
         motion_config_path = None
         
@@ -339,14 +333,16 @@ class PolicyNodeJustDance(Node):
                 break
         
         if motion_config_path is None:
-            raise FileNotFoundError(f"No config file found in {motion_config_dir}. Tried: {config_names}")
-        
-        self.get_logger().info(f"Loading motion model config from {motion_config_path}")
-        self.motion_config = easydict.EasyDict(yaml.safe_load(open(motion_config_path)))      
-        # Set the main config to velocity config for backward compatibility
-        self.config = self.velocity_config
-        self.get_logger().info("Both model configs loaded successfully")
+            raise FileNotFoundError(
+                f"No config file found in {motion_config_dir}. Tried: {config_names}"
+            )
 
+        self.get_logger().info(f"Loading motion model config from {motion_config_path}")
+        self.motion_config = OmegaConf.load(motion_config_path)
+        self.actor_place_holder_ndim = self._find_actor_place_holder_ndim()
+        self.n_fut_frames = int(self.motion_config.obs.n_fut_frames)
+        self.torso_body_idx = self.motion_config.robot.body_names.index("torso_link")
+        self.get_logger().info("Both model configs loaded successfully")
 
     def update_config_parameters(self):
         """Update configuration parameters from loaded configs."""
@@ -359,8 +355,11 @@ class PolicyNodeJustDance(Node):
         
         # Verify that both models have compatible configurations
         if velocity_actions_dim != motion_actions_dim:
-            self.get_logger().warn(f"Different actions_dim: velocity={velocity_actions_dim}, motion={motion_actions_dim}")
-        
+            self.get_logger().warn(
+                f"Different actions_dim: velocity={velocity_actions_dim}, "
+                f"motion={motion_actions_dim}"
+            )
+
         if velocity_dof_names != motion_dof_names:
             self.get_logger().warn(f"Different dof_names between models")
             self.get_logger().warn(f"Velocity dof_names: {len(velocity_dof_names)} items")
@@ -373,8 +372,7 @@ class PolicyNodeJustDance(Node):
         self.real_dof_names = config.get("robot", {}).get("dof_names", [])
         self.dof_names_ref_motion = list(config.robot.dof_names)
         self.num_actions = len(self.dof_names_ref_motion)
-        # Note: context_length is now handled separately for each obs_builder
-        
+
         # Update arrays with correct sizes
         self.action_scale_onnx = np.ones(self.num_actions, dtype=np.float32)
         self.kps_onnx = np.zeros(self.num_actions, dtype=np.float32)
@@ -383,125 +381,110 @@ class PolicyNodeJustDance(Node):
         self.target_dof_pos_onnx = self.default_angles_onnx.copy()
         self.actions_onnx = np.zeros(self.num_actions, dtype=np.float32)
         
-        self.get_logger().info(f"Updated config parameters: actions_dim={self.actions_dim}, dof_names={len(self.real_dof_names)}")
-
+        self.get_logger().info(
+            f"Updated config parameters: actions_dim={self.actions_dim}, "
+            f"dof_names={len(self.real_dof_names)}"
+        )
 
     def load_motion_data(self):
-        """ Load motion data from .npz files."""
-        dance_dir = os.path.join(
+        """Load motion clip data from .npz files."""
+        motion_clips_dir = os.path.join(
             get_package_share_directory("humanoid_control"),
             self.config_yaml.dance_motions_dir,
         )
         
-        self.get_logger().info(f"Looking for motion data in: {dance_dir}")
-        self.get_logger().info(f"Directory exists: {os.path.exists(dance_dir)}")
+        self.get_logger().info(f"Looking for motion clip data in: {motion_clips_dir}")
+        self.get_logger().info(f"Directory exists: {os.path.exists(motion_clips_dir)}")
 
-        if not os.path.exists(dance_dir):
-            self.get_logger().warn(f"Dance motions directory not found: {dance_dir}")
+        if not os.path.exists(motion_clips_dir):
+            self.get_logger().warn(f"Motion clips directory not found: {motion_clips_dir}")
             return
 
         # Only collect .npz files
-        dance_files = [f for f in os.listdir(dance_dir) if f.endswith('.npz')]
-        dance_files.sort()
-        self.get_logger().info(f"Found {len(dance_files)} motion files (.npz): {dance_files}")
-        if not dance_files:
+        motion_clip_files = [f for f in os.listdir(motion_clips_dir) if f.endswith(".npz")]
+        motion_clip_files.sort()
+        self.get_logger().info(
+            f"Found {len(motion_clip_files)} motion clip files (.npz): {motion_clip_files}"
+        )
+        if not motion_clip_files:
             self.get_logger().warn(
-                f"No motion files (.npz) found in dance directory: {dance_dir}"
+                f"No motion clip files (.npz) found in directory: {motion_clips_dir}"
             )
             return
 
         # Load each .npz file
         self.all_motion_data = []
         self.motion_file_names = []
-        for dance_file in dance_files:
-            motion_path = os.path.join(dance_dir, dance_file)
+        for motion_clip_file in motion_clip_files:
+            motion_path = os.path.join(motion_clips_dir, motion_clip_file)
             try:
-                ref_dof_pos, ref_dof_vel = self._load_motion_file(motion_path)
-                if ref_dof_pos is None or ref_dof_vel is None:
-                    self.get_logger().warn(f"Unsupported or invalid motion file (missing keys): {dance_file}")
-                    continue
-
-                ref_dof_pos = ref_dof_pos.astype(np.float32)
-                ref_dof_vel = ref_dof_vel.astype(np.float32)
-
-                if ref_dof_pos.shape[0] != ref_dof_vel.shape[0]:
-                    self.get_logger().warn(
-                        f"Frame mismatch in {dance_file}: pos {ref_dof_pos.shape}, vel {ref_dof_vel.shape}"
+                motion_data_dict = dict(np.load(motion_path, allow_pickle=True))
+                try:
+                    self.all_motion_data.append(
+                        {
+                            "dof_pos": motion_data_dict["ref_dof_pos"],
+                            "dof_vel": motion_data_dict["ref_dof_vel"],
+                            "global_translation": motion_data_dict[
+                                "ref_global_translation"
+                            ],
+                            "global_rotation_quat": motion_data_dict[
+                                "ref_global_rotation_quat"
+                            ],
+                            "n_frames": motion_data_dict["ref_dof_pos"].shape[0],
+                        }
                     )
-                    n_min = min(ref_dof_pos.shape[0], ref_dof_vel.shape[0])
-                    ref_dof_pos = ref_dof_pos[:n_min]
-                    ref_dof_vel = ref_dof_vel[:n_min]
-
-                self.all_motion_data.append({
-                    'dof_pos': ref_dof_pos,
-                    'dof_vel': ref_dof_vel,
-                    'n_frames': ref_dof_pos.shape[0]
-                })
-                self.motion_file_names.append(dance_file)
+                    self.motion_file_names.append(motion_clip_file)
+                except:
+                    self.all_motion_data.append(
+                        {
+                            "dof_pos": motion_data_dict["dof_pos"],
+                            "dof_vel": motion_data_dict["dof_vels"],
+                            "global_translation": motion_data_dict[
+                                "global_translation"
+                            ],
+                            "global_rotation_quat": motion_data_dict[
+                                "global_rotation_quat"
+                            ],
+                            "n_frames": motion_data_dict["dof_pos"].shape[0],
+                        }
+                    )
+                    self.motion_file_names.append(motion_clip_file)
             except Exception as e:
-                self.get_logger().warn(f"Failed to load motion data from {dance_file}: {e}")
+                self.get_logger().warn(f"Failed to load motion data from {motion_clip_file}: {e}")
                 continue
         
         if not self.all_motion_data:
-            self.get_logger().error("Failed to load any motion data files")
+            self.get_logger().error("Failed to load any motion clip files")
             return
 
-        # Initialize with the first motion
-        self.current_dance_index = 0
+        # Initialize with the first motion clip
+        self.current_motion_clip_index = 0
         self._load_current_motion()
         
-        self.get_logger().info(f"Loaded {len(self.all_motion_data)} dance motions successfully")
-        self.get_logger().info(f"Current dance: {self.motion_file_names[self.current_dance_index]}")
-
-    def _load_motion_file(self, motion_path: str):
-        """Load a single .npz file, return (dof_pos [T,N], dof_vel [T,N]). Return (None, None) on failure."""
-        try:
-            if not motion_path.endswith('.npz'):
-                return None, None
-            with np.load(motion_path, allow_pickle=True) as npz:
-                keys = list(npz.keys())
-                naming_pairs = [
-                    ("dof_pos", "dof_vel"),
-                    ("dof_pos", "dof_vels"),
-                    ("ref_dof_pos", "ref_dof_vel"),
-                ]
-                for pos_key, vel_key in naming_pairs:
-                    if pos_key in npz and vel_key in npz:
-                        pos = np.array(npz[pos_key]).astype(np.float32)
-                        vel = np.array(npz[vel_key]).astype(np.float32)
-                        if pos.shape[0] != vel.shape[0]:
-                            min_T = min(pos.shape[0], vel.shape[0])
-                            pos = pos[:min_T]
-                            vel = vel[:min_T]
-                        return pos, vel
-                if len(keys) == 1:
-                    arr = npz[keys[0]]
-                    if getattr(arr, 'dtype', None) == object:
-                        obj = arr.item() if arr.size == 1 else arr
-                        if isinstance(obj, dict):
-                            if 'dof_pos' in obj and 'dof_vel' in obj:
-                                return np.array(obj['dof_pos']).astype(np.float32), np.array(obj['dof_vel']).astype(np.float32)
-                            if 'dof_pos' in obj and 'dof_vels' in obj:
-                                return np.array(obj['dof_pos']).astype(np.float32), np.array(obj['dof_vels']).astype(np.float32)
-                return None, None
-        except Exception as load_err:
-            raise load_err
-
+        self.get_logger().info(f"Loaded {len(self.all_motion_data)} motion clips successfully")
+        self.get_logger().info(
+            f"Current motion clip: {self.motion_file_names[self.current_motion_clip_index]}"
+        )
 
     def _load_current_motion(self):
-        """Load the current selected motion data."""
+        """Load the current selected motion clip data."""
         if not self.all_motion_data:
             return
             
         self.motion_frame_idx = 0
-        current_motion = self.all_motion_data[self.current_dance_index]
-        self.ref_dof_pos = current_motion['dof_pos']
-        self.ref_dof_vel = current_motion['dof_vel']
-        self.n_motion_frames = current_motion['n_frames']
-        
+        current_motion = self.all_motion_data[self.current_motion_clip_index]
+        self.ref_dof_pos = current_motion["dof_pos"]
+        self.ref_dof_vel = current_motion["dof_vel"]
+        self.ref_raw_bodylink_pos = current_motion["global_translation"]
+        self.ref_raw_bodylink_rot = current_motion["global_rotation_quat"]
+
+        self.n_motion_frames = current_motion["n_frames"]
+
         self.motion_in_progress = True
-        self.get_logger().info(f"Loaded motion {self.current_dance_index}: {self.motion_file_names[self.current_dance_index]} ({self.n_motion_frames} frames)")
-       
+        self.get_logger().info(
+            f"Loaded motion clip {self.current_motion_clip_index}: "
+            f"{self.motion_file_names[self.current_motion_clip_index]} ({self.n_motion_frames} frames)"
+        )
 
     def _setup_subscribers(self):
         """Set up ROS2 subscribers for robot state and remote controller input."""
@@ -520,7 +503,6 @@ class PolicyNodeJustDance(Node):
             self._robot_state_callback,
             QoSProfile(depth=10),
         )
-
 
     def _setup_publishers(self):
         """Set up ROS2 publishers for action commands and status information."""
@@ -546,7 +528,6 @@ class PolicyNodeJustDance(Node):
             "policy_mode",
             QoSProfile(depth=10),
         )
-
 
     def _setup_timers(self):
         """Set up ROS2 timer for main execution loop."""
@@ -589,6 +570,220 @@ class PolicyNodeJustDance(Node):
         elif robot_state == "EMERGENCY_STOP":
             self.robot_state_ready = False
 
+    # =========== Properties ===========
+
+    @property
+    def robot_root_rot_quat_wxyz(self):
+        return np.array(self._lowstate_msg.imu_state.quaternion, dtype=np.float32)
+
+    @property
+    def robot_root_ang_vel(self):
+        return np.array(self._lowstate_msg.imu_state.gyroscope, dtype=np.float32)
+
+    @property
+    def robot_dof_pos_by_name(self):
+        """Get DOF positions by name."""
+        if self._lowstate_msg is None:
+            return {}
+        return {
+            self.real_dof_names[i]: float(self._lowstate_msg.motor_state[i].q)
+            for i in range(self.actions_dim)
+        }
+
+    @property
+    def robot_dof_vel_by_name(self):
+        """Get DOF velocities by name."""
+        if self._lowstate_msg is None:
+            return {}
+        return {
+            self.real_dof_names[i]: float(self._lowstate_msg.motor_state[i].dq)
+            for i in range(self.actions_dim)
+        }
+
+    @property
+    def ref_motion_frame_idx(self):
+        return min(self.motion_frame_idx, self.n_motion_frames - 1)
+
+    @property
+    def ref_dof_pos_raw(self):
+        return self.ref_dof_pos[self.ref_motion_frame_idx]
+
+    @property
+    def ref_dof_vel_raw(self):
+        return self.ref_dof_vel[self.ref_motion_frame_idx]
+
+    @property
+    def ref_dof_pos_onnx_order(self):
+        return self.ref_dof_pos_raw[self.ref_to_onnx]
+
+    @property
+    def ref_dof_vel_onnx_order(self):
+        return self.ref_dof_vel_raw[self.ref_to_onnx]
+
+    @property
+    def ref_root_pos_raw(self):
+        return np.asarray(
+            self.ref_raw_bodylink_pos[self.ref_motion_frame_idx, self.root_body_idx],
+            dtype=np.float32,
+        )
+
+    @property
+    def root_body_idx(self):
+        return 0
+
+    @property
+    def last_valid_ref_motion_frame_idx(self):
+        return self.n_motion_frames - 1
+
+    # =========== Policy Obeservation Methods ===========
+
+    def _get_obs_velocity_command(self):
+        """Get velocity command observation (reuses pre-allocated array)."""
+        self._velocity_cmd_obs[1] = self.vx
+        self._velocity_cmd_obs[2] = self.vy
+        self._velocity_cmd_obs[3] = self.vyaw
+        self._velocity_cmd_obs[0] = float(
+            np.linalg.norm(self._velocity_cmd_obs[1:4]) > 0.1
+        )
+        return self._velocity_cmd_obs
+
+    def _get_obs_projected_gravity(self):
+        return get_gravity_orientation(self.robot_root_rot_quat_wxyz)
+
+    def _get_obs_rel_robot_root_ang_vel(self):
+        return self.robot_root_ang_vel
+
+    def _get_obs_dof_pos(self):
+        """Get DOF position observation (uses pre-computed dictionaries)."""
+        dof_pos_by_name = self.robot_dof_pos_by_name
+        # Use pre-computed default angles dictionary based on current policy mode
+        if self.current_policy_mode == "motion":
+            default_angles_dict = self.motion_default_angles_dict
+            dof_names_onnx = self.motion_dof_names_onnx
+        else:
+            default_angles_dict = self.velocity_default_angles_dict
+            dof_names_onnx = self.velocity_dof_names_onnx
+        
+        dof_pos_onnx = np.array(
+            [
+                dof_pos_by_name[name] - default_angles_dict[name]
+                for name in dof_names_onnx
+            ],
+            dtype=np.float32,
+        )
+        return dof_pos_onnx
+
+    def _get_obs_dof_vel(self):
+        """Get DOF velocity observation (uses mode-specific DOF names)."""
+        dof_vel_by_name = self.robot_dof_vel_by_name
+        # Use mode-specific DOF names
+        if self.current_policy_mode == "motion":
+            dof_names_onnx = self.motion_dof_names_onnx
+        else:
+            dof_names_onnx = self.velocity_dof_names_onnx
+        
+        dof_vel_onnx = np.array(
+            [dof_vel_by_name[name] for name in dof_names_onnx],
+            dtype=np.float32,
+        )
+        return dof_vel_onnx
+
+    def _get_obs_last_action(self):
+        return self.actions_onnx.copy()
+
+    def _get_obs_ref_motion_states(self):
+        return np.concatenate(
+            [self.ref_dof_pos_onnx_order, self.ref_dof_vel_onnx_order]
+        )
+
+    def _get_obs_ref_dof_pos_fut(self):
+        """Get future DOF position observation (reuses pre-allocated buffer)."""
+        T = self.n_fut_frames_int
+        if T <= 0 or self.ref_dof_pos is None:
+            return np.zeros(0, dtype=np.float32)
+        frame_idx = self.ref_motion_frame_idx
+        # Reuse pre-allocated buffer
+        pos_fut = self._pos_fut_buffer
+        for i in range(T):
+            idx = frame_idx + i + 1
+            if idx < self.n_motion_frames:
+                pos_fut[:, i] = self.ref_dof_pos[idx]
+            else:
+                pos_fut[:, i] = self.ref_dof_pos[self.last_valid_ref_motion_frame_idx]
+        # Reorder to ONNX and flatten per training layout
+        pos_fut_onnx = pos_fut[self.ref_to_onnx, :].transpose(1, 0)  # [N, T]
+        return pos_fut_onnx.reshape(-1).astype(np.float32)
+
+    def _get_obs_ref_root_height_fut(self):
+        """Get future root height observation (reuses pre-allocated buffer)."""
+        T = self.n_fut_frames_int
+        if T <= 0:
+            return np.zeros(0, dtype=np.float32)
+        if self.ref_raw_bodylink_pos is None:
+            return np.zeros(0, dtype=np.float32)
+        frame_idx = self.ref_motion_frame_idx
+        # Reuse pre-allocated buffer
+        h_fut = self._h_fut_buffer
+        for i in range(T):
+            idx = frame_idx + i + 1
+            if idx < self.n_motion_frames:
+                h_fut[0, i] = self.ref_raw_bodylink_pos[
+                    idx,
+                    self.root_body_idx,
+                    2,
+                ]
+            else:
+                h_fut[0, i] = self.ref_raw_bodylink_pos[
+                    self.last_valid_ref_motion_frame_idx,
+                    self.root_body_idx,
+                    2,
+                ]
+        return h_fut.reshape(-1).astype(np.float32)
+
+    def _get_obs_ref_root_pos_fut(self):
+        """Get future root position observation (reuses pre-allocated buffer)."""
+        T = self.n_fut_frames_int
+        if T <= 0:
+            return np.zeros(0, dtype=np.float32)
+        if self.ref_raw_bodylink_pos is None:
+            return np.zeros(0, dtype=np.float32)
+        frame_idx = self.ref_motion_frame_idx
+        # Reuse pre-allocated buffer
+        pos_fut = self._root_pos_fut_buffer
+        for i in range(T):
+            idx = frame_idx + i + 1
+            if idx < self.n_motion_frames:
+                pos_fut[i] = self.ref_raw_bodylink_pos[
+                    idx,
+                    self.root_body_idx,
+                    :
+                ]
+            else:
+                pos_fut[i] = self.ref_raw_bodylink_pos[
+                    self.last_valid_ref_motion_frame_idx,
+                    self.root_body_idx,
+                    :
+                ]
+        return pos_fut.reshape(-1).astype(np.float32)
+
+    def _get_obs_ref_dof_pos_cur(self):
+        return self.ref_dof_pos_onnx_order
+
+    def _get_obs_ref_dof_vel_cur(self):
+        return self.ref_dof_vel_onnx_order
+
+    def _get_obs_ref_root_height_cur(self):
+        return self.ref_raw_bodylink_pos[
+            self.ref_motion_frame_idx, self.root_body_idx, 2
+        ]
+
+    def _get_obs_ref_root_pos_cur(self):
+        return self.ref_root_pos_raw.astype(np.float32)
+
+    def _get_obs_place_holder(self):
+        return np.zeros(self.actor_place_holder_ndim, dtype=np.float32)
+
+    # =========== Policy Obeservation Methods ===========
 
     def _low_state_callback(self, ls_msg: LowState):
         """Process low-level robot state and remote controller input.
@@ -603,7 +798,7 @@ class PolicyNodeJustDance(Node):
         - A button: Enable policy (defaults to velocity mode)
         - B button: Switch from velocity to motion mode
         - Y button: Switch from motion back to velocity mode
-        - UP/DOWN/LEFT/RIGHT: Dance motions (only in velocity mode)
+        - UP/DOWN/LEFT/RIGHT: Motion clip selection (only in velocity tracking mode)
 
         Args:
             ls_msg: LowState message containing robot sensor data and remote controller input
@@ -619,84 +814,104 @@ class PolicyNodeJustDance(Node):
             self.current_policy_mode = "velocity"  # Default to velocity mode
             self._reset_counter()
             self.motion_mode_first_entry = True   # reset flag
+            # Initialize with velocity model's default angles
+            self.actions_onnx = np.zeros(self.num_actions, dtype=np.float32)
+            self.target_dof_pos_onnx = self.velocity_default_angles_onnx.copy()
+            # Publish velocity model's control parameters (kps/kds)
+            self._publish_control_params()
             self.get_logger().info(
-                f"Policy enabled in {self.current_policy_mode} mode"
+                f"Policy enabled in {self.current_policy_mode} tracking mode"
             )
 
-        # B button: Switch to motion policy mode (only when policy is enabled)
+        # B button: Switch to motion tracking mode (only when policy is enabled)
         if (
-            self._is_button_pressed(KeyMap.B) and 
-            self.robot_state_ready and 
-            self.policy_enabled and
-            self.current_policy_mode == "velocity"  # Only allow switch from velocity mode
+            self._is_button_pressed(KeyMap.B)
+            and self.robot_state_ready
+            and self.policy_enabled
+            and self.current_policy_mode == "velocity"  # Only allow switch from velocity mode
         ):
-            # Don't automatically switch to next dance - keep current selection
-            if hasattr(self, 'all_motion_data') and self.all_motion_data:
-                # Load the current motion data (don't change current_dance_index)
+            # Don't automatically switch to next motion clip - keep current selection
+            if hasattr(self, "all_motion_data") and self.all_motion_data:
+                # Load the current motion clip data (don't change current_motion_clip_index)
                 self._load_current_motion()
-            
+
             self.motion_mode_first_entry = False
             self.current_policy_mode = "motion"
             self._reset_counter()
-            
+
             # Clear any pending actions to prevent conflicts between policies
+            # Use motion model's default angles
             self.actions_onnx = np.zeros(self.num_actions, dtype=np.float32)
-            self.target_dof_pos_onnx = self.default_angles_onnx.copy()
+            self.target_dof_pos_onnx = self.motion_default_angles_onnx.copy()
             
-            self.get_logger().info(f"Switched to motion policy mode - dance index: {self.current_dance_index}")
+            # Publish motion model's control parameters (kps/kds)
+            self._publish_control_params()
+
+            self.get_logger().info(
+                f"Switched to motion tracking mode - motion clip index: {self.current_motion_clip_index}"
+            )
             self.motion_in_progress = True
 
-        # Y button: Switch back to velocity policy mode (only when policy is enabled)
+        # Y button: Switch back to velocity tracking mode (only when policy is enabled)
         if (
-            self._is_button_pressed(KeyMap.Y) and 
-            self.robot_state_ready and 
-            self.policy_enabled and
-            self.current_policy_mode == "motion"  # Only allow switch from motion mode
+            self._is_button_pressed(KeyMap.Y)
+            and self.robot_state_ready
+            and self.policy_enabled
+            and self.current_policy_mode == "motion"  # Only allow switch from motion mode
         ):
-            self.current_policy_mode = "velocity"
-            self._reset_counter()
-            
-            # Clear any pending actions to prevent conflicts between policies
-            self.actions_onnx = np.zeros(self.num_actions, dtype=np.float32)
-            self.target_dof_pos_onnx = self.default_angles_onnx.copy()
-            
-            # Don't reset motion_mode_first_entry here - we want to advance to next dance
-            self.get_logger().info(f"Switched to velocity policy mode")
+            self._switch_to_velocity_mode()
+            # Don't reset motion_mode_first_entry here - we want to advance to next motion clip
 
-        # Get velocity commands only in velocity mode
+        # Get velocity commands only in velocity tracking mode
         if self.current_policy_mode == "velocity":
             self.vx, self.vy, self.vyaw = self.remote_controller.get_velocity_commands()
         else:
-            # In motion mode, ignore joystick input
+            # In motion tracking mode, ignore joystick input
             self.vx, self.vy, self.vyaw = 0.0, 0.0, 0.0
 
-        # Handle motion selection in velocity mode (UP/DOWN/LEFT/RIGHT for dance selection)
-        if (self.current_policy_mode == "velocity" and 
-            self.policy_enabled and 
-            self.robot_state_ready):
-            
-            # Handle dance motion selection with UP/DOWN/LEFT/RIGHT buttons
+        # Handle motion clip selection in velocity tracking mode (UP/DOWN/LEFT/RIGHT)
+        if (
+            self.current_policy_mode == "velocity"
+            and self.policy_enabled
+            and self.robot_state_ready
+        ):
+            # Handle motion clip selection with UP/DOWN/LEFT/RIGHT buttons
             if self._is_button_pressed(KeyMap.up):
-                # Switch to previous dance
-                if hasattr(self, 'all_motion_data') and self.all_motion_data:
-                    self.current_dance_index = (self.current_dance_index - 1) % len(self.all_motion_data)
-                    self.get_logger().info(f"Selected previous dance: {self.motion_file_names[self.current_dance_index]}")
+                # Switch to previous motion clip
+                if hasattr(self, "all_motion_data") and self.all_motion_data:
+                    self.current_motion_clip_index = (
+                        self.current_motion_clip_index - 1
+                    ) % len(self.all_motion_data)
+                    self.get_logger().info(
+                        f"Selected previous motion clip: "
+                        f"{self.motion_file_names[self.current_motion_clip_index]}"
+                    )
             elif self._is_button_pressed(KeyMap.down):
-                # Switch to next dance
-                if hasattr(self, 'all_motion_data') and self.all_motion_data:
-                    self.current_dance_index = (self.current_dance_index + 1) % len(self.all_motion_data)
-                    self.get_logger().info(f"Selected next dance: {self.motion_file_names[self.current_dance_index]}")
+                # Switch to next motion clip
+                if hasattr(self, "all_motion_data") and self.all_motion_data:
+                    self.current_motion_clip_index = (
+                        self.current_motion_clip_index + 1
+                    ) % len(self.all_motion_data)
+                    self.get_logger().info(
+                        f"Selected next motion clip: "
+                        f"{self.motion_file_names[self.current_motion_clip_index]}"
+                    )
             elif self._is_button_pressed(KeyMap.left):
-                # Select first dance
-                if hasattr(self, 'all_motion_data') and self.all_motion_data:
-                    self.current_dance_index = 0
-                    self.get_logger().info(f"Selected first dance: {self.motion_file_names[self.current_dance_index]}")
+                # Select first motion clip
+                if hasattr(self, "all_motion_data") and self.all_motion_data:
+                    self.current_motion_clip_index = 0
+                    self.get_logger().info(
+                        f"Selected first motion clip: "
+                        f"{self.motion_file_names[self.current_motion_clip_index]}"
+                    )
             elif self._is_button_pressed(KeyMap.right):
-                # Select last dance
-                if hasattr(self, 'all_motion_data') and self.all_motion_data:
-                    self.current_dance_index = len(self.all_motion_data) - 1
-                    self.get_logger().info(f"Selected last dance: {self.motion_file_names[self.current_dance_index]}")
-
+                # Select last motion clip
+                if hasattr(self, "all_motion_data") and self.all_motion_data:
+                    self.current_motion_clip_index = len(self.all_motion_data) - 1
+                    self.get_logger().info(
+                        f"Selected last motion clip: "
+                        f"{self.motion_file_names[self.current_motion_clip_index]}"
+                    )
 
     def run(self):
         """Main execution loop for policy inference and action publication."""
@@ -705,12 +920,8 @@ class PolicyNodeJustDance(Node):
             return
         self._run_without_profiling()
 
-
-    def _read_onnx_metadata(self) -> dict:
+    def _read_onnx_metadata(self, onnx_model_path: str) -> dict:
         """Read model metadata from ONNX file and parse into Python types."""
-        # Use velocity policy metadata as the primary source (assuming both policies have same structure)
-        onnx_model_path = self.velocity_onnx_path
-            
         model = onnx.load(str(onnx_model_path))
         meta = {p.key: p.value for p in model.metadata_props}
 
@@ -728,64 +939,135 @@ class PolicyNodeJustDance(Node):
         result["joint_names"] = [x for x in meta["joint_names"].split(",") if x != ""]
         return result
 
-
     def _apply_onnx_metadata(self):
-        """Apply PD/scale/defaults from ONNX metadata as authoritative values."""
-        meta = self._read_onnx_metadata()
-        self.dof_names_onnx = meta["joint_names"]
-        self.action_scale_onnx = meta["action_scale"].astype(np.float32)
-        self.kps_onnx = meta["kps"].astype(np.float32)
-        self.kds_onnx = meta["kds"].astype(np.float32)
-        self.default_angles_onnx = meta["default_joint_pos"].astype(np.float32)
-    
-    
+        """Apply PD/scale/defaults from ONNX metadata as authoritative values.
+        Load separate metadata for velocity and motion models."""
+        # Load velocity model metadata
+        velocity_meta = self._read_onnx_metadata(self.velocity_onnx_path)
+        self.velocity_dof_names_onnx = velocity_meta["joint_names"]
+        self.velocity_action_scale_onnx = velocity_meta["action_scale"].astype(np.float32)
+        self.velocity_kps_onnx = velocity_meta["kps"].astype(np.float32)
+        self.velocity_kds_onnx = velocity_meta["kds"].astype(np.float32)
+        self.velocity_default_angles_onnx = velocity_meta["default_joint_pos"].astype(np.float32)
+        
+        # Load motion model metadata
+        motion_meta = self._read_onnx_metadata(self.motion_onnx_path)
+        self.motion_dof_names_onnx = motion_meta["joint_names"]
+        self.motion_action_scale_onnx = motion_meta["action_scale"].astype(np.float32)
+        self.motion_kps_onnx = motion_meta["kps"].astype(np.float32)
+        self.motion_kds_onnx = motion_meta["kds"].astype(np.float32)
+        self.motion_default_angles_onnx = motion_meta["default_joint_pos"].astype(np.float32)
+        
+        # Use velocity model metadata as default (for backward compatibility)
+        self.dof_names_onnx = self.velocity_dof_names_onnx
+        self.action_scale_onnx = self.velocity_action_scale_onnx
+        self.kps_onnx = self.velocity_kps_onnx
+        self.kds_onnx = self.velocity_kds_onnx
+        self.default_angles_onnx = self.velocity_default_angles_onnx
+        self.default_angles_dict = {
+            name: float(self.default_angles_onnx[idx])
+            for idx, name in enumerate(self.dof_names_onnx)
+        }
+
     def _build_dof_mappings(self):
         # Map ONNX <-> MJCF for control
         
-        # Check if all ONNX names exist in real_dof_names
-        missing_names = [name for name in self.dof_names_onnx if name not in self.real_dof_names]
+        # Check if all ONNX names exist in real_dof_names (use velocity as reference)
+        missing_names = [name for name in self.velocity_dof_names_onnx if name not in self.real_dof_names]
         if missing_names:
             self.get_logger().warn(f"Missing names in real_dof_names: {missing_names}")
-            # Use dof_names_onnx as the authoritative source
-            # self.real_dof_names = self.dof_names_onnx.copy()
         
-        self.onnx_to_real = [
-            self.dof_names_onnx.index(name) for name in self.real_dof_names
+        # Build mappings for velocity model
+        self.velocity_onnx_to_real = [
+            self.velocity_dof_names_onnx.index(name) for name in self.real_dof_names
         ]
+        self.velocity_kps_real = self.velocity_kps_onnx[self.velocity_onnx_to_real].astype(np.float32)
+        self.velocity_kds_real = self.velocity_kds_onnx[self.velocity_onnx_to_real].astype(np.float32)
+        
+        # Build mappings for motion model
+        self.motion_onnx_to_real = [
+            self.motion_dof_names_onnx.index(name) for name in self.real_dof_names
+        ]
+        self.motion_kps_real = self.motion_kps_onnx[self.motion_onnx_to_real].astype(np.float32)
+        self.motion_kds_real = self.motion_kds_onnx[self.motion_onnx_to_real].astype(np.float32)
+        
+        # Use velocity model mappings as default (for backward compatibility)
+        self.onnx_to_real = self.velocity_onnx_to_real
+        self.kps_real = self.velocity_kps_real
+        self.kds_real = self.velocity_kds_real
+        self.default_angles_mu = self.velocity_default_angles_onnx[self.velocity_onnx_to_real].astype(np.float32)
+        self.action_scale_mu = self.velocity_action_scale_onnx[self.velocity_onnx_to_real].astype(np.float32)
+        
+        # Build ref_to_onnx mapping (for motion model)
         self.ref_to_onnx = [
-            self.dof_names_ref_motion.index(name) for name in self.dof_names_onnx
+            self.dof_names_ref_motion.index(name) for name in self.motion_dof_names_onnx
         ]
-
-        self.kps_real = self.kps_onnx[self.onnx_to_real].astype(np.float32)
-        self.kds_real = self.kds_onnx[self.onnx_to_real].astype(np.float32)
-        self.default_angles_mu = self.default_angles_onnx[self.onnx_to_real].astype(
-            np.float32
-        )
-        self.action_scale_mu = self.action_scale_onnx[self.onnx_to_real].astype(
-            np.float32
-        )
         
-        # Publish kps and kds parameters
+        # Pre-compute default angles dictionaries for efficient observation building
+        self.velocity_default_angles_dict = {
+            name: float(self.velocity_default_angles_onnx[idx])
+            for idx, name in enumerate(self.velocity_dof_names_onnx)
+        }
+        self.motion_default_angles_dict = {
+            name: float(self.motion_default_angles_onnx[idx])
+            for idx, name in enumerate(self.motion_dof_names_onnx)
+        }
+        
+        # Pre-compute dof_names_onnx arrays for each mode (avoid repeated selection)
+        self.velocity_dof_names_onnx_array = np.array(self.velocity_dof_names_onnx)
+        self.motion_dof_names_onnx_array = np.array(self.motion_dof_names_onnx)
+        
+        # Pre-allocate arrays for future frame observations
+        if hasattr(self, "n_fut_frames") and self.n_fut_frames is not None:
+            self.n_fut_frames_int = int(self.n_fut_frames)
+            if self.n_fut_frames_int > 0:
+                self._pos_fut_buffer = np.zeros(
+                    (len(self.dof_names_ref_motion), self.n_fut_frames_int), dtype=np.float32
+                )
+                self._h_fut_buffer = np.zeros((1, self.n_fut_frames_int), dtype=np.float32)
+                self._root_pos_fut_buffer = np.zeros((self.n_fut_frames_int, 3), dtype=np.float32)
+            else:
+                self.n_fut_frames_int = 0
+        else:
+            self.n_fut_frames_int = 0
+        
+        # Pre-allocate velocity command observation array
+        self._velocity_cmd_obs = np.zeros(4, dtype=np.float32)
+        
+        # Publish kps and kds parameters (use velocity as default)
         self._publish_control_params()
 
-
     def _publish_control_params(self):
-        """Publish kps and kds control parameters."""
+        """Publish kps and kds control parameters based on current policy mode.
+        
+        Called during initialization and mode switching to ensure control node
+        receives the correct parameters for the current policy mode.
+        """
         try:
+            # Use appropriate parameters based on current policy mode
+            if self.current_policy_mode == "motion":
+                current_kps = self.motion_kps_real
+                current_kds = self.motion_kds_real
+            else:  # velocity mode
+                current_kps = self.velocity_kps_real
+                current_kds = self.velocity_kds_real
+            
             # Publish kps
             kps_msg = Float32MultiArray()
-            kps_msg.data = self.kps_real.tolist()
+            kps_msg.data = current_kps.tolist()
             self.kps_pub.publish(kps_msg)
             
             # Publish kds
             kds_msg = Float32MultiArray()
-            kds_msg.data = self.kds_real.tolist()
+            kds_msg.data = current_kds.tolist()
             self.kds_pub.publish(kds_msg)
             
-            self.get_logger().info(f"Published control parameters: kps={len(self.kps_real)}, kds={len(self.kds_real)}")
+            self.get_logger().info(
+                f"Published control parameters ({self.current_policy_mode} mode): "
+                f"kps={len(current_kps)}, kds={len(current_kds)}"
+            )
         except Exception as e:
             self.get_logger().error(f"Failed to publish control parameters: {e}")
-
 
     def _publish_policy_mode(self):
         """Publish current policy mode status."""
@@ -796,61 +1078,29 @@ class PolicyNodeJustDance(Node):
         except Exception as e:
             self.get_logger().error(f"Failed to publish policy mode: {e}")
 
-
     def _run_without_profiling(self):
         """Run the main loop without performance profiling."""
         if self._lowstate_msg is None or not self.policy_enabled:
             return None
-        q_by_name = {
-            self.real_dof_names[i]: float(self._lowstate_msg.motor_state[i].q)
-            for i in range(self.actions_dim)
-        }
-        dq_by_name = {
-            self.real_dof_names[i]: float(self._lowstate_msg.motor_state[i].dq)
-            for i in range(self.actions_dim)
-        }
-        imu_quat = np.array(self._lowstate_msg.imu_state.quaternion, dtype=np.float32)
-        imu_gyro = np.array(self._lowstate_msg.imu_state.gyroscope, dtype=np.float32)
 
         if self.current_policy_mode == "motion":
             # Check if motion data is loaded
-            if not hasattr(self, 'n_motion_frames') or not hasattr(self, 'ref_dof_pos'):
+            if not hasattr(self, "n_motion_frames") or not hasattr(self, "ref_dof_pos"):
                 self.get_logger().warn("Motion data not loaded, skipping policy execution")
                 return None
-            frame_idx = min(self.motion_frame_idx, self.n_motion_frames - 1)
-            ref_dof_pos_raw = self.ref_dof_pos[frame_idx]
-            ref_dof_vel_raw = self.ref_dof_vel[frame_idx]
-
-            # Use motion obs_builder
             self.obs_builder = self.motion_obs_builder
-            
-            hist_obs = self.obs_builder.update_from_lowstate(
-                q_by_name=q_by_name,
-                dq_by_name=dq_by_name,
-                imu_quat=imu_quat,
-                imu_gyro=imu_gyro,
-                last_action=self.actions_onnx,
-                ref_dof_pos_mu=ref_dof_pos_raw,
-                ref_dof_vel_mu=ref_dof_vel_raw,
-                ref_to_onnx=self.ref_to_onnx,
-            )
+            # Use motion model metadata
+            current_action_scale = self.motion_action_scale_onnx
+            current_default_angles = self.motion_default_angles_onnx
+            current_onnx_to_real = self.motion_onnx_to_real
         else:  # velocity mode
-            # Get velocity command directly from keyboard handler
-            velocity_cmd = np.array([self.vx, self.vy, self.vyaw], dtype=np.float32)
-
-            # Use velocity obs_builder
             self.obs_builder = self.velocity_obs_builder
+            # Use velocity model metadata
+            current_action_scale = self.velocity_action_scale_onnx
+            current_default_angles = self.velocity_default_angles_onnx
+            current_onnx_to_real = self.velocity_onnx_to_real
 
-            hist_obs = self.obs_builder.update_from_lowstate(
-                q_by_name=q_by_name,
-                dq_by_name=dq_by_name,
-                imu_quat=imu_quat,
-                imu_gyro=imu_gyro,
-                last_action=self.actions_onnx,
-                velocity_command=velocity_cmd,
-            )
-
-        policy_obs_np = hist_obs[None, :]
+        policy_obs_np = self.obs_builder.build_policy_obs()[None, :]
 
         # Run ONNX inference with the appropriate policy session and correct input/output names
         if self.current_policy_mode == "velocity":
@@ -858,14 +1108,17 @@ class PolicyNodeJustDance(Node):
             onnx_output = self.velocity_policy_session.run([self.velocity_output_name], input_feed)
         else:  # motion mode
             input_feed = {self.motion_input_name: policy_obs_np}
-            onnx_output = self.motion_policy_session.run([self.motion_output_name], input_feed)
-            
+            onnx_output = self.motion_policy_session.run(
+                [self.motion_output_name], input_feed
+            )
+
         self.actions_onnx = onnx_output[0].reshape(-1)
         
+        # Use the appropriate metadata based on current policy mode
         self.target_dof_pos_onnx = (
-            self.actions_onnx * self.action_scale_onnx + self.default_angles_onnx
+            self.actions_onnx * current_action_scale + current_default_angles
         )
-        self.target_dof_pos_real = self.target_dof_pos_onnx[self.onnx_to_real]
+        self.target_dof_pos_real = self.target_dof_pos_onnx[current_onnx_to_real]
         # Update named targets for each actuator DOF
         for i, dof_name in enumerate(self.real_dof_names):
             self.target_dof_pos_by_name[dof_name] = float(self.target_dof_pos_real[i])
@@ -875,14 +1128,13 @@ class PolicyNodeJustDance(Node):
             if self.motion_frame_idx >= self.n_motion_frames and self.motion_in_progress:
                 self.get_logger().info("Motion action completed")
                 self.motion_in_progress = False
-        
+
         # Publish policy mode status
         self._publish_policy_mode()
 
-
     def _process_and_publish_actions(self):
         """Process and publish action commands."""
-        if hasattr(self, 'target_dof_pos_by_name') and self.target_dof_pos_by_name:
+        if hasattr(self, "target_dof_pos_by_name") and self.target_dof_pos_by_name:
             action_msg = Float32MultiArray()
 
             action_msg.data = list(self.target_dof_pos_by_name.values())
@@ -891,13 +1143,12 @@ class PolicyNodeJustDance(Node):
             target_dof_pos = np.array(list(self.target_dof_pos_by_name.values()))
             if np.isnan(target_dof_pos).any():
                 self.get_logger().error("Action contains NaN values")
-            
+
             self.action_pub.publish(action_msg)
 
         self.counter += 1
         self.motion_frame_idx += 1
 
-       
     def setup(self):
         """Set up the evaluator by loading all required components."""
         self.load_model_config()  # Load config first
@@ -907,7 +1158,30 @@ class PolicyNodeJustDance(Node):
         self._init_obs_buffers()
         self._build_dof_mappings()
         # Always load motion data since we support both modes
-        self.load_motion_data()    
+        self.load_motion_data()
+
+    def destroy_node(self):
+        super().destroy_node()
+
+def get_gravity_orientation(quaternion: np.ndarray) -> np.ndarray:
+    """Calculate gravity orientation from quaternion.
+
+    Args:
+        quaternion: Array-like [w, x, y, z]
+
+    Returns:
+        np.ndarray of shape (3,) representing gravity projection.
+    """
+    qw = float(quaternion[0])
+    qx = float(quaternion[1])
+    qy = float(quaternion[2])
+    qz = float(quaternion[3])
+
+    gravity_orientation = np.zeros(3, dtype=np.float32)
+    gravity_orientation[0] = 2.0 * (-qz * qx + qw * qy)
+    gravity_orientation[1] = -2.0 * (qz * qy + qw * qx)
+    gravity_orientation[2] = 1.0 - 2.0 * (qw * qw + qz * qz)
+    return gravity_orientation
 
 
 def main():

@@ -1,0 +1,67 @@
+# @package _global_
+
+modules:
+  actor:
+    type: MLP
+
+    use_layernorm: false
+    layer_config:
+      hidden_dims:
+        - 2048
+        - 1024
+        - 512
+        - 256
+      activation: SiLU
+
+    # Observation schema for motion tracking, from the actor's perspective.
+    # This describes how atomic IsaacLab terms are stacked into sequences.
+    obs_schema:
+      policy:
+        flattened_obs:
+          seq_len: 1
+          terms:
+            - velocity_command
+            - projected_gravity
+            - rel_robot_root_ang_vel
+            - dof_pos
+            - dof_vel
+            - last_action
+
+    # Actor output schema: a single action head.
+    output_schema:
+      heads:
+        action:
+          dim: robot_action_dim
+
+  critic:
+    type: MLP
+
+    use_layernorm: false
+    layer_config:
+      hidden_dims:
+        - 2048
+        - 1024
+        - 512
+        - 256
+      activation: SiLU
+
+    # Critic obs schema: how to interpret critic flat obs.
+    obs_schema:
+      critic:
+        flattened_obs:
+          seq_len: 1
+          terms:
+            - velocity_command
+            - rel_robot_root_lin_vel
+            - rel_robot_root_ang_vel
+            - root_rel_robot_bodylink_pos_flat
+            - root_rel_robot_bodylink_rot_mat_flat
+            - dof_pos
+            - dof_vel
+            - last_action
+
+    # Critic output schema: a single scalar value head.
+    output_schema:
+      heads:
+        value:
+          dim: 1

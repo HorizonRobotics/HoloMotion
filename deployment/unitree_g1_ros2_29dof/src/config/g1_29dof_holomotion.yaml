@@ -10,7 +10,7 @@ velocity_tracking_model_folder: "velocity_tracking_model"
 motion_tracking_model_folder: "motion_tracking_model"  
 
 # motion data
-dance_motions_dir: "motion_data"  
+motion_clip_dir: "motion_data"  
 
 complete_dof_order:
   - left_hip_pitch_joint

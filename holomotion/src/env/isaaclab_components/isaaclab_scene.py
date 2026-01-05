@@ -36,6 +36,7 @@ class SceneFunctions:
         urdf_path = config.asset.urdf_file
         init_pos = config.init_state.pos
         default_joint_positions = config.init_state.default_joint_angles
+        root_link_name = config.get("root_name", "pelvis")
         prim_path = "{ENV_REGEX_NS}/Robot"
         actuators = {
             "all_joints": ImplicitActuatorCfg(**config.actuators.all_joints)
@@ -125,7 +126,7 @@ class SceneFunctions:
                 force_usd_conversion=force_usd_conversion,
                 fix_base=False,
                 merge_fixed_joints=True,
-                root_link_name="pelvis",
+                root_link_name=root_link_name,
                 replace_cylinders_with_capsules=True,
                 activate_contact_sensors=True,
                 rigid_props=sim_utils.RigidBodyPropertiesCfg(

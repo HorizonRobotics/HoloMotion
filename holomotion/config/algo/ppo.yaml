@@ -1,3 +1,5 @@
+# @package _global_
+
 algo:
   _target_: holomotion.src.algo.ppo.PPO
   _recursive_: false
@@ -18,6 +20,7 @@ algo:
     # ---
 
     # --- PPO Related Settings ---
+    init_at_random_ep_len: true
     num_steps_per_env: 32
     num_learning_epochs: 3
     num_mini_batches: 4
@@ -25,16 +28,17 @@ algo:
     gamma: 0.99
     lam: 0.95
     value_loss_coef: 1.0
-    entropy_coef: 3.0e-3
-    actor_learning_rate: 3.0e-4
-    critic_learning_rate: 3.0e-4
+    entropy_coef: 5.0e-3
     max_grad_norm: 1.0
     use_clipped_value_loss: true
-    schedule: adaptive
     desired_kl: 0.01
-    init_noise_std: 0.6
-    optimizer_type: AdamW # Options: "AdamW" or "Adam" (default: "AdamW")
-    init_at_random_ep_len: true
+    init_noise_std: 1.0
+
+    # --- Optimizer Settings ---
+    optimizer_type: AdamW # Options: "AdamW", "Adam"
+    schedule: adaptive
+    actor_learning_rate: 3.0e-4
+    critic_learning_rate: 5.0e-4
 
     # Distributed training settings
     normalize_advantage_per_mini_batch: false # Use global advantage norm for DDP
@@ -56,6 +60,10 @@ algo:
         enabled: true
     # ---
 
+    # --- Sampling Strategy ---
+    sampling_strategy: uniform
+    # ---
+
     # --- Dagger Related Settings ---
     teacher_actor_ckpt_path: null
     dagger_only: false
@@ -72,44 +80,5 @@ algo:
 
     # --- Module Settings ---
     module_dict:
-      actor:
-        type: MLP
-        input_dim:
-          - actor_obs
-        output_dim:
-          - robot_action_dim
-        n_fut_frames: ${obs.n_fut_frames}
-
-        use_logvar: true
-        fix_sigma: false
-        max_sigma: 1.2
-        min_sigma: 0.01
-
-        use_layernorm: false
-        layer_config:
-          hidden_dims:
-            - 1024
-            - 512
-            - 256
-            - 128
-          activation: SiLU
-
-      critic:
-        type: MLP
-        input_dim:
-          - critic_obs
-        output_dim:
-          - 1
-        n_fut_frames: ${obs.n_fut_frames}
-
-        use_layernorm: false
-        layer_config:
-          hidden_dims:
-            - 1024
-            - 512
-            - 256
-            - 128
-          activation: SiLU
-
-      disc: {}
-      rnd: {}
+      actor: ${modules.actor}
+      critic: ${modules.critic}

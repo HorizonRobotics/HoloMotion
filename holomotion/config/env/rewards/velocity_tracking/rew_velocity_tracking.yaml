@@ -1,9 +1,13 @@
 # @package _global_
 
 rewards:
-  stand_still_action_rate:
-    weight: -0.5
+  stand_still_dof_vel_l2:
+    weight: -0.1
     params:
+      asset_cfg:
+        _target_: isaaclab.managers.scene_entity_cfg.SceneEntityCfg
+        name: robot
+        joint_names: [".*"]
       command_name: base_velocity
 
   feet_contact_without_cmd:
@@ -13,40 +17,37 @@ rewards:
       sensor_cfg:
         _target_: isaaclab.managers.scene_entity_cfg.SceneEntityCfg
         name: contact_forces
-        body_names: [".*ankle_roll.*"]
+        body_names:
+          - ".*ankle_roll.*"
 
   track_stand_still_exp:
-    weight: 2.0
-    params:
-      command_name: base_velocity
-      std: 0.4
-
-  track_lin_vel_xy_exp:
-    weight: 2.0
+    weight: 3.0
     params:
       command_name: base_velocity
       std: 0.5
 
-  track_ang_vel_z_exp:
-    weight: 2.0
+  track_lin_vel_xy_heading_aligned_frame_exp:
+    weight: 3.0
     params:
-      command_name: base_velocity
       std: 0.5
+      command_name: base_velocity
+
+  track_ang_vel_z_heading_aligned_frame_exp:
+    weight: 3.0
+    params:
+      std: 0.5
+      command_name: base_velocity
 
   is_alive:
-    weight: 0.15
+    weight: 0.5
     params: {}
 
   lin_vel_z_l2:
-    weight: -2.0
+    weight: -1.0
     params: {}
 
   ang_vel_xy_l2:
     weight: -5.0e-2
-    params: {}
-
-  joint_vel_l2:
-    weight: -1.0e-3
     params: {}
 
   joint_acc_l2:
@@ -54,7 +55,7 @@ rewards:
     params: {}
 
   action_rate_l2:
-    weight: -1.0e-1
+    weight: -1.0e-2
     params: {}
 
   joint_pos_limits:
@@ -66,62 +67,84 @@ rewards:
         joint_names: [".*"]
 
   energy:
-    weight: -2e-5
+    weight: -1.0e-3
     params: {}
 
-  joint_deviation_l1_arms:
-    weight: -0.1
+  feet_air_time:
+    weight: 0.15
     params:
-      asset_cfg:
+      threshold: 0.4
+      sensor_cfg:
         _target_: isaaclab.managers.scene_entity_cfg.SceneEntityCfg
-        name: robot
-        joint_names:
-          - ".*_shoulder_.*_joint"
-          - ".*_elbow_joint"
-          - ".*_wrist_.*"
+        name: contact_forces
+        body_names: [".*ankle_roll.*"]
+      command_name: base_velocity
 
-  joint_deviation_l1_waists:
+  fly:
     weight: -1.0
     params:
+      threshold: 1.0
+      sensor_cfg:
+        _target_: isaaclab.managers.scene_entity_cfg.SceneEntityCfg
+        name: contact_forces
+        body_names: [".*ankle_roll.*"]
+
+  feet_too_near:
+    weight: -2.0
+    threshold: 0.20
+    params:
       asset_cfg:
         _target_: isaaclab.managers.scene_entity_cfg.SceneEntityCfg
         name: robot
         joint_names:
-          - "waist_.*"
+          - .*ankle_roll.*
+
+  joint_deviation_l1_arms:
+    weight: -0.4
+    params:
+      asset_cfg:
+        _target_: isaaclab.managers.scene_entity_cfg.SceneEntityCfg
+        name: robot
+        joint_names:
+          - .*waist.*
+          - .*_shoulder_roll.*
+          - .*_shoulder_yaw.*
+          - .*_wrist.*
+
+  joint_deviation_l1_legs_yaw:
+    weight: -0.15
+    params:
+      asset_cfg:
+        _target_: isaaclab.managers.scene_entity_cfg.SceneEntityCfg
+        name: robot
+        joint_names:
+          - .*_hip_yaw.*
+          - .*_hip_roll.*
+          - .*_shoulder_pitch.*
+          - .*_elbow.*
 
   joint_deviation_l1_legs:
-    weight: -1.0
+    weight: -0.02
     params:
       asset_cfg:
         _target_: isaaclab.managers.scene_entity_cfg.SceneEntityCfg
         name: robot
         joint_names:
-          - ".*_hip_roll_joint"
-          - ".*_hip_yaw_joint"
+          - .*_hip_pitch.*
+          - .*_knee.*
+          - .*_ankle.*
 
   flat_orientation_l2:
-    weight: -5.0
+    weight: -1.0
     params: {}
 
   base_height_l2:
     weight: -10.0
     params:
-      target_height: 0.78
-
-  feet_gait:
-    weight: 0.5
-    params:
-      period: 0.8
-      offset: [0.0, 0.5]
-      threshold: 0.55
-      command_name: base_velocity
-      sensor_cfg:
-        _target_: isaaclab.managers.scene_entity_cfg.SceneEntityCfg
-        name: contact_forces
-        body_names: [".*ankle_roll.*"]
+      target_height: 0.785
 
   feet_slide:
-    weight: -0.2
+    weight: -0.25
     params:
       asset_cfg:
         _target_: isaaclab.managers.scene_entity_cfg.SceneEntityCfg
@@ -130,17 +153,6 @@ rewards:
       sensor_cfg:
         _target_: isaaclab.managers.scene_entity_cfg.SceneEntityCfg
         name: contact_forces
-        body_names: [".*ankle_roll.*"]
-
-  foot_clearance_reward:
-    weight: 1.0
-    params:
-      std: 0.05
-      tanh_mult: 2.0
-      target_height: 0.10
-      asset_cfg:
-        _target_: isaaclab.managers.scene_entity_cfg.SceneEntityCfg
-        name: robot
         body_names: [".*ankle_roll.*"]
 
   undesired_contacts:
@@ -152,3 +164,15 @@ rewards:
         name: contact_forces
         body_names:
           - ${robot.undesired_contacts_regrex}
+
+  torso_xy_ang_vel_l2_penalty:
+    weight: -1.0
+    params: {}
+
+  torso_upright_l2_penalty:
+    weight: -5.0
+    params: {}
+
+  torso_linacc_xy_l2_penalty:
+    weight: -0.1
+    params: {}

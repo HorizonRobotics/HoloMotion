@@ -1,7 +1,7 @@
 import numpy as np
 import torch
 
-from typing import Dict, List, Sequence
+from typing import Dict, List, Sequence, Any, Optional
 
 
 def get_gravity_orientation(quaternion: np.ndarray) -> np.ndarray:
@@ -42,7 +42,7 @@ class _CircularBuffer:
         self._buffer: torch.Tensor = torch.zeros(
             (self._max_len, 1, self._feat_dim),
             dtype=torch.float32,
-            device=self._device,
+            device="cpu",
         )
 
     @property
@@ -92,22 +92,13 @@ class PolicyObsBuilder:
         self,
         dof_names_onnx: Sequence[str],
         default_angles_onnx: np.ndarray,
-        context_length: int,
-        device: str,
-        n_fut_frames: int = 0,
-        command_mode: str = "motion_tracking",
+        evaluator: Optional[Any] = None,
+        obs_policy_cfg: Optional[Dict[str, Any]] = None,
     ) -> None:
         self.dof_names_onnx: List[str] = list(dof_names_onnx)
         self.num_actions: int = len(self.dof_names_onnx)
-        self.device: str = device
-        self.context_length: int = int(context_length)
-        self.n_fut_frames: int = int(n_fut_frames)
-        self.command_mode: str = command_mode
-
-        if self.command_mode not in ["motion_tracking", "velocity_tracking"]:
-            raise ValueError(
-                f"command_mode must be 'motion_tracking' or 'velocity_tracking', got {self.command_mode}"
-            )
+        self.evaluator = evaluator
+        self.obs_policy_cfg = obs_policy_cfg
 
         if default_angles_onnx.shape[0] != self.num_actions:
             raise ValueError(
@@ -119,229 +110,86 @@ class PolicyObsBuilder:
             for idx, name in enumerate(self.dof_names_onnx)
         }
 
-        # Build observation schema based on command mode
-        if self.command_mode == "motion_tracking":
-            if self.n_fut_frames == 0:
-                self.obs_order: List[str] = [
-                    "ref_motion_states",
-                    "projected_gravity",
-                    "rel_robot_root_ang_vel",
-                    "dof_pos",
-                    "dof_vel",
-                    "last_action",
-                ]
-                obs_dims_map = {
-                    "ref_motion_states": 2 * self.num_actions,
-                    "projected_gravity": 3,
-                    "rel_robot_root_ang_vel": 3,
-                    "dof_pos": self.num_actions,
-                    "dof_vel": self.num_actions,
-                    "last_action": self.num_actions,
-                }
-            else:
-                self.obs_order: List[str] = [
-                    "ref_motion_states",
-                    "ref_motion_states_fut",
-                    "projected_gravity",
-                    "rel_robot_root_ang_vel",
-                    "dof_pos",
-                    "dof_vel",
-                    "last_action",
-                ]
-                obs_dims_map = {
-                    "ref_motion_states": 2 * self.num_actions,
-                    "ref_motion_states_fut": 2
-                    * self.num_actions
-                    * self.n_fut_frames,
-                    "projected_gravity": 3,
-                    "rel_robot_root_ang_vel": 3,
-                    "dof_pos": self.num_actions,
-                    "dof_vel": self.num_actions,
-                    "last_action": self.num_actions,
-                }
-        else:  # velocity_tracking
-            self.obs_order: List[str] = [
-                "velocity_command",
-                "projected_gravity",
-                "rel_robot_root_ang_vel",
-                "dof_pos",
-                "dof_vel",
-                "last_action",
-            ]
-            obs_dims_map = {
-                "velocity_command": 4,  # [vx, vy, vyaw]
-                "projected_gravity": 3,
-                "rel_robot_root_ang_vel": 3,
-                "dof_pos": self.num_actions,
-                "dof_vel": self.num_actions,
-                "last_action": self.num_actions,
-            }
+        # Build observation schema from config if provided
+        self.term_specs: List[Dict[str, Any]] = []
 
-        if self.context_length > 0:
-            self._buffers: Dict[str, _CircularBuffer] = {
-                key: _CircularBuffer(
-                    self.context_length, obs_dims_map[key], self.device
-                )
-                for key in self.obs_order
-            }
+        for term_dict in self.obs_policy_cfg["atomic_obs_list"]:
+            for name, cfg in term_dict.items():
+                term_dict = {**cfg}
+                term_dict["name"] = name
+                self.term_specs.append(term_dict)
+
+        # Buffers are created lazily after first dimension inference
+        self._buffers: Dict[str, _CircularBuffer] = {}
 
     def reset(self) -> None:
-        if self.context_length > 0:
-            for buf in self._buffers.values():
-                buf._pointer = -1
-                buf._num_pushes = 0
-                buf._buffer.zero_()
+        for buf in self._buffers.values():
+            buf._pointer = -1
+            buf._num_pushes = 0
+            buf._buffer.zero_()
 
-    def update_from_lowstate(
+    def _compute_term(
         self,
-        q_by_name: Dict[str, float],
-        dq_by_name: Dict[str, float],
-        imu_quat: np.ndarray,
-        imu_gyro: np.ndarray,
-        last_action: np.ndarray,
-        ref_dof_pos_mu: np.ndarray = None,
-        ref_dof_vel_mu: np.ndarray = None,
-        ref_dof_pos_mu_fut: np.ndarray = None,
-        ref_dof_vel_mu_fut: np.ndarray = None,
-        ref_to_onnx: Sequence[int] = None,
-        velocity_command: np.ndarray = None,
+        name: str,
     ) -> np.ndarray:
-        """Append one step using Unitree lowstate and command (motion or velocity).
-
-        Args:
-            q_by_name: Current joint positions keyed by joint name (MuJoCo order names)
-            dq_by_name: Current joint velocities keyed by joint name
-            imu_quat: IMU quaternion [w, x, y, z]
-            imu_gyro: IMU body angular velocity [x, y, z]
-            last_action: Previous policy action in ONNX joint order [n_dofs]
-            ref_dof_pos_mu: Reference joint positions in MuJoCo order [n_dofs] (motion_tracking only)
-            ref_dof_vel_mu: Reference joint velocities in MuJoCo order [n_dofs] (motion_tracking only)
-            ref_dof_pos_mu_fut: Future reference joint positions in MuJoCo order [n_dofs, T] (motion_tracking only)
-            ref_dof_vel_mu_fut: Future reference joint velocities in MuJoCo order [n_dofs, T] (motion_tracking only)
-            ref_to_onnx: Indices mapping MuJoCo->ONNX order (motion_tracking only)
-            velocity_command: Velocity command [vx, vy, vyaw] (velocity_tracking only)
-
-        Returns:
-            Flattened observation vector with history: np.ndarray [context_length * feat_dim]
-        """
-        dof_pos_onnx = np.array(
-            [
-                q_by_name[name] - self.default_angles_dict[name]
-                for name in self.dof_names_onnx
-            ],
-            dtype=np.float32,
-        )
-        dof_vel_onnx = np.array(
-            [dq_by_name[name] for name in self.dof_names_onnx],
-            dtype=np.float32,
+        # Prefer evaluator-provided methods; no legacy fallbacks
+        if self.evaluator is not None:
+            meth = getattr(self.evaluator, f"_get_obs_{name}", None)
+            if callable(meth):
+                out = meth()
+                return np.asarray(out, dtype=np.float32).reshape(-1)
+        raise ValueError(
+            f"Unknown observation term '{name}' or evaluator method missing."
         )
 
-        obs_items = {
-            "projected_gravity": get_gravity_orientation(imu_quat).astype(
-                np.float32
-            ),
-            "rel_robot_root_ang_vel": np.asarray(imu_gyro, dtype=np.float32),
-            "dof_pos": dof_pos_onnx.astype(np.float32),
-            "dof_vel": dof_vel_onnx.astype(np.float32),
-            "last_action": last_action.astype(np.float32),
-        }
+    def build_policy_obs(self) -> np.ndarray:
+        """Append one step using evaluator-provided observation terms and return flattened obs."""
+        # Compute per-term outputs
+        values: Dict[str, np.ndarray] = {}
 
-        if self.context_length > 0:
-            if self.command_mode == "motion_tracking":
-                if (
-                    ref_dof_pos_mu is None
-                    or ref_dof_vel_mu is None
-                    or ref_to_onnx is None
-                ):
-                    raise ValueError(
-                        "ref_dof_pos_mu, ref_dof_vel_mu, and ref_to_onnx must be provided for motion_tracking mode"
-                    )
-                ref_dof_pos_onnx = ref_dof_pos_mu[ref_to_onnx].astype(
-                    np.float32
-                )
-                ref_dof_vel_onnx = ref_dof_vel_mu[ref_to_onnx].astype(
-                    np.float32
-                )
-                obs_items["ref_motion_states"] = np.concatenate(
-                    [
-                        ref_dof_pos_onnx.reshape(-1),
-                        ref_dof_vel_onnx.reshape(-1),
-                    ]
-                ).astype(np.float32)
-            else:  # velocity_tracking
-                if velocity_command is None:
-                    raise ValueError(
-                        "velocity_command must be provided for velocity_tracking mode"
-                    )
-                extended_velo_command = np.zeros(4, dtype=np.float32)
-                extended_velo_command[1:] = velocity_command
-                extended_velo_command[0] = (
-                    np.linalg.norm(velocity_command) > 0.1
-                )
-                obs_items["velocity_command"] = extended_velo_command.astype(
-                    np.float32
-                )
+        for spec in self.term_specs:
+            name = spec["name"]
+            scale = spec.get("scale", 1.0)
+            values[name] = self._compute_term(name) * scale
 
-            for key in self.obs_order:
-                if key == "ref_motion_states_fut":
+        # Lazily initialize buffers with inferred feature dims
+        if len(self._buffers) == 0:
+            for spec in self.term_specs:
+                name = spec["name"]
+                hist_len = int(spec.get("history_length", 0))
+                if hist_len <= 0:
                     continue
+                feat_dim = int(values[name].reshape(-1).shape[0])
+                self._buffers[name] = _CircularBuffer(
+                    hist_len, feat_dim, "cpu"
+                )
+        # Append current step to buffers (skip terms without history)
+        for spec in self.term_specs:
+            name = spec["name"]
+            if name in self._buffers:
                 item = torch.as_tensor(
-                    obs_items[key], dtype=torch.float32, device=self.device
-                )[None, :]
-                self._buffers[key].append(item)
-
-            flat_list: List[np.ndarray] = []
-            for key in self.obs_order:
-                if key == "ref_motion_states_fut":
-                    flat_list.append(
-                        np.concatenate(
-                            [
-                                ref_dof_pos_mu_fut[ref_to_onnx].reshape(-1),
-                                ref_dof_vel_mu_fut[ref_to_onnx].reshape(-1),
-                            ]
-                        )
-                    )
-                else:
-                    buf = self._buffers[key].buffer[0]  # [max_len, feat]
-                    flat_list.append(buf.reshape(-1).detach().cpu().numpy())
-            hist_obs = np.concatenate(flat_list, axis=0)
-            return hist_obs.astype(np.float32)
-        else:
-            flat_list: List[np.ndarray] = []
-            if self.command_mode == "motion_tracking":
-                if (
-                    ref_dof_pos_mu is None
-                    or ref_dof_vel_mu is None
-                    or ref_to_onnx is None
-                ):
-                    raise ValueError(
-                        "ref_dof_pos_mu, ref_dof_vel_mu, and ref_to_onnx must be provided for motion_tracking mode"
-                    )
-                ref_dof_pos_onnx = ref_dof_pos_mu[ref_to_onnx].astype(
-                    np.float32
+                    values[name].reshape(1, -1),
+                    dtype=torch.float32,
+                    device="cpu",
                 )
-                ref_dof_vel_onnx = ref_dof_vel_mu[ref_to_onnx].astype(
-                    np.float32
+                self._buffers[name].append(item)
+        # Assemble flat list according to term ordering and history flatten rules
+        flat_list: List[np.ndarray] = []
+        for spec in self.term_specs:
+            name = spec["name"]
+            flatten = bool(spec.get("flatten", True))
+            if name in self._buffers:
+                buf = self._buffers[name].buffer[0]  # [hist, feat]
+                arr = (
+                    buf.reshape(-1).detach().cpu().numpy()
+                    if flatten
+                    else buf[-1].detach().cpu().numpy()
                 )
-                obs_items["ref_motion_states"] = np.concatenate(
-                    [ref_dof_pos_onnx, ref_dof_vel_onnx]
-                ).astype(np.float32)
-                if self.n_fut_frames == 0:
-                    flat_list.append(obs_items["ref_motion_states"])
-                else:
-                    flat_list.append(
-                        np.concatenate(
-                            [
-                                ref_dof_pos_mu_fut[ref_to_onnx].reshape(-1),
-                                ref_dof_vel_mu_fut[ref_to_onnx].reshape(-1),
-                            ]
-                        ).astype(np.float32)
-                    )
+                flat_list.append(arr.astype(np.float32))
             else:
-                flat_list.append(obs_items["velocity_command"])
-            flat_list.append(obs_items["projected_gravity"])
-            flat_list.append(obs_items["rel_robot_root_ang_vel"])
-            flat_list.append(obs_items["dof_pos"])
-            flat_list.append(obs_items["dof_vel"])
-            flat_list.append(obs_items["last_action"])
-            return np.concatenate(flat_list, axis=0).astype(np.float32)
+                # no history -> use computed value directly
+                flat_list.append(values[name].reshape(-1).astype(np.float32))
+
+        if len(flat_list) == 0:
+            return np.zeros(0, dtype=np.float32)
+        return np.concatenate(flat_list, axis=0).astype(np.float32)

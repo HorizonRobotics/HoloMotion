@@ -66,7 +66,7 @@ def load_training_config(
 
     # Set checkpoint path
     train_config.checkpoint = checkpoint_path
-    train_config.algo.algo.config.checkpoint = checkpoint_path
+    train_config.algo.config.checkpoint = checkpoint_path
 
     # For evaluation, merge eval_config into train_config
     config = OmegaConf.merge(train_config, eval_config)
@@ -236,10 +236,10 @@ def main(config: OmegaConf):
     headless = config.headless
 
     # PPO creates Accelerator, AppLauncher, and environment internally
-    algo_class = get_class(config.algo.algo._target_)
+    algo_class = get_class(config.algo._target_)
     algo = algo_class(
         env_config=config.env,
-        config=config.algo.algo.config,
+        config=config.algo.config,
         log_dir=log_dir,
         headless=headless,
         is_offline_eval=True,
