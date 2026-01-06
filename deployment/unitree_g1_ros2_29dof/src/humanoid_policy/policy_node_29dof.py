@@ -390,7 +390,7 @@ class PolicyNodeJustDance(Node):
         """Load motion clip data from .npz files."""
         motion_clips_dir = os.path.join(
             get_package_share_directory("humanoid_control"),
-            self.config_yaml.dance_motions_dir,
+            self.config_yaml.motion_clip_dir,
         )
         
         self.get_logger().info(f"Looking for motion clip data in: {motion_clips_dir}")
