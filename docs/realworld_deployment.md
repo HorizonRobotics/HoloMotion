@@ -329,13 +329,13 @@ sudo docker info | grep -i runtime
 Pull the image from dockerhub with:
 
 ```bash
-docker pull horizonrobotics/holomotion_orin_foxy_jp5.1_docker_humble_deploy:20260105
+docker pull horizonrobotics/holomotion:orin_foxy_jp5.1_docker_humble_deploy_20260105
 ```
 
 Or if you have the image locally, tag it appropriately:
 
 ```bash
-docker tag <your_image_name> holomotion_orin_foxy_jp5.1_docker_humble_deploy:20260105
+docker tag <your_image_name> holomotion:orin_foxy_jp5.1_docker_humble_deploy_20260105
 ```
 
 ### Step 3: Configure Launch File Network Interface:
@@ -373,7 +373,7 @@ bash start_container.sh
 
 - The script will ask: `Please enter the holomotion local repository path:`
 - Enter the full path to your holomotion repository, for example:
-  - `/home/unitree/Holomotion` (if the repository is at this location)
+  - `/home/unitree/HoloMotion` (if the repository is at this location)
   - Or the actual path where your holomotion repository is located
 
 
