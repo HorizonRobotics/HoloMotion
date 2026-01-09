@@ -48,3 +48,43 @@ robot:
     val_hdf5_root: ${motion_h5_path}
     dataloader:
       num_workers: 1
+
+terrain:
+  terrain_type: generator
+  prim_path: /World/ground
+  static_friction: 1.0
+  dynamic_friction: 1.0
+  restitution: 0.0
+  friction_combine_mode: multiply
+  restitution_combine_mode: multiply
+  debug_vis: false
+  max_init_terrain_level: 0
+
+  # Use RandomSpawnTerrainImporter for optional random XY spawn inside the plane patch.
+  # When false, env origins are placed on a regular grid as in the default importer.
+  random_spawn: true
+  # Keep random spawn points away from terrain edges to avoid spawning onto the outer border.
+  random_spawn_margin: 2.0
+
+  # TerrainGeneratorCfg parameters.
+  generator:
+    num_rows: 1
+    num_cols: 1
+    size: [10.0, 10.0]
+    border_width: 1000.0
+    horizontal_scale: 0.1
+    vertical_scale: 0.005
+    slope_threshold: null
+    difficulty_range: [0.0, 0.0]
+    color_scheme: height
+    sub_terrains:
+      plane:
+        type: plane
+        proportion: 1.0
+
+  # Offline visual material configuration (PreviewSurface, no MDL/Nucleus).
+  visual_material:
+    type: color
+    diffuse_color: [0.25, 0.25, 0.25]
+    metallic: 0.0
+    roughness: 0.5

@@ -1,20 +1,27 @@
 import os
 
-import torch
-
 import isaaclab.sim as sim_utils
 import isaaclab.terrains as terrain_gen
+import numpy as np
+import torch
 from isaaclab.terrains import TerrainImporter, TerrainImporterCfg
 from isaaclab.terrains.height_field import (
     HfDiscreteObstaclesTerrainCfg,
-    HfRandomUniformTerrainCfg,
     HfPyramidSlopedTerrainCfg,
+    HfRandomUniformTerrainCfg,
+    HfTerrainBaseCfg,
 )
+from isaaclab.terrains.height_field.utils import height_field_to_mesh
+from isaaclab.utils import configclass
 from loguru import logger
 
 
 def _convert_range_like_params(params: dict) -> dict:
-    """Convert list values for common *range and size keys to tuples for IsaacLab config classes."""
+    """Convert list values for common range/size keys to tuples.
+
+    This helps map Hydra YAML list values into IsaacLab config classes that
+    expect tuples (e.g. ``*_range``).
+    """
     converted = {}
     for key, value in params.items():
         if isinstance(value, list) and (
@@ -26,16 +33,40 @@ def _convert_range_like_params(params: dict) -> dict:
     return converted
 
 
+@height_field_to_mesh
+def plane_terrain(difficulty: float, cfg: HfTerrainBaseCfg) -> np.ndarray:
+    """Generate a truly flat height-field patch.
+
+    This is a lightweight alternative to using ``random_uniform`` with a zero
+    noise range.
+    The ``difficulty`` parameter is ignored.
+    """
+    width_pixels = int(cfg.size[0] / cfg.horizontal_scale)
+    length_pixels = int(cfg.size[1] / cfg.horizontal_scale)
+    return np.zeros((width_pixels, length_pixels), dtype=np.int16)
+
+
+@configclass
+class HfPlaneTerrainCfg(HfTerrainBaseCfg):
+    """Configuration for a flat height-field plane terrain."""
+
+    function = plane_terrain
+
+
 class RandomSpawnTerrainImporter(TerrainImporter):
     """Terrain importer that spawns robots randomly within each sub-terrain."""
+
+    _terrain_width: float | None = None
+    _terrain_length: float | None = None
+    _spawn_margin: float = 0.0
 
     def _compute_env_origins_curriculum(
         self, num_envs: int, origins: torch.Tensor
     ) -> torch.Tensor:
-        """Compute environment origins with random (x, y) positions within each sub-terrain.
+        """Compute env origins with random (x, y) positions.
 
-        This overrides the default curriculum-based distribution to add random offsets
-        within each sub-terrain's bounds.
+        This overrides the default curriculum-based distribution to add random
+        offsets within each sub-terrain's bounds.
 
         Args:
             num_envs: Number of environments.
@@ -56,6 +87,18 @@ class RandomSpawnTerrainImporter(TerrainImporter):
             sub_terrain_size[0],
             sub_terrain_size[1],
         )
+
+        spawn_margin = float(getattr(self.cfg, "random_spawn_margin", 0.0))
+        spawn_margin = max(0.0, spawn_margin)
+        # Clamp margin to avoid invalid sampling ranges.
+        max_margin = 0.5 * min(float(terrain_width), float(terrain_length))
+        if spawn_margin >= max_margin:
+            logger.warning(
+                f"random_spawn_margin={spawn_margin} is too large "
+                f"for sub-terrain size={sub_terrain_size}. "
+                "Clamping to 0.0."
+            )
+            spawn_margin = 0.0
 
         # Maximum initial level possible for the terrains
         if self.cfg.max_init_terrain_level is None:
@@ -81,12 +124,16 @@ class RandomSpawnTerrainImporter(TerrainImporter):
         env_origins[:] = origins[self.terrain_levels, self.terrain_types]
 
         # Add random (x, y) offsets within each sub-terrain's bounds
-        # Offset range: [-size/2, size/2] for both x and y
+        # Offset range: [-size/2 + margin, size/2 - margin] for both x and y
+        x_min = -terrain_width / 2 + spawn_margin
+        x_max = terrain_width / 2 - spawn_margin
+        y_min = -terrain_length / 2 + spawn_margin
+        y_max = terrain_length / 2 - spawn_margin
         x_offsets = torch.empty(num_envs, device=self.device).uniform_(
-            -terrain_width / 2, terrain_width / 2
+            x_min, x_max
         )
         y_offsets = torch.empty(num_envs, device=self.device).uniform_(
-            -terrain_length / 2, terrain_length / 2
+            y_min, y_max
         )
 
         env_origins[:, 0] += x_offsets
@@ -95,6 +142,7 @@ class RandomSpawnTerrainImporter(TerrainImporter):
         # Store terrain size for use in update_env_origins
         self._terrain_width = terrain_width
         self._terrain_length = terrain_length
+        self._spawn_margin = spawn_margin
 
         return env_origins
 
@@ -104,7 +152,7 @@ class RandomSpawnTerrainImporter(TerrainImporter):
         move_up: torch.Tensor,
         move_down: torch.Tensor,
     ):
-        """Update environment origins with random positions when terrain levels change."""
+        """Update env origins when terrain levels change."""
         # Check if grid-like spawning
         if self.terrain_origins is None:
             return
@@ -127,19 +175,23 @@ class RandomSpawnTerrainImporter(TerrainImporter):
         ]
 
         # Add random (x, y) offsets within each sub-terrain's bounds
-        if hasattr(self, "_terrain_width") and hasattr(
-            self, "_terrain_length"
-        ):
-            num_updated = len(env_ids)
-            x_offsets = torch.empty(num_updated, device=self.device).uniform_(
-                -self._terrain_width / 2, self._terrain_width / 2
-            )
-            y_offsets = torch.empty(num_updated, device=self.device).uniform_(
-                -self._terrain_length / 2, self._terrain_length / 2
-            )
+        if self._terrain_width is None or self._terrain_length is None:
+            return
 
-            self.env_origins[env_ids, 0] += x_offsets
-            self.env_origins[env_ids, 1] += y_offsets
+        num_updated = len(env_ids)
+        x_min = -self._terrain_width / 2 + self._spawn_margin
+        x_max = self._terrain_width / 2 - self._spawn_margin
+        y_min = -self._terrain_length / 2 + self._spawn_margin
+        y_max = self._terrain_length / 2 - self._spawn_margin
+        x_offsets = torch.empty(num_updated, device=self.device).uniform_(
+            x_min, x_max
+        )
+        y_offsets = torch.empty(num_updated, device=self.device).uniform_(
+            y_min, y_max
+        )
+
+        self.env_origins[env_ids, 0] += x_offsets
+        self.env_origins[env_ids, 1] += y_offsets
 
 
 def build_terrain_config(
@@ -147,15 +199,16 @@ def build_terrain_config(
 ) -> TerrainImporterCfg:
     """Build terrain configuration.
 
-    Preferred usage in Holomotion is via the IsaacLab terrain generator API with
-    height-field sub-terrains fully specified from Hydra configs.
+    Preferred usage in Holomotion is via the IsaacLab terrain generator API
+    with height-field sub-terrains fully specified from Hydra configs.
 
     For backward compatibility only, two legacy modes are still supported:
 
     * ``terrain_type=\"plane\"``: simple infinite plane using Isaac Sim's grid.
     * ``terrain_type=\"usd\"``: load terrain from a local USD file.
 
-    All paths are offline by construction. Visual materials must use local data:
+    All paths are offline by construction. Visual materials must use local
+    data:
 
     * ``visual_material.type=\"color\"`` maps to :class:`PreviewSurfaceCfg`
       with ``diffuse_color``, ``metallic`` and ``roughness``.
@@ -176,17 +229,22 @@ def build_terrain_config(
             * ``height_field`` (required when ``terrain_type=\"generator\"``):
               height-field sub-terrain configuration with:
 
-              - ``type``: ``\"random_uniform\"`` or ``\"discrete_obstacles\"``.
+              - ``type``: ``\"plane\"``, ``\"random_uniform\"``,
+                ``\"discrete_obstacles\"`` or ``\"pyramid_sloped\"``.
               - Remaining keys are forwarded to the corresponding
                 :class:`HfRandomUniformTerrainCfg` or
                 :class:`HfDiscreteObstaclesTerrainCfg`.
             * ``random_spawn`` (optional): if True, spawns robots at random
               (x, y) positions within each sub-terrain's bounds.
+            * ``random_spawn_margin`` (optional): if set, keeps random spawn
+              points at least this many meters away from sub-terrain edges
+              (helps avoid spawning near the outer border where robots may fall
+              off).
             * ``visual_material`` (optional): offline visual material config.
             * ``static_friction``, ``dynamic_friction``, ``restitution``, etc.
 
-        scene_env_spacing: Environment spacing from scene config (used only when
-            ``terrain_type=\"plane\"`` is selected).
+        scene_env_spacing: Environment spacing from scene config (used only
+            when ``terrain_type=\"plane\"`` is selected).
 
     Returns:
         TerrainImporterCfg configured according to the input parameters
@@ -246,29 +304,34 @@ def build_terrain_config(
 
     if terrain_type != "generator":
         raise ValueError(
-            f"Unsupported terrain_type '{terrain_type}'. Expected 'generator', 'plane', or 'usd'."
+            f"Unsupported terrain_type '{terrain_type}'. "
+            "Expected 'generator', 'plane', or 'usd'."
         )
 
     generator_cfg_dict = config.get("generator")
     if generator_cfg_dict is None:
         raise ValueError(
-            "When 'terrain_type' is 'generator', a 'generator' dict must be provided in terrain config."
+            "When 'terrain_type' is 'generator', a 'generator' dict must be "
+            "provided in terrain config."
         )
 
-    # Optional new path: multiple sub-terrains defined under generator.sub_terrains.
+    # Optional new path: multiple sub-terrains defined under
+    # generator.sub_terrains.
     sub_terrains_cfg_dict = generator_cfg_dict.get("sub_terrains")
     sub_terrains_cfg = None
 
     if sub_terrains_cfg_dict is not None:
         if not isinstance(sub_terrains_cfg_dict, dict):
             raise ValueError(
-                "Expected 'generator.sub_terrains' to be a mapping from names to sub-terrain configs."
+                "Expected 'generator.sub_terrains' to be a mapping from names "
+                "to sub-terrain configs."
             )
         sub_terrains_cfg = {}
         for sub_name, sub_cfg_dict in sub_terrains_cfg_dict.items():
             if not isinstance(sub_cfg_dict, dict):
                 raise ValueError(
-                    f"Sub-terrain '{sub_name}' must be a dictionary with at least a 'type' field."
+                    f"Sub-terrain '{sub_name}' must be a dictionary with at "
+                    "least a 'type' field."
                 )
             sub_type = sub_cfg_dict.get("type", "random_uniform")
             sub_proportion = sub_cfg_dict.get("proportion", 1.0)
@@ -283,6 +346,10 @@ def build_terrain_config(
                 hf_cfg = HfRandomUniformTerrainCfg(
                     proportion=sub_proportion, **sub_params
                 )
+            elif sub_type == "plane":
+                hf_cfg = HfPlaneTerrainCfg(
+                    proportion=sub_proportion, **sub_params
+                )
             elif sub_type == "discrete_obstacles":
                 hf_cfg = HfDiscreteObstaclesTerrainCfg(
                     proportion=sub_proportion, **sub_params
@@ -294,7 +361,8 @@ def build_terrain_config(
             else:
                 raise ValueError(
                     f"Unknown sub_terrains['{sub_name}'].type '{sub_type}'. "
-                    "Expected 'random_uniform' or 'discrete_obstacles'."
+                    "Expected 'plane', 'random_uniform', 'discrete_obstacles',"
+                    " or 'pyramid_sloped'."
                 )
             sub_terrains_cfg[sub_name] = hf_cfg
 
@@ -303,13 +371,15 @@ def build_terrain_config(
         height_field_cfg_dict = config.get("height_field")
         if height_field_cfg_dict is None:
             raise ValueError(
-                "When 'terrain_type' is 'generator', either 'generator.sub_terrains' "
-                "or a 'height_field' dict must be provided in terrain config."
+                "When 'terrain_type' is 'generator', either "
+                "'generator.sub_terrains' or a 'height_field' dict must be "
+                "provided in terrain config."
             )
 
         logger.warning(
             "Terrain config is using deprecated 'height_field' key. "
-            "Please migrate to 'generator.sub_terrains' for multi-sub-terrain support."
+            "Please migrate to 'generator.sub_terrains' for multi-sub-terrain "
+            "support."
         )
 
         hf_type = height_field_cfg_dict.get("type", "random_uniform")
@@ -375,7 +445,7 @@ def build_terrain_config(
             diffuse_color_raw = visual_material_dict.get(
                 "diffuse_color", (0.8, 0.8, 0.8)
             )
-            # Convert list to tuple if needed (YAML loads lists as Python lists)
+            # Convert list to tuple if needed (YAML loads lists).
             # Ensure it's a tuple of floats as required by PreviewSurfaceCfg
             if isinstance(diffuse_color_raw, list):
                 diffuse_color = tuple(float(x) for x in diffuse_color_raw)
@@ -399,7 +469,8 @@ def build_terrain_config(
             if mdl_path is None:
                 logger.warning(
                     "visual_material type is 'mdl' but no mdl_path specified. "
-                    "Falling back to color material to avoid internet requirements."
+                    "Falling back to color material to avoid internet "
+                    "requirements."
                 )
                 visual_material = sim_utils.PreviewSurfaceCfg(
                     diffuse_color=(0.5, 0.5, 0.5)
@@ -428,7 +499,8 @@ def build_terrain_config(
                 else:
                     logger.warning(
                         f"MDL file not found at {resolved_mdl_path}. "
-                        "Falling back to color material to avoid internet requirements."
+                        "Falling back to color material to avoid internet "
+                        "requirements."
                     )
                     visual_material = sim_utils.PreviewSurfaceCfg(
                         diffuse_color=(0.5, 0.5, 0.5)
@@ -468,5 +540,10 @@ def build_terrain_config(
         debug_vis=config.get("debug_vis", False),
         class_type=terrain_importer_class,
     )
+
+    if random_spawn:
+        terrain_cfg.random_spawn_margin = float(
+            config.get("random_spawn_margin", 0.0)
+        )
 
     return terrain_cfg

@@ -16,13 +16,15 @@ terrain:
   # Use RandomSpawnTerrainImporter for optional random XY spawn inside the plane patch.
   # When false, env origins are placed on a regular grid as in the default importer.
   random_spawn: true
+  # Keep random spawn points away from terrain edges to avoid spawning onto the outer border.
+  random_spawn_margin: 2.0
 
   # TerrainGeneratorCfg parameters.
   generator:
     num_rows: 1
     num_cols: 1
-    size: [8.0, 8.0]
-    border_width: 10.0
+    size: [10.0, 10.0]
+    border_width: 1000.0
     horizontal_scale: 0.1
     vertical_scale: 0.005
     slope_threshold: null
@@ -30,11 +32,8 @@ terrain:
     color_scheme: height
     sub_terrains:
       plane:
-        type: random_uniform
+        type: plane
         proportion: 1.0
-        noise_range: [0.0, 0.0]
-        noise_step: 0.25
-        downsampled_scale: 0.5
 
   # Offline visual material configuration (PreviewSurface, no MDL/Nucleus).
   visual_material:
@@ -42,5 +41,3 @@ terrain:
     diffuse_color: [0.25, 0.25, 0.25]
     metallic: 0.0
     roughness: 0.5
-
-
