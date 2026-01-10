@@ -2234,6 +2234,8 @@ class PPO:
             for batch_idx in tqdm(
                 range(total_batches), desc="Evaluating batches"
             ):
+                if batch_idx > 0:
+                    cache.advance()
                 # Reset envs first, then apply deterministic mapping on the active cache batch
                 _ = self.env.reset_all()
                 if hasattr(motion_cmd, "setup_offline_eval_deterministic"):

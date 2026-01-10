@@ -33,6 +33,7 @@ export_policy: false
 algo:
   config:
     dynamo_backend: null
+    sampling_strategy: uniform
 
 env:
   config:

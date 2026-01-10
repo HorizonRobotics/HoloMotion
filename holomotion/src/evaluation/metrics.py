@@ -388,10 +388,13 @@ def offline_evaluate_dumped_npzs(
         rec = {**row.to_dict(), **clip_meta.get(mk, {})}
         per_clip_records.append(rec)
 
-    # Dataset-level averages
-    dataset_means = {
-        k: float(np.nanmean(all_frames[k].to_numpy())) for k in metric_cols
-    }
+    dataset_means = {}
+    dataset_medians = {}
+    for k in metric_cols:
+        arr_clips = per_clip_mean[k].to_numpy()
+        dataset_means[k] = float(np.nanmean(arr_clips))
+        dataset_medians[k] = float(np.nanmedian(arr_clips))
+    
     success_rate = float(
         np.mean([clip_meta[mk]["success"] for mk in clip_meta])
         if len(clip_meta) > 0
@@ -401,7 +404,11 @@ def offline_evaluate_dumped_npzs(
 
     # Compose result and write
     result = {
-        "dataset": dataset_means,
+        "dataset": {
+            "mean": dataset_means,
+            "median": dataset_medians,
+            "success_rate": success_rate,
+        },
         "num_clips": int(len(clip_meta)),
         "per_clip": per_clip_records,
     }
@@ -421,25 +428,26 @@ def offline_evaluate_dumped_npzs(
         if key not in dataset_means:
             continue
 
-        value = dataset_means[key]
+        val_mean = dataset_means[key]
+        val_median = dataset_medians[key]
         display_name, unit = metric_display_map[key]
 
         # Apply unit conversion if needed
         if key in unit_conversions:
-            value = value * unit_conversions[key]
+            factor = unit_conversions[key]
+            val_mean = val_mean * factor
+            val_median = val_median * factor
+        
+        def fmt(v):
+            return f"{v:.4f}" if isinstance(v, float) else str(v)
 
-        if isinstance(value, float):
-            formatted_value = f"{value:.4f}"
-        else:
-            formatted_value = str(value)
-
-        table_data.append([display_name, formatted_value, unit])
+        table_data.append([display_name, fmt(val_mean), fmt(val_median), unit])
 
     table_str = tabulate(
         table_data,
-        headers=["Metric", "Value", "Unit"],
+        headers=["Metric", "Mean", "Median", "Unit"],
         tablefmt="simple_outline",
-        colalign=("left", "left", "left"),
+        colalign=("left", "left", "left", "left"),
     )
     logger.info(
         "\n"
