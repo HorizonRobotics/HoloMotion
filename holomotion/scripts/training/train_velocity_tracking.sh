@@ -16,7 +16,7 @@
 
 source train.env
 
-export CUDA_VISIBLE_DEVICES=1
+export CUDA_VISIBLE_DEVICES=0
 
 config_name="train_g1_29dof_velocity_tracking"
 

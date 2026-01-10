@@ -91,15 +91,18 @@ class RefMotionCommand(CommandTerm):
         self.log_dict = {}
         if "head_hand_bodies" in config:
             self.motion_tracking_id = [
-                self.robot.body_names.index(link) for link in config.head_hand_bodies
+                self.robot.body_names.index(link)
+                for link in config.head_hand_bodies
             ]
         if "leg_body_names" in config:
             self.lower_body_id = [
-                self.robot.body_names.index(link) for link in config.leg_body_names
+                self.robot.body_names.index(link)
+                for link in config.leg_body_names
             ]
         if "arm_body_names" in config:
             self.upper_body_id = [
-                self.robot.body_names.index(link) for link in config.arm_body_names
+                self.robot.body_names.index(link)
+                for link in config.arm_body_names
             ]
         if "leg_dof_names" in config:
             self.lower_body_joint_ids = [
@@ -156,7 +159,9 @@ class RefMotionCommand(CommandTerm):
 
             max_frame_length = int(mcfg.get("max_frame_length", 500))
             min_frame_length = int(mcfg.get("min_frame_length", 1))
-            world_frame_norm = bool(mcfg.get("world_frame_normalization", True))
+            world_frame_norm = bool(
+                mcfg.get("world_frame_normalization", True)
+            )
 
             cache_cfg = mcfg.get("cache", {})
             allowed_prefixes = cache_cfg.get(
@@ -179,7 +184,9 @@ class RefMotionCommand(CommandTerm):
                 else train_manifest_paths[0],
                 max_frame_length=max_frame_length,
                 min_window_length=min_frame_length,
-                handpicked_motion_names=mcfg.get("handpicked_motion_names", None),
+                handpicked_motion_names=mcfg.get(
+                    "handpicked_motion_names", None
+                ),
                 excluded_motion_names=mcfg.get("excluded_motion_names", None),
                 world_frame_normalization=world_frame_norm,
                 allowed_prefixes=allowed_prefixes,
@@ -193,11 +200,14 @@ class RefMotionCommand(CommandTerm):
             logger.info(f"Loaded {len(train_dataset)} training motion windows")
             train_num_clips = len(train_dataset.clips)
             train_total_frames = sum(
-                int(meta.get("length", 0)) for meta in train_dataset.clips.values()
+                int(meta.get("length", 0))
+                for meta in train_dataset.clips.values()
             )
             fps_used = int(self.cfg.target_fps)
             train_duration_s = (
-                float(train_total_frames) / float(fps_used) if fps_used > 0 else 0.0
+                float(train_total_frames) / float(fps_used)
+                if fps_used > 0
+                else 0.0
             )
             if len(train_roots) == 1:
                 logger.info(
@@ -230,9 +240,13 @@ class RefMotionCommand(CommandTerm):
                     else 0.0
                 )
                 left_num_clips = max(0, train_num_clips - excluded_num_clips)
-                left_total_frames = max(0, train_total_frames - excluded_total_frames)
+                left_total_frames = max(
+                    0, train_total_frames - excluded_total_frames
+                )
                 left_duration_s = (
-                    float(left_total_frames) / float(fps_used) if fps_used > 0 else 0.0
+                    float(left_total_frames) / float(fps_used)
+                    if fps_used > 0
+                    else 0.0
                 )
                 logger.info(
                     f"Excluded (by name): clips={excluded_num_clips}, "
@@ -275,13 +289,18 @@ class RefMotionCommand(CommandTerm):
                     world_frame_normalization=world_frame_norm,
                     allowed_prefixes=allowed_prefixes,
                 )
-                logger.info(f"Loaded {len(val_dataset)} validation motion windows")
+                logger.info(
+                    f"Loaded {len(val_dataset)} validation motion windows"
+                )
                 val_num_clips = len(val_dataset.clips)
                 val_total_frames = sum(
-                    int(meta.get("length", 0)) for meta in val_dataset.clips.values()
+                    int(meta.get("length", 0))
+                    for meta in val_dataset.clips.values()
                 )
                 val_duration_s = (
-                    float(val_total_frames) / float(fps_used) if fps_used > 0 else 0.0
+                    float(val_total_frames) / float(fps_used)
+                    if fps_used > 0
+                    else 0.0
                 )
                 if len(val_roots) == 1:
                     logger.info(
@@ -318,7 +337,9 @@ class RefMotionCommand(CommandTerm):
                 num_workers=int(dataloader_cfg.get("num_workers", 4)),
                 prefetch_factor=dataloader_cfg.get("prefetch_factor", None),
                 pin_memory=bool(dataloader_cfg.get("pin_memory", True)),
-                persistent_workers=bool(dataloader_cfg.get("persistent_workers", True)),
+                persistent_workers=bool(
+                    dataloader_cfg.get("persistent_workers", True)
+                ),
                 sampler_rank=int(self.cfg.process_id),
                 sampler_world_size=int(self.cfg.num_processes),
                 allowed_prefixes=allowed_prefixes,
@@ -387,34 +408,42 @@ class RefMotionCommand(CommandTerm):
             self.urdf_dof_names.index(dof) for dof in self.simulator_dof_names
         ]
         self.urdf2sim_body_idx = [
-            self.urdf_body_names.index(body) for body in self.simulator_body_names
+            self.urdf_body_names.index(body)
+            for body in self.simulator_body_names
         ]
         self.sim2urdf_dof_idx = [
             self.simulator_dof_names.index(dof) for dof in self.urdf_dof_names
         ]
         self.sim2urdf_body_idx = [
-            self.simulator_body_names.index(body) for body in self.urdf_body_names
+            self.simulator_body_names.index(body)
+            for body in self.urdf_body_names
         ]
 
         self.arm_dof_indices = [
-            self.simulator_dof_names.index(dof) for dof in self.cfg.arm_dof_names
+            self.simulator_dof_names.index(dof)
+            for dof in self.cfg.arm_dof_names
         ]
         self.torso_dof_indices = [
-            self.simulator_dof_names.index(dof) for dof in self.cfg.waist_dof_names
+            self.simulator_dof_names.index(dof)
+            for dof in self.cfg.waist_dof_names
         ]
         self.leg_dof_indices = [
-            self.simulator_dof_names.index(dof) for dof in self.cfg.leg_dof_names
+            self.simulator_dof_names.index(dof)
+            for dof in self.cfg.leg_dof_names
         ]
 
         # Body indices for mpkpe metrics using unified naming
         self.arm_body_indices = [
-            self.simulator_body_names.index(body) for body in self.cfg.arm_body_names
+            self.simulator_body_names.index(body)
+            for body in self.cfg.arm_body_names
         ]
         self.torso_body_indices = [
-            self.simulator_body_names.index(body) for body in self.cfg.torso_body_names
+            self.simulator_body_names.index(body)
+            for body in self.cfg.torso_body_names
         ]
         self.leg_body_indices = [
-            self.simulator_body_names.index(body) for body in self.cfg.leg_body_names
+            self.simulator_body_names.index(body)
+            for body in self.cfg.leg_body_names
         ]
 
         # Per-env world origins (translation only)
@@ -463,7 +492,9 @@ class RefMotionCommand(CommandTerm):
     def _init_single_motion(self):
         single_id = self._motion_lib.sample_motion_ids_only(1, eval=True)
         motion_key = self._motion_lib.motion_id2key[int(single_id[0].item())]
-        self.single_ref_motion = self._motion_lib.export_motion_clip(motion_key)
+        self.single_ref_motion = self._motion_lib.export_motion_clip(
+            motion_key
+        )
 
     @property
     def command(
@@ -489,7 +520,9 @@ class RefMotionCommand(CommandTerm):
             env_ids = slice(None)
 
         if not isinstance(env_ids, torch.Tensor):
-            env_ids = torch.tensor(env_ids, device=self.device, dtype=torch.long)
+            env_ids = torch.tensor(
+                env_ids, device=self.device, dtype=torch.long
+            )
         else:
             env_ids = env_ids.to(self.device)
         self._motion_end_mask[env_ids] = False
@@ -538,7 +571,9 @@ class RefMotionCommand(CommandTerm):
         self._update_ref_motion_state_from_cache()
 
         # Realign robot states to the new reference
-        all_ids = torch.arange(self.num_envs, dtype=torch.long, device=self.device)
+        all_ids = torch.arange(
+            self.num_envs, dtype=torch.long, device=self.device
+        )
         self._align_root_to_ref(all_ids)
         self._align_dof_to_ref(all_ids)
 
@@ -555,7 +590,9 @@ class RefMotionCommand(CommandTerm):
         """Update reference motion state (unified API)."""
         return self._update_ref_motion_state_from_cache()
 
-    def _update_ref_motion_state_from_cache(self, env_ids: torch.Tensor | None = None):
+    def _update_ref_motion_state_from_cache(
+        self, env_ids: torch.Tensor | None = None
+    ):
         """Update reference motion state from simple cache."""
         if env_ids is None:
             state = self._motion_cache.gather_state(
@@ -566,7 +603,9 @@ class RefMotionCommand(CommandTerm):
             self.ref_motion_state = state
         else:
             if not isinstance(env_ids, torch.Tensor):
-                idxs = torch.tensor(env_ids, device=self.device, dtype=torch.long)
+                idxs = torch.tensor(
+                    env_ids, device=self.device, dtype=torch.long
+                )
             else:
                 idxs = env_ids.to(self.device).long()
             sub_state = self._motion_cache.gather_state(
@@ -574,7 +613,10 @@ class RefMotionCommand(CommandTerm):
                 self._frame_indices[idxs],
                 n_future_frames=self.cfg.n_fut_frames,
             )
-            if not hasattr(self, "ref_motion_state") or self.ref_motion_state is None:
+            if (
+                not hasattr(self, "ref_motion_state")
+                or self.ref_motion_state is None
+            ):
                 self.ref_motion_state = {
                     k: torch.zeros(
                         (self.num_envs,) + v.shape[1:],
@@ -589,7 +631,7 @@ class RefMotionCommand(CommandTerm):
     def _get_ref_state_array(
         self,
         base_key: str,
-        prefix: str = "",
+        prefix: str = "ref_",
     ) -> torch.Tensor:
         """Return ref_motion_state[base_key] or prefixed variant when present.
 
@@ -600,10 +642,15 @@ class RefMotionCommand(CommandTerm):
         Returns:
             Tensor stored under the selected key with all non-batch dimensions unchanged.
         """
-        if prefix:
-            full_key = f"{prefix}{base_key}"
-            if full_key in self.ref_motion_state:
-                return self.ref_motion_state[full_key]
+        full_key = f"{prefix}{base_key}"
+        if full_key in self.ref_motion_state:
+            return self.ref_motion_state[full_key]
+        else:
+            raise ValueError(
+                f"Key with prefix {prefix} not found in dataset, maybe your dataset "
+                f"is processed with the previous version of HoloMotion. "
+                f"Please rerun the gmr_to_holomotion or holomotion_preprocess script to process the dataset again !"
+            )
         return self.ref_motion_state[base_key]
 
     def _uniform_sample_ref_start_frames(self, env_ids: torch.Tensor):
@@ -613,7 +660,9 @@ class RefMotionCommand(CommandTerm):
         future frames exist. If that upper bound is < start, it falls back to start.
         """
         if not isinstance(env_ids, torch.Tensor):
-            env_ids = torch.tensor(env_ids, device=self.device, dtype=torch.long)
+            env_ids = torch.tensor(
+                env_ids, device=self.device, dtype=torch.long
+            )
         else:
             env_ids = env_ids.to(self.device).long()
 
@@ -621,7 +670,11 @@ class RefMotionCommand(CommandTerm):
         ends = self.ref_motion_global_end_frame_ids[env_ids]
 
         # Ensure room for future frames if requested
-        n_fut = int(self.cfg.n_fut_frames) if hasattr(self.cfg, "n_fut_frames") else 0
+        n_fut = (
+            int(self.cfg.n_fut_frames)
+            if hasattr(self.cfg, "n_fut_frames")
+            else 0
+        )
         max_start = ends - 1 - n_fut
         max_start = torch.maximum(max_start, starts)
 
@@ -758,9 +811,9 @@ class RefMotionCommand(CommandTerm):
         self,
         prefix: str = "",
     ) -> torch.Tensor:
-        return self.get_ref_motion_root_global_rot_quat_xyzw_cur(prefix=prefix)[
-            ..., [3, 0, 1, 2]
-        ]
+        return self.get_ref_motion_root_global_rot_quat_xyzw_cur(
+            prefix=prefix
+        )[..., [3, 0, 1, 2]]
 
     def get_ref_motion_root_global_lin_vel_cur(
         self,
@@ -801,7 +854,9 @@ class RefMotionCommand(CommandTerm):
         self,
         prefix: str = "",
     ) -> torch.Tensor:
-        rot_xyzw = self.get_ref_motion_bodylink_global_rot_xyzw_cur(prefix=prefix)
+        rot_xyzw = self.get_ref_motion_bodylink_global_rot_xyzw_cur(
+            prefix=prefix
+        )
         return rot_xyzw[..., [3, 0, 1, 2]]
 
     def get_ref_motion_bodylink_global_rot_xyzw_cur(
@@ -828,7 +883,9 @@ class RefMotionCommand(CommandTerm):
 
     @property
     def robot_bodylink_global_rot_xyzw_cur_urdf_order(self):
-        return self.robot_bodylink_global_rot_wxyz_cur_urdf_order[..., [1, 2, 3, 0]]
+        return self.robot_bodylink_global_rot_wxyz_cur_urdf_order[
+            ..., [1, 2, 3, 0]
+        ]
 
     @property
     def robot_bodylink_global_lin_vel_cur_urdf_order(self):
@@ -913,12 +970,12 @@ class RefMotionCommand(CommandTerm):
         self,
         obs_prefix: str = "",
     ) -> torch.Tensor:
-        base_pos = self._get_ref_state_array("dof_pos", obs_prefix)[:, 1:, ...][
-            ..., self.urdf2sim_dof_idx
-        ]
-        base_vel = self._get_ref_state_array("dof_vel", obs_prefix)[:, 1:, ...][
-            ..., self.urdf2sim_dof_idx
-        ]
+        base_pos = self._get_ref_state_array("dof_pos", obs_prefix)[
+            :, 1:, ...
+        ][..., self.urdf2sim_dof_idx]
+        base_vel = self._get_ref_state_array("dof_vel", obs_prefix)[
+            :, 1:, ...
+        ][..., self.urdf2sim_dof_idx]
         num_envs = base_pos.shape[0]
         n_fut_frames = int(self.cfg.n_fut_frames)
         fut_ref_dof_pos_flat = base_pos.reshape(num_envs, n_fut_frames, -1)
@@ -952,9 +1009,9 @@ class RefMotionCommand(CommandTerm):
         self,
         obs_prefix: str = "",
     ) -> torch.Tensor:
-        base_pos = self._get_ref_state_array("dof_pos", obs_prefix)[:, 1:, ...][
-            ..., self.urdf2sim_dof_idx
-        ]
+        base_pos = self._get_ref_state_array("dof_pos", obs_prefix)[
+            :, 1:, ...
+        ][..., self.urdf2sim_dof_idx]
         num_envs = base_pos.shape[0]
         n_fut_frames = int(self.cfg.n_fut_frames)
         fut_ref_dof_pos_flat = base_pos.reshape(num_envs, n_fut_frames, -1)
@@ -974,25 +1031,27 @@ class RefMotionCommand(CommandTerm):
         obs_prefix: str = "",
     ) -> torch.Tensor:
         # Gather all needed arrays with obs prefix
-        fut_rg_pos = self._get_ref_state_array("rg_pos", obs_prefix)[:, 1:, ...][
-            ..., self.urdf2sim_body_idx, :
-        ]
-        fut_rb_rot_xyzw = self._get_ref_state_array("rb_rot", obs_prefix)[:, 1:, ...][
-            ..., self.urdf2sim_body_idx, :
-        ]
+        fut_rg_pos = self._get_ref_state_array("rg_pos", obs_prefix)[
+            :, 1:, ...
+        ][..., self.urdf2sim_body_idx, :]
+        fut_rb_rot_xyzw = self._get_ref_state_array("rb_rot", obs_prefix)[
+            :, 1:, ...
+        ][..., self.urdf2sim_body_idx, :]
         fut_root_rot_xyzw = self._get_ref_state_array("root_rot", obs_prefix)[
             :, 1:, ...
         ]
-        fut_root_lin_vel = self._get_ref_state_array("root_vel", obs_prefix)[:, 1:, ...]
-        fut_root_ang_vel = self._get_ref_state_array("root_ang_vel", obs_prefix)[
+        fut_root_lin_vel = self._get_ref_state_array("root_vel", obs_prefix)[
             :, 1:, ...
         ]
-        fut_dof_pos = self._get_ref_state_array("dof_pos", obs_prefix)[:, 1:, ...][
-            ..., self.urdf2sim_dof_idx
-        ]
-        fut_dof_vel = self._get_ref_state_array("dof_vel", obs_prefix)[:, 1:, ...][
-            ..., self.urdf2sim_dof_idx
-        ]
+        fut_root_ang_vel = self._get_ref_state_array(
+            "root_ang_vel", obs_prefix
+        )[:, 1:, ...]
+        fut_dof_pos = self._get_ref_state_array("dof_pos", obs_prefix)[
+            :, 1:, ...
+        ][..., self.urdf2sim_dof_idx]
+        fut_dof_vel = self._get_ref_state_array("dof_vel", obs_prefix)[
+            :, 1:, ...
+        ][..., self.urdf2sim_dof_idx]
 
         num_envs, num_fut_timesteps, num_bodies, _ = fut_rg_pos.shape
         assert num_envs == self.num_envs
@@ -1031,11 +1090,15 @@ class RefMotionCommand(CommandTerm):
         ref_fut_pitch = wrap_to_pi(ref_fut_pitch).reshape(
             num_envs, num_fut_timesteps, -1
         )  # [B, T, 1]
-        ref_fut_rp = torch.cat([ref_fut_roll, ref_fut_pitch], dim=-1)  # [B, T, 2]
+        ref_fut_rp = torch.cat(
+            [ref_fut_roll, ref_fut_pitch], dim=-1
+        )  # [B, T, 2]
         ref_fut_rp_flat = ref_fut_rp.reshape(num_envs, -1)  # [B, T * 2]
         # ---
 
-        fut_ref_root_quat_inv_fut_flat = fut_ref_root_rot_quat_inv.reshape(-1, 4)
+        fut_ref_root_quat_inv_fut_flat = fut_ref_root_rot_quat_inv.reshape(
+            -1, 4
+        )
         fut_ref_cur_root_rel_base_lin_vel = quat_rotate(
             fut_ref_root_quat_inv_fut_flat,  # [B*T, 4]
             fut_root_lin_vel.reshape(-1, 3),  # [B*T, 3]
@@ -1061,7 +1124,8 @@ class RefMotionCommand(CommandTerm):
         fut_ref_root_rel_bodylink_pos = quat_rotate(
             fut_ref_root_rot_quat_body_flat_inv,
             (
-                fut_ref_global_bodylink_pos - fut_ref_global_bodylink_pos[:, :, 0:1, :]
+                fut_ref_global_bodylink_pos
+                - fut_ref_global_bodylink_pos[:, :, 0:1, :]
             ).reshape(-1, 3),
             w_last=True,
         ).reshape(
@@ -1083,7 +1147,9 @@ class RefMotionCommand(CommandTerm):
 
         rel_fut_ref_motion_state_seq = torch.cat(
             [
-                ref_fut_rp_flat.reshape(num_envs, num_fut_timesteps, -1),  # [B, T, 2]
+                ref_fut_rp_flat.reshape(
+                    num_envs, num_fut_timesteps, -1
+                ),  # [B, T, 2]
                 fut_ref_cur_root_rel_base_lin_vel.reshape(
                     num_envs, num_fut_timesteps, -1
                 ),  # [B, T, 3]
@@ -1171,7 +1237,9 @@ class RefMotionCommand(CommandTerm):
             self.cfg.root_vel_perturb_range.get(key, (0.0, 0.0))
             for key in ["x", "y", "z", "roll", "pitch", "yaw"]
         ]
-        lin_ang_vel_ranges = torch.tensor(lin_ang_vel_range_list, device=self.device)
+        lin_ang_vel_ranges = torch.tensor(
+            lin_ang_vel_range_list, device=self.device
+        )
 
         lin_ang_vel_rand_deltas = isaaclab_math.sample_uniform(
             lin_ang_vel_ranges[:, 0],
@@ -1231,7 +1299,9 @@ class RefMotionCommand(CommandTerm):
     def _resample_when_motion_end_cache(self):
         """Resample environments when motion ends (simple cache mode)."""
         lengths = self._motion_cache.lengths_for_indices(self._clip_indices)
-        max_valid_frame = torch.clamp(lengths - 1 - self.cfg.n_fut_frames, min=0)
+        max_valid_frame = torch.clamp(
+            lengths - 1 - self.cfg.n_fut_frames, min=0
+        )
         need_resample = self._frame_indices > max_valid_frame
 
         if torch.any(need_resample):
@@ -1283,13 +1353,17 @@ class RefMotionCommand(CommandTerm):
         ref_dof_pos = self.get_ref_motion_dof_pos_cur()  # [B, num_dofs]
 
         # Compute joint position errors
-        dof_pos_error = torch.abs(current_dof_pos - ref_dof_pos)  # [B, num_dofs]
+        dof_pos_error = torch.abs(
+            current_dof_pos - ref_dof_pos
+        )  # [B, num_dofs]
 
         # MPJPE whole body
         mpjpe_wholebody = torch.mean(dof_pos_error, dim=-1)  # [B]
 
         # MPJPE arms (using unified naming)
-        mpjpe_arms = torch.mean(dof_pos_error[:, self.arm_dof_indices], dim=-1)  # [B]
+        mpjpe_arms = torch.mean(
+            dof_pos_error[:, self.arm_dof_indices], dim=-1
+        )  # [B]
 
         # MPJPE torso (using unified naming)
         mpjpe_waist = torch.mean(
@@ -1297,7 +1371,9 @@ class RefMotionCommand(CommandTerm):
         )  # [B]
 
         # MPJPE legs
-        mpjpe_legs = torch.mean(dof_pos_error[:, self.leg_dof_indices], dim=-1)  # [B]
+        mpjpe_legs = torch.mean(
+            dof_pos_error[:, self.leg_dof_indices], dim=-1
+        )  # [B]
 
         # Initialize metric tensors if needed
         for metric_name in [
@@ -1333,7 +1409,9 @@ class RefMotionCommand(CommandTerm):
         mpkpe_wholebody = torch.mean(body_pos_error, dim=-1)  # [B]
 
         # MPKPE arms (using unified naming)
-        mpkpe_arms = torch.mean(body_pos_error[:, self.arm_body_indices], dim=-1)  # [B]
+        mpkpe_arms = torch.mean(
+            body_pos_error[:, self.arm_body_indices], dim=-1
+        )  # [B]
 
         # MPKPE torso (using unified naming)
         mpkpe_waist = torch.mean(
@@ -1341,7 +1419,9 @@ class RefMotionCommand(CommandTerm):
         )  # [B]
 
         # MPKPE legs
-        mpkpe_legs = torch.mean(body_pos_error[:, self.leg_body_indices], dim=-1)  # [B]
+        mpkpe_legs = torch.mean(
+            body_pos_error[:, self.leg_body_indices], dim=-1
+        )  # [B]
 
         # Initialize metric tensors if needed
         for metric_name in [
@@ -1366,7 +1446,9 @@ class RefMotionCommand(CommandTerm):
         self,
     ) -> torch.Tensor:
         """[B] current whole-body MPJPE (URDF joint-space abs error)."""
-        if not hasattr(self, "metrics") or ("Task/MPJPE_WholeBody" not in self.metrics):
+        if not hasattr(self, "metrics") or (
+            "Task/MPJPE_WholeBody" not in self.metrics
+        ):
             return torch.zeros(self.num_envs, device=self.device)
         return self.metrics["Task/MPJPE_WholeBody"]
 
@@ -1374,7 +1456,9 @@ class RefMotionCommand(CommandTerm):
         self,
     ) -> torch.Tensor:
         """[B] current whole-body MPKPE (body position error)."""
-        if not hasattr(self, "metrics") or ("Task/MPKPE_WholeBody" not in self.metrics):
+        if not hasattr(self, "metrics") or (
+            "Task/MPKPE_WholeBody" not in self.metrics
+        ):
             return torch.zeros(self.num_envs, device=self.device)
         return self.metrics["Task/MPKPE_WholeBody"]
 
@@ -1386,7 +1470,9 @@ class RefMotionCommand(CommandTerm):
             if hasattr(self, "_motion_cache") and hasattr(
                 self._motion_cache, "motion_keys_for_indices"
             ):
-                return self._motion_cache.motion_keys_for_indices(self._clip_indices)
+                return self._motion_cache.motion_keys_for_indices(
+                    self._clip_indices
+                )
         except Exception:
             pass
         return []
@@ -1413,7 +1499,9 @@ class RefMotionCommand(CommandTerm):
 
         self._update_ref_motion_state()
 
-        all_env_ids = torch.arange(self.num_envs, dtype=torch.long, device=self.device)
+        all_env_ids = torch.arange(
+            self.num_envs, dtype=torch.long, device=self.device
+        )
         self._align_root_to_ref(all_env_ids)
         self._align_dof_to_ref(all_env_ids)
 
@@ -1422,7 +1510,9 @@ class RefMotionCommand(CommandTerm):
             f"environments aligned to frame 0"
         )
 
-    def setup_offline_eval_deterministic(self, apply_pending_swap: bool = True) -> None:
+    def setup_offline_eval_deterministic(
+        self, apply_pending_swap: bool = True
+    ) -> None:
         """Deterministic multi-env setup for offline evaluation.
 
         - Optionally apply a pending cache swap.
@@ -1466,14 +1556,19 @@ class RefMotionCommand(CommandTerm):
             return
 
         # Check if reference motion state is available
-        if not hasattr(self, "ref_motion_state") or self.ref_motion_state is None:
+        if (
+            not hasattr(self, "ref_motion_state")
+            or self.ref_motion_state is None
+        ):
             return
 
         # Create visualizers lazily if they don't exist
         if not hasattr(self, "ref_body_visualizers"):
             self.ref_body_visualizers = []
             # Get number of bodies from the reference motion data
-            num_bodies = self.get_ref_motion_bodylink_global_pos_cur().shape[-2]
+            num_bodies = self.get_ref_motion_bodylink_global_pos_cur().shape[
+                -2
+            ]
             for i in range(num_bodies):
                 # Reference bodylinks as red spheres
                 self.ref_body_visualizers.append(
@@ -1489,7 +1584,9 @@ class RefMotionCommand(CommandTerm):
             ref_body_pos = self.get_ref_motion_bodylink_global_pos_cur()
             # [B, num_bodies, 3]
 
-            num_bodies = min(len(self.ref_body_visualizers), ref_body_pos.shape[1])
+            num_bodies = min(
+                len(self.ref_body_visualizers), ref_body_pos.shape[1]
+            )
 
             for i in range(num_bodies):
                 # Visualize reference bodylinks as spheres (position only)
@@ -1537,11 +1634,13 @@ class MotionCommandCfg(CommandTermCfg):
     dof_pos_perturb_range: tuple[float, float] = (-0.1, 0.1)
     dof_vel_perturb_range: tuple[float, float] = (-1.0, 1.0)
 
-    body_keypoint_visualizer_cfg: VisualizationMarkersCfg = SPHERE_MARKER_CFG.replace(
-        prim_path="/Visuals/Command/ref_keypoint"
+    body_keypoint_visualizer_cfg: VisualizationMarkersCfg = (
+        SPHERE_MARKER_CFG.replace(prim_path="/Visuals/Command/ref_keypoint")
     )
     body_keypoint_visualizer_cfg.markers["sphere"].radius = 0.03
-    body_keypoint_visualizer_cfg.markers["sphere"].visual_material = PreviewSurfaceCfg(
+    body_keypoint_visualizer_cfg.markers[
+        "sphere"
+    ].visual_material = PreviewSurfaceCfg(
         diffuse_color=(0.0, 0.0, 1.0)  # blue
     )
 
