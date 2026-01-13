@@ -72,9 +72,8 @@ def load_training_config(
     # For evaluation, merge eval_config into train_config
     config = OmegaConf.merge(train_config, eval_config)
 
-    # foce set the terminations and domain rand with eval_config's
+    # force set the terminations and domain rand with eval_config's
     config.env.config.terminations = eval_config.env.config.terminations
-    config.env.config.domain_rand = eval_config.env.config.domain_rand
     config.env.config.domain_rand = eval_config.env.config.domain_rand
 
     return config

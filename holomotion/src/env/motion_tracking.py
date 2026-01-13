@@ -135,11 +135,12 @@ class MotionTrackingEnv:
         # Determine per-process seed if provided; else create a deterministic per-rank default
         seed_val = getattr(self.config, "seed", None)
         if seed_val is None:
-            if self.accelerator is not None:
-                pid = self.accelerator.process_index
-            else:
-                pid = int(self.config.get("process_id", 0))
-            seed_val = int(time.time()) + pid
+            seed_val = int(time.time())
+        if self.accelerator is not None:
+            pid = self.accelerator.process_index
+        else:
+            pid = int(self.config.get("process_id", 0))
+        seed_val = int(seed_val) + pid
 
         _robot_config_dict = EasyDict(
             OmegaConf.to_container(self.config.robot, resolve=True)

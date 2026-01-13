@@ -2142,6 +2142,7 @@ class PPO:
         import imageio
 
         ckpt_path = self.config.checkpoint
+        n_fut_frames = self.env.config.commands.ref_motion.params.get("n_fut_frames", 8)
         # log_dir is already set to checkpoint directory in eval script
         model_name = os.path.basename(ckpt_path).replace(".pt", "")
 
@@ -2568,7 +2569,7 @@ class PPO:
                             valid_now = (
                                 (idx < active_count)
                                 and (not encountered_done[idx])
-                                and (env_frame_counts[idx] < clip_limit)
+                                and (env_frame_counts[idx] < clip_limit - n_fut_frames)
                             )
                             valid_masks[idx].append(bool(valid_now))
 

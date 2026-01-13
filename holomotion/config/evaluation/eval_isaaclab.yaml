@@ -34,9 +34,11 @@ algo:
   config:
     dynamo_backend: null
     sampling_strategy: uniform
+    seed: 114514
 
 env:
   config:
+    seed: 114514
     simulation:
       episode_length_s: 3600
 

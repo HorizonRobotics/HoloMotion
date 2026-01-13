@@ -133,11 +133,11 @@ def _per_frame_metrics_from_npz(
     # Localize by root (index 0)
     jpos_gt_local = jpos_gt - jpos_gt[:, [0]]
     jpos_pred_local = jpos_pred - jpos_pred[:, [0]]
-    robot_body_pos_root_rel = quat_apply(
+    ref_body_pos_root_rel = quat_apply(
         quat_inv(rot_gt[:, 0, :]),
         jpos_gt - jpos_gt[:, [0]],
     )
-    ref_body_pos_root_rel = quat_apply(
+    robot_body_pos_root_rel = quat_apply(
         quat_inv(rot_pred[:, 0, :]),
         jpos_pred - jpos_pred[:, [0]],
     )
