@@ -6,4 +6,4 @@ The entry script is `holomotion/scripts/evaluation/eval_mujoco_sim2sim.sh`, you 
 
 - `robot_xml_path`: The scene mjcf .xml file for the robot
 - `ONNX_PATH`: The exported ONNX model file
-- `motion_pkl_path`: The npz file containing the reference motion
+- `motion_npz_path`: The npz file containing the reference motion

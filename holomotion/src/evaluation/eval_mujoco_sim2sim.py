@@ -636,8 +636,8 @@ class MujocoEvaluator:
 
     def _detect_command_mode(self) -> str:
         """Detect command mode from config."""
-        motion_pkl_path = self.config.get("motion_pkl_path", None)
-        if motion_pkl_path is None or motion_pkl_path == "":
+        motion_npz_path = self.config.get("motion_npz_path", None)
+        if motion_npz_path is None or motion_npz_path == "":
             return "velocity_tracking"
         return "motion_tracking"
 
@@ -748,17 +748,17 @@ class MujocoEvaluator:
 
     def load_motion_data(self):
         """Load motion data from npz file."""
-        motion_pkl_path = self.config.get("motion_pkl_path", None)
-        if motion_pkl_path is None:
+        motion_npz_path = self.config.get("motion_npz_path", None)
+        if motion_npz_path is None:
             logger.warning(
-                "No motion_pkl_path specified in config, using zero reference motion"
+                "No motion_npz_path specified in config, using zero reference motion"
             )
             return
 
-        logger.info(f"Loading motion data from {motion_pkl_path}")
+        logger.info(f"Loading motion data from {motion_npz_path}")
 
         # Load npz file
-        with np.load(motion_pkl_path, allow_pickle=True) as npz:
+        with np.load(motion_npz_path, allow_pickle=True) as npz:
             keys = list(npz.keys())
 
             # Try direct arrays first (dof_pos, dof_vel or variants)
@@ -1024,9 +1024,9 @@ class MujocoEvaluator:
             f"mujoco_output_{onnx_stem}",
         )
         os.makedirs(output_dir, exist_ok=True)
-        motion_pkl_path = self.config.get("motion_pkl_path", None)
-        if motion_pkl_path is not None:
-            motion_stem = os.path.splitext(os.path.basename(motion_pkl_path))[
+        motion_npz_path = self.config.get("motion_npz_path", None)
+        if motion_npz_path is not None:
+            motion_stem = os.path.splitext(os.path.basename(motion_npz_path))[
                 0
             ]
             out_path = os.path.join(output_dir, f"{motion_stem}.mp4")
@@ -1065,8 +1065,8 @@ class MujocoEvaluator:
         - robot_global_velocity: [T, num_bodies, 3]
         - robot_global_angular_velocity: [T, num_bodies, 3]
         """
-        motion_pkl_path = self.config.get("motion_pkl_path", None)
-        if motion_pkl_path is None:
+        motion_npz_path = self.config.get("motion_npz_path", None)
+        if motion_npz_path is None:
             return
         if len(self._robot_dof_pos_seq) == 0:
             return
@@ -1093,7 +1093,7 @@ class MujocoEvaluator:
         ).astype(np.float32)
 
         # Load original motion npz
-        with np.load(motion_pkl_path, allow_pickle=True) as npz:
+        with np.load(motion_npz_path, allow_pickle=True) as npz:
             data_dict = {k: npz[k] for k in npz.files}
 
         # Augment with robot_* arrays (override if already present)
@@ -1115,7 +1115,7 @@ class MujocoEvaluator:
             f"mujoco_output_{onnx_stem}",
         )
         os.makedirs(output_dir, exist_ok=True)
-        motion_stem = os.path.splitext(os.path.basename(motion_pkl_path))[0]
+        motion_stem = os.path.splitext(os.path.basename(motion_npz_path))[0]
         out_npz_path = os.path.join(output_dir, f"{motion_stem}_robot.npz")
 
         np.savez_compressed(out_npz_path, **data_dict)
