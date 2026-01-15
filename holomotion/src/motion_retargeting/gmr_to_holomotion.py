@@ -672,6 +672,7 @@ def arrays_for_npz(
     base_to_ref = {
         "dof_pos": "ref_dof_pos",
         "dof_vel": "ref_dof_vel",
+        "dof_vels": "ref_dof_vel",
         "global_translation": "ref_global_translation",
         "global_rotation_quat": "ref_global_rotation_quat",
         "global_velocity": "ref_global_velocity",
