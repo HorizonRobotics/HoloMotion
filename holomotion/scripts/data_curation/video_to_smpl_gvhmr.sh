@@ -7,7 +7,7 @@ out_dir="holomotion_abs_path/data/gvhmr_converted/collected_smpl"
 
 cd thirdparties/GVHMR/
 
-$Train_CONDA_PREFIX/bin/python ../../holomotion/src/data_curation/video2SMPL_gvhmr.py \
+$Train_CONDA_PREFIX/bin/python ../../holomotion/src/data_curation/video_to_smpl_gvhmr.py \
     --folder=${video_folder_root} \
     --output_root=${npz_data_root} \
     -s

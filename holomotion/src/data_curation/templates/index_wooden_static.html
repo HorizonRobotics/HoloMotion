@@ -1,0 +1,847 @@
+<!--
+# Project HoloMotion
+#
+# Copyright (c) 2024-2026 Horizon Robotics. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# This file was originally copied from the [HY-Motion-1.0] repository:
+# https://huggingface.co/spaces/tencent/HY-Motion-1.0/tree/main
+# Modifications have been made to fit the needs of this project.
+-->
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8" />
+  <title>Motion Visualization</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+  <!-- Font Awesome (icons only). If you want zero external deps, remove and use text icons. -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+
+  <!-- Three.js importmap -->
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+      }
+    }
+  </script>
+
+  <style>
+    /* =========================
+     * Base / Layout
+     * ========================= */
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #424242;
+      color: #e2e8f0;
+      font-family: -apple-system, system-ui, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+
+    .fullscreen-container {
+      position: fixed;
+      inset: 0;
+      background: #424242;
+      overflow: hidden;
+    }
+
+    #vis3d {
+      position: absolute;
+      inset: 0;
+      background: #424242;
+    }
+
+    #vis3d canvas {
+      display: block;
+      width: 100% !important;
+      height: 100% !important;
+    }
+
+    /* =========================
+     * Caption overlay (top-center)
+     * ========================= */
+    .caption-overlay {
+      position: absolute;
+      top: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      max-width: 90%;
+      z-index: 100;
+      pointer-events: auto;
+    }
+
+    .motion-info {
+      background-color: rgba(45, 55, 72, 0.85);
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+      border-radius: 20px;
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+      overflow: hidden;
+      max-height: 40vh;
+      overflow-y: auto;
+      display: inline-block;
+    }
+
+    .captions-section { padding: 12px 20px; white-space: nowrap; }
+    .caption-item {
+      background: transparent;
+      border: none;
+      margin-bottom: 6px;
+      color: #f0f4f8;
+      font-size: 1em;
+      font-weight: 500;
+      line-height: 1.5;
+      text-align: center;
+    }
+    .caption-item:last-child { margin-bottom: 0; }
+
+    /* =========================
+     * Controls (bottom-center)
+     * ========================= */
+    .control-overlay {
+      position: absolute;
+      left: 50%;
+      bottom: 30px;
+      transform: translateX(-50%);
+      width: min(600px, 80%);
+      z-index: 120;
+
+      background: rgba(0, 0, 0, 0.4);
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+      padding: 14px 18px;
+      border-radius: 12px;
+    }
+
+    .control-row {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+
+    .progress-container { flex: 1; }
+
+    input[type="range"].progress-slider {
+      width: 100%;
+      height: 8px;
+      border-radius: 4px;
+      background: rgba(255, 255, 255, 0.3);
+      outline: none;
+      cursor: pointer;
+      -webkit-appearance: none;
+      appearance: none;
+    }
+
+    input[type="range"].progress-slider::-webkit-slider-runnable-track {
+      width: 100%;
+      height: 8px;
+      border-radius: 4px;
+      background: rgba(255, 255, 255, 0.3);
+    }
+    input[type="range"].progress-slider::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      background: #4a9eff;
+      border: 2px solid #fff;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+      margin-top: -5px;
+    }
+
+    input[type="range"].progress-slider::-moz-range-track {
+      width: 100%;
+      height: 8px;
+      border-radius: 4px;
+      background: rgba(255, 255, 255, 0.3);
+    }
+    input[type="range"].progress-slider::-moz-range-thumb {
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      background: #4a9eff;
+      border: 2px solid #fff;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+    }
+
+    .frame-counter {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      font-size: 13px;
+      font-weight: 600;
+      color: #fff;
+      text-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+      white-space: nowrap;
+      min-width: 92px;
+      text-align: right;
+    }
+
+    /* =========================
+     * Loading overlay
+     * ========================= */
+    .loading-overlay {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      transform: translate(-50%, -50%);
+      z-index: 200;
+
+      display: flex;
+      align-items: center;
+      gap: 10px;
+
+      background: rgba(0, 0, 0, 0.7);
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+      color: #fff;
+      padding: 14px 18px;
+      border-radius: 10px;
+      font-size: 14px;
+    }
+
+    .loading-overlay.hidden { display: none; }
+    .loading-overlay.complete { background: rgba(76, 175, 80, 0.85); }
+    .loading-overlay.failed { background: rgba(244, 67, 54, 0.85); }
+  </style>
+</head>
+
+<body>
+  <div class="fullscreen-container">
+    <div id="vis3d"></div>
+
+    <!-- Caption overlay (generated by Python) -->
+    {{ caption_html }}
+
+    <!-- Minimal progress control -->
+    <div class="control-overlay">
+      <div class="control-row">
+        <div class="progress-container">
+          <input type="range" id="progressSlider" class="progress-slider" min="0" max="100" value="0">
+        </div>
+        <div class="frame-counter">
+          <span id="currentFrame">0</span> / <span id="totalFrames">0</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Loading status -->
+    <div class="loading-overlay" id="loadingStatus">
+      <i class="fas fa-spinner fa-spin"></i> Loading...
+    </div>
+
+    <!-- Hidden controls (keep for keyboard / internal state) -->
+    <div style="display:none;">
+      <button id="playPauseBtn"></button>
+      <button id="resetBtn"></button>
+      <input type="range" id="speedSlider" min="0.1" max="3" step="0.1" value="1">
+      <span id="speedValue">1.0x</span>
+    </div>
+  </div>
+
+  <!-- Embedded SMPL data -->
+  <script type="application/json" id="smpl-data-json">
+{{ smpl_data_json }}
+  </script>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+    /**
+     * ============================================================
+     * Ground utilities
+     * ============================================================
+     */
+    function createBaseChessboard(gridSize=50, divisions=50, white="#ffffff", black="#3a3a3a", textureSize=1024) {
+      const adjusted = Math.floor(textureSize / divisions) * divisions;
+      const canvas = document.createElement("canvas");
+      canvas.width = canvas.height = adjusted;
+      const ctx = canvas.getContext("2d");
+      ctx.imageSmoothingEnabled = false;
+
+      const step = adjusted / divisions;
+      for (let i = 0; i < divisions; i++) {
+        for (let j = 0; j < divisions; j++) {
+          ctx.fillStyle = (i + j) % 2 === 0 ? white : black;
+          ctx.fillRect(i * step, j * step, step, step);
+        }
+      }
+
+      const tex = new THREE.CanvasTexture(canvas);
+      tex.wrapS = THREE.RepeatWrapping;
+      tex.wrapT = THREE.RepeatWrapping;
+      tex.magFilter = THREE.NearestFilter;
+      tex.minFilter = THREE.NearestFilter;
+      tex.generateMipmaps = false;
+
+      const geom = new THREE.PlaneGeometry(gridSize, gridSize);
+      const mat = new THREE.MeshStandardMaterial({
+        map: tex,
+        side: THREE.DoubleSide,
+        transparent: true,
+        opacity: 0.85,
+        roughness: 0.9,
+        metalness: 0.1
+      });
+
+      const plane = new THREE.Mesh(geom, mat);
+      plane.receiveShadow = true;
+      return plane;
+    }
+
+    function makeGroundYUp() {
+      const plane = createBaseChessboard(50, 50);
+      plane.rotation.x = -Math.PI / 2; // XZ plane, Y up
+      plane.name = "ground";
+      return plane;
+    }
+
+    /**
+     * ============================================================
+     * Scene setup
+     * ============================================================
+     */
+    function setupScene({ scene, camera, renderer, useGround=true }) {
+      scene.background = new THREE.Color(0x424242);
+      scene.fog = new THREE.FogExp2(0x424242, 0.06);
+
+      renderer.shadowMap.enabled = true;
+      renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+      // Lighting (keep your style)
+      const hemi = new THREE.HemisphereLight(0xffffff, 0x444444, 1.2);
+      hemi.position.set(0, 2, 0);
+      scene.add(hemi);
+
+      const dir = new THREE.DirectionalLight(0xffffff, 1.5);
+      dir.position.set(3, 5, 4);
+      dir.castShadow = true;
+      dir.shadow.mapSize.width = 2048;
+      dir.shadow.mapSize.height = 2048;
+      dir.shadow.camera.near = 0.5;
+      dir.shadow.camera.far = 50;
+      dir.shadow.camera.left = -10;
+      dir.shadow.camera.right = 10;
+      dir.shadow.camera.top = 10;
+      dir.shadow.camera.bottom = -10;
+      dir.shadow.bias = -0.0001;
+      scene.add(dir);
+
+      const fill = new THREE.DirectionalLight(0xaaccff, 0.5);
+      fill.position.set(-3, 3, -2);
+      scene.add(fill);
+
+      const rim = new THREE.DirectionalLight(0xffeedd, 0.4);
+      rim.position.set(0, 4, -5);
+      scene.add(rim);
+
+      // Camera conventions (Y-up, forward Z)
+      camera.up.set(0, 1, 0);
+      camera.position.set(0, 2.5, 5);
+      camera.lookAt(new THREE.Vector3(0, 1, 0));
+
+      if (useGround) {
+        scene.add(makeGroundYUp());
+      }
+    }
+
+    function fitCameraToScene(scene, camera, controls=null, opts={}) {
+      const { margin=1.05, excludeNames=["ground"] } = opts;
+
+      const box = new THREE.Box3();
+      const tmp = new THREE.Box3();
+      let has = false;
+
+      scene.traverse((obj) => {
+        if (!obj || !obj.visible) return;
+        if (obj.isLight) return;
+        if ((obj.type || "").endsWith("Helper")) return;
+        if (excludeNames.includes(obj.name)) return;
+
+        if (obj.isMesh) {
+          if (obj.geometry && obj.geometry.type === "PlaneGeometry") return;
+          try {
+            tmp.setFromObject(obj);
+            if (!tmp.isEmpty()) {
+              if (!has) { box.copy(tmp); has = true; }
+              else { box.union(tmp); }
+            }
+          } catch (_) {}
+        }
+      });
+
+      if (!has || box.isEmpty()) return;
+
+      const sphere = new THREE.Sphere();
+      box.getBoundingSphere(sphere);
+      const center = sphere.center.clone();
+      const radius = Math.max(sphere.radius, 1e-3);
+
+      const vFov = THREE.MathUtils.degToRad(camera.fov);
+      const hFov = 2 * Math.atan(Math.tan(vFov / 2) * camera.aspect);
+      const distV = radius / Math.sin(vFov / 2);
+      const distH = radius / Math.sin(hFov / 2);
+      const dist = Math.max(distV, distH) * margin;
+
+      const elev = THREE.MathUtils.degToRad(25);
+      const azim = Math.PI / 4;
+      const horiz = Math.cos(elev);
+      const dir = new THREE.Vector3(Math.sin(azim) * horiz, Math.sin(elev), Math.cos(azim) * horiz);
+
+      camera.up.set(0, 1, 0);
+      camera.position.copy(center).add(dir.multiplyScalar(dist));
+      camera.updateProjectionMatrix();
+      camera.lookAt(center);
+
+      if (controls) {
+        controls.target.copy(center);
+        controls.minDistance = Math.max(radius * 0.2, 0.1);
+        controls.maxDistance = Math.max(dist * 3, controls.minDistance + 0.1);
+        controls.update();
+      }
+    }
+
+    /**
+     * ============================================================
+     * Wooden loader
+     * ============================================================
+     */
+    const NUM_SKIN_WEIGHTS = 4;
+
+    const DEFAULT_EDGES = [-1, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 9, 9, 12, 13, 14, 16, 17, 18, 19, 20, 22, 23, 20, 25, 26, 20, 28, 29, 20, 31, 32, 20, 34, 35, 21, 37, 38, 21, 40, 41, 21, 43, 44, 21, 46, 47, 21, 49, 50];
+
+    async function loadWoodenModel({ basePath="https://raw.githubusercontent.com/chingswy/WoodenModel/refs/heads/main/dump_wooden" } = {}) {
+      const urls = [
+        `${basePath}/v_template.bin`,
+        `${basePath}/faces.bin`,
+        `${basePath}/skinWeights.bin`,
+        `${basePath}/skinIndice.bin`,
+        `${basePath}/j_template.bin`,
+        `${basePath}/uvs.bin`,
+      ];
+
+      // Optional: kintree & joint names
+      let edges = [...DEFAULT_EDGES];
+      try {
+        const resp = await fetch(`${basePath}/kintree.bin`);
+        if (resp.ok) edges = Array.from(new Int32Array(await resp.arrayBuffer()));
+      } catch (_) {}
+
+      let jointNames = null;
+      try {
+        const resp = await fetch(`${basePath}/joint_names.json`);
+        if (resp.ok) jointNames = await resp.json();
+      } catch (_) {}
+
+      const bufs = await Promise.all(urls.map(u => fetch(u).then(r => {
+        if (!r.ok) throw new Error(`Failed to fetch: ${u}`);
+        return r.arrayBuffer();
+      })));
+
+      const vTemplate = new Float32Array(bufs[0]);
+      const faces = new Uint16Array(bufs[1]);
+      const skinWeights = new Float32Array(bufs[2]);
+      const skinIndices = new Uint16Array(bufs[3]);
+      const keypoints = new Float32Array(bufs[4]);
+      const uvs = new Float32Array(bufs[5]);
+
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute('position', new THREE.BufferAttribute(vTemplate, 3));
+      geometry.setIndex(new THREE.BufferAttribute(faces, 1));
+      geometry.setAttribute('skinIndex', new THREE.BufferAttribute(skinIndices, NUM_SKIN_WEIGHTS));
+      geometry.setAttribute('skinWeight', new THREE.BufferAttribute(skinWeights, NUM_SKIN_WEIGHTS));
+      geometry.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+      geometry.computeVertexNormals();
+
+      const numJoints = keypoints.length / 3;
+      while (edges.length < numJoints) edges.push(0);
+
+      // Build bones
+      const bones = [];
+      const root = new THREE.Bone();
+      root.position.set(keypoints[0], keypoints[1], keypoints[2]);
+      root.name = (jointNames && jointNames[0]) ? jointNames[0] : "Pelvis";
+      bones.push(root);
+
+      for (let i = 1; i < numJoints; i++) {
+        const bone = new THREE.Bone();
+        const p = edges[i];
+        bone.name = (jointNames && jointNames[i]) ? jointNames[i] : `Joint_${i}`;
+
+        if (p >= 0 && p < i) {
+          bone.position.set(
+            keypoints[3*i]   - keypoints[3*p],
+            keypoints[3*i+1] - keypoints[3*p+1],
+            keypoints[3*i+2] - keypoints[3*p+2],
+          );
+          bones.push(bone);
+          bones[p].add(bone);
+        } else {
+          bone.position.set(0, 0, 0);
+          bones.push(bone);
+          bones[0].add(bone);
+        }
+      }
+
+      const skeleton = new THREE.Skeleton(bones);
+
+      // Texture
+      const texLoader = new THREE.TextureLoader();
+      const baseColor = await texLoader.loadAsync(`${basePath}/Boy_lambert4_BaseColor.webp`);
+      baseColor.flipY = false;
+      baseColor.colorSpace = THREE.SRGBColorSpace;
+
+      const material = new THREE.MeshStandardMaterial({
+        map: baseColor,
+        roughness: 0.6,
+        metalness: 0.2,
+        envMapIntensity: 1.5,
+      });
+
+      const mesh = new THREE.SkinnedMesh(geometry, material);
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      mesh.add(bones[0]);
+      mesh.bind(skeleton);
+
+      return { bones, skeleton, mesh };
+    }
+
+    /**
+     * ============================================================
+     * Playback + UI
+     * ============================================================
+     */
+    let scene, camera, renderer, controls;
+    let infos = null;
+    let currentFrame = 0;
+    let totalFrame = 0;
+
+    const baseIntervalMs = 30;
+    let isPlaying = false;
+    let lastFrameTime = 0;
+    let playbackSpeed = 1.0;
+    let animationId = null;
+
+    let modelsLoaded = false;
+    let expectedModelCount = 0;
+    let loadedModelCount = 0;
+
+    const modelBonesById = {};
+
+    function setLoading(text, state="loading") {
+      const el = document.getElementById("loadingStatus");
+      if (!el) return;
+
+      if (state === "hidden") {
+        el.className = "loading-overlay hidden";
+        return;
+      }
+
+      el.className = "loading-overlay";
+      if (state === "complete") el.className += " complete";
+      if (state === "failed") el.className += " failed";
+
+      el.innerHTML = text;
+    }
+
+    function updateUI() {
+      document.getElementById("currentFrame").textContent = String(currentFrame);
+      document.getElementById("totalFrames").textContent = String(totalFrame);
+
+      if (totalFrame > 0) {
+        const p = (currentFrame / totalFrame) * 100;
+        document.getElementById("progressSlider").value = String(p);
+      } else {
+        document.getElementById("progressSlider").value = "0";
+      }
+    }
+
+    function computeOffsets(batchSize) {
+      const spacing = 2.0;
+      const totalWidth = (batchSize - 1) * spacing;
+      const startX = -totalWidth / 2;
+      const offsets = [];
+      for (let i = 0; i < batchSize; i++) offsets.push(startX + i * spacing);
+      return offsets;
+    }
+
+    function updateFrame() {
+      if (!infos || !modelsLoaded || currentFrame < 0 || currentFrame >= totalFrame) return;
+
+      const info = infos[currentFrame];
+      for (const smpl of info) {
+        if (!(smpl.id in modelBonesById)) return;
+      }
+
+      const offsets = computeOffsets(info.length);
+
+      info.forEach((smpl, b) => {
+        const bones = modelBonesById[smpl.id];
+        const meshContainer = bones[0].parent;
+
+        // global translation
+        meshContainer.position.set(
+          smpl.Th[0][0] - offsets[b],
+          smpl.Th[0][1],
+          smpl.Th[0][2]
+        );
+
+        // root rotation: axis-angle -> quaternion
+        const axis = new THREE.Vector3(smpl.Rh[0][0], smpl.Rh[0][1], smpl.Rh[0][2]);
+        const angle = axis.length();
+        if (angle > 1e-8) axis.normalize();
+        bones[0].quaternion.copy(new THREE.Quaternion().setFromAxisAngle(axis, angle));
+
+        // poses: handle 69 (padded hands) vs others
+        let posesOffset = 0;
+        if (smpl.poses[0].length === 69) posesOffset = -3;
+
+        for (let i = 1; i < bones.length; i++) {
+          const start = posesOffset + 3 * i;
+          if (start + 2 >= smpl.poses[0].length) continue;
+
+          const a = new THREE.Vector3(
+            smpl.poses[0][start],
+            smpl.poses[0][start + 1],
+            smpl.poses[0][start + 2]
+          );
+          const ang = a.length();
+          if (ang > 1e-6) {
+            a.normalize();
+            bones[i].quaternion.copy(new THREE.Quaternion().setFromAxisAngle(a, ang));
+          } else {
+            bones[i].quaternion.set(0, 0, 0, 1);
+          }
+        }
+      });
+
+      updateUI();
+    }
+
+    function playLoop(t) {
+      if (!isPlaying) return;
+      if (t - lastFrameTime >= (baseIntervalMs / playbackSpeed)) {
+        currentFrame += 1;
+        if (currentFrame >= totalFrame) currentFrame = 0;
+        updateFrame();
+        lastFrameTime = t;
+      }
+      animationId = requestAnimationFrame(playLoop);
+    }
+
+    function play() {
+      if (!modelsLoaded || totalFrame <= 0) return;
+      if (isPlaying) return;
+      isPlaying = true;
+      lastFrameTime = performance.now();
+      animationId = requestAnimationFrame(playLoop);
+    }
+
+    function pause() {
+      isPlaying = false;
+      if (animationId) cancelAnimationFrame(animationId);
+      animationId = null;
+    }
+
+    function reset() {
+      pause();
+      currentFrame = 0;
+      updateFrame();
+    }
+
+    function initControls() {
+      const slider = document.getElementById("progressSlider");
+
+      let wasPlaying = false;
+      slider.addEventListener("mousedown", () => {
+        if (!modelsLoaded) return;
+        wasPlaying = isPlaying;
+        if (isPlaying) pause();
+      });
+
+      slider.addEventListener("input", (e) => {
+        if (!modelsLoaded) return;
+        const progress = parseFloat(e.target.value);
+        currentFrame = Math.floor((progress / 100) * totalFrame);
+        if (currentFrame >= totalFrame) currentFrame = totalFrame - 1;
+        if (currentFrame < 0) currentFrame = 0;
+        updateFrame();
+      });
+
+      slider.addEventListener("mouseup", () => {
+        if (!modelsLoaded) return;
+        if (wasPlaying) play();
+      });
+
+      document.addEventListener("keydown", (e) => {
+        if (!modelsLoaded) return;
+        switch (e.code) {
+          case "Space":
+            e.preventDefault();
+            isPlaying ? pause() : play();
+            break;
+          case "ArrowLeft":
+            e.preventDefault();
+            currentFrame = Math.max(0, currentFrame - 1);
+            updateFrame();
+            break;
+          case "ArrowRight":
+            e.preventDefault();
+            currentFrame = Math.min(totalFrame - 1, currentFrame + 1);
+            updateFrame();
+            break;
+          case "Home":
+            e.preventDefault();
+            reset();
+            break;
+        }
+      });
+    }
+
+    /**
+     * ============================================================
+     * Data load (embedded JSON) + app bootstrap
+     * ============================================================
+     */
+    function loadEmbeddedData() {
+      const el = document.getElementById("smpl-data-json");
+      if (!el) throw new Error("SMPL data element not found");
+
+      const datas = JSON.parse(el.textContent || "[]");
+      if (!datas || datas.length === 0) throw new Error("No SMPL data available");
+
+      infos = datas;
+      totalFrame = datas.length;
+      updateUI();
+
+      expectedModelCount = infos[0].length;
+      loadedModelCount = 0;
+      modelsLoaded = false;
+
+      setLoading(`<i class="fas fa-spinner fa-spin"></i> Loading... (0/${expectedModelCount})`, "loading");
+
+      // Load one wooden model per id in frame0
+      infos[0].forEach((d) => {
+        loadWoodenModel({ basePath: "https://raw.githubusercontent.com/chingswy/WoodenModel/refs/heads/main/dump_wooden" })
+          .then((result) => {
+            scene.add(result.mesh);
+            modelBonesById[d.id] = result.bones;
+
+            loadedModelCount += 1;
+            if (loadedModelCount >= expectedModelCount) {
+              modelsLoaded = true;
+              setLoading(`<i class="fas fa-check"></i> Ready`, "complete");
+              setTimeout(() => setLoading("", "hidden"), 1200);
+
+              updateFrame();
+              fitCameraToScene(scene, camera, controls, { excludeNames: ["ground"] });
+
+              play();
+            } else {
+              setLoading(
+                `<i class="fas fa-spinner fa-spin"></i> Loading... (${loadedModelCount}/${expectedModelCount})`,
+                "loading"
+              );
+            }
+          })
+          .catch((err) => {
+            console.error("Failed to load wooden model:", err);
+            setLoading(`<i class="fas fa-triangle-exclamation"></i> Failed: ${String(err)}`, "failed");
+          });
+      });
+    }
+
+    function init() {
+      const width = window.innerWidth;
+      const height = window.innerHeight;
+
+      scene = new THREE.Scene();
+      camera = new THREE.PerspectiveCamera(45, width / height, 0.1, 50);
+
+      renderer = new THREE.WebGLRenderer({ antialias: true, logarithmicDepthBuffer: true });
+      renderer.toneMapping = THREE.ACESFilmicToneMapping;
+      renderer.toneMappingExposure = 1.0;
+      renderer.outputColorSpace = THREE.SRGBColorSpace;
+      renderer.setPixelRatio(window.devicePixelRatio);
+      renderer.setSize(width, height);
+
+      setupScene({ scene, camera, renderer, useGround: true });
+
+      const container = document.getElementById("vis3d");
+      container.appendChild(renderer.domElement);
+
+      controls = new OrbitControls(camera, renderer.domElement);
+      controls.minDistance = 1;
+      controls.maxDistance = 15;
+      controls.enableDamping = true;
+      controls.dampingFactor = 0.05;
+      controls.target.set(0, 1, 0);
+      controls.update();
+
+      window.addEventListener("resize", () => {
+        const w = window.innerWidth;
+        const h = window.innerHeight;
+        camera.aspect = w / h;
+        camera.updateProjectionMatrix();
+        renderer.setSize(w, h);
+      });
+
+      // Click: toggle play/pause (only after load)
+      let isDragging = false;
+      let mouseDownTime = 0;
+      renderer.domElement.addEventListener("mousedown", () => {
+        isDragging = false;
+        mouseDownTime = Date.now();
+      });
+      renderer.domElement.addEventListener("mousemove", () => {
+        if (Date.now() - mouseDownTime > 150) isDragging = true;
+      });
+      renderer.domElement.addEventListener("mouseup", () => {
+        if (!modelsLoaded) return;
+        if (!isDragging && Date.now() - mouseDownTime < 300) {
+          isPlaying ? pause() : play();
+        }
+      });
+      renderer.domElement.addEventListener("dblclick", () => {
+        if (!modelsLoaded) return;
+        reset();
+      });
+    }
+
+    function animate() {
+      requestAnimationFrame(animate);
+      if (controls && controls.enableDamping) controls.update();
+      renderer.render(scene, camera);
+    }
+
+    // Bootstrap
+    init();
+    initControls();
+    animate();
+
+    try {
+      loadEmbeddedData();
+    } catch (e) {
+      console.error(e);
+      setLoading(`<i class="fas fa-triangle-exclamation"></i> Failed: ${String(e)}`, "failed");
+    }
+  </script>
+</body>
+</html>
