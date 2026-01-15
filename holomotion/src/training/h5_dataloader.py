@@ -36,7 +36,16 @@ import time
 from collections import OrderedDict
 from dataclasses import dataclass
 from functools import partial
-from typing import Any, Dict, Iterator, List, Mapping, Optional, Sequence, Tuple
+from typing import (
+    Any,
+    Dict,
+    Iterator,
+    List,
+    Mapping,
+    Optional,
+    Sequence,
+    Tuple,
+)
 
 import h5py
 import numpy as np
@@ -47,6 +56,8 @@ from loguru import logger
 from tabulate import tabulate
 
 import torch.distributed as dist  # type: ignore
+
+from holomotion.src.utils import torch_utils
 
 Tensor = torch.Tensor
 
@@ -63,8 +74,6 @@ def _configure_weighted_bins(
     cfg_local: Dict[str, Any] = dict(cfg or {})
 
     patterns_cfg = cfg_local.get("bin_regex_patterns")
-    if patterns_cfg is None:
-        patterns_cfg = cfg_local.get("bin_regrex_patterns")
     if not patterns_cfg:
         raise ValueError(
             "weighted_bin configuration requires 'bin_regex_patterns' "
@@ -79,7 +88,7 @@ def _configure_weighted_bins(
                 f"Entry {idx} in bin_regex_patterns must be a mapping, "
                 f"got {type(entry)}"
             )
-        regex_str = entry.get("regex", entry.get("regrex", None))
+        regex_str = entry.get("regex", None)
         if not isinstance(regex_str, str) or not regex_str:
             raise ValueError(
                 f"Entry {idx} in bin_regex_patterns is missing a non-empty "
@@ -114,7 +123,9 @@ def _configure_weighted_bins(
     others_ratio = max(0.0, 1.0 - sum_explicit)
 
     if len(keys) == 0:
-        raise ValueError("weighted_bin configuration received an empty key set")
+        raise ValueError(
+            "weighted_bin configuration received an empty key set"
+        )
 
     num_items_total = float(len(keys))
     num_explicit = len(compiled_patterns)
@@ -244,7 +255,9 @@ def preview_weighted_bin_from_manifest(
     else:
         manifest_paths = [str(p) for p in manifest_path]
     if len(manifest_paths) == 0:
-        raise ValueError("preview_weighted_bin_from_manifest requires at least one manifest path")
+        raise ValueError(
+            "preview_weighted_bin_from_manifest requires at least one manifest path"
+        )
 
     key_source: Dict[str, str] = {}
     for mp in manifest_paths:
@@ -301,6 +314,7 @@ def preview_weighted_bin_from_manifest(
         "Weighted-bin config preview (manifest-level):\n"
         + tabulate(table_rows, headers=headers, tablefmt="simple_outline")
     )
+
 
 class AbstractClipScorer:
     """Interface for clip score-based curriculum strategies."""
@@ -931,47 +945,100 @@ MANDATORY_DATASETS = {
 }
 
 
+class _WorldFrameZUpNormalizer:
+    """Apply a fixed world-frame normalization to prefixed motion tensors in-place."""
+
+    def __init__(
+        self,
+        *,
+        arrays: Dict[str, Tensor],
+        offset_xy: Tensor,  # [3], z==0
+        q_flat_xyzw: Tensor,  # [T*B, 4] in XYZW
+        ref_rg_pos_shape: torch.Size,
+        ref_rb_rot_shape: torch.Size,
+    ) -> None:
+        self._arrays = arrays
+        self._offset_xy = offset_xy
+        self._q_flat_wxyz = torch_utils.xyzw_to_wxyz(q_flat_xyzw)
+        self._ref_rg_pos_shape = ref_rg_pos_shape
+        self._ref_rb_rot_shape = ref_rb_rot_shape
+
+    def apply(self, prefix: str) -> None:
+        pos_key = f"{prefix}rg_pos"
+        rot_key = f"{prefix}rb_rot"
+        vel_key = f"{prefix}body_vel"
+        ang_key = f"{prefix}body_ang_vel"
+        if (
+            pos_key not in self._arrays
+            or rot_key not in self._arrays
+            or vel_key not in self._arrays
+            or ang_key not in self._arrays
+        ):
+            return
+
+        pos = self._arrays[pos_key]
+        rot = self._arrays[rot_key]
+        vel = self._arrays[vel_key]
+        ang = self._arrays[ang_key]
+        if (
+            pos.shape != self._ref_rg_pos_shape
+            or rot.shape != self._ref_rb_rot_shape
+        ):
+            return
+
+        # Center XY using canonical offset.
+        pos[..., 0] -= self._offset_xy[0]
+        pos[..., 1] -= self._offset_xy[1]
+
+        # Rotate vectors using shared quaternion utilities (WXYZ convention).
+        pos_flat = pos.reshape(-1, 3)
+        vel_flat = vel.reshape(-1, 3)
+        ang_flat = ang.reshape(-1, 3)
+        pos[:] = torch_utils.quat_apply(
+            self._q_flat_wxyz, pos_flat
+        ).reshape_as(pos)
+        vel[:] = torch_utils.quat_apply(
+            self._q_flat_wxyz, vel_flat
+        ).reshape_as(vel)
+        ang[:] = torch_utils.quat_apply(
+            self._q_flat_wxyz, ang_flat
+        ).reshape_as(ang)
+
+        # Rotate orientations: q' = q_heading_inv * q.
+        rot_flat_xyzw = rot.reshape(-1, 4)
+        rot_flat_wxyz = torch_utils.xyzw_to_wxyz(rot_flat_xyzw)
+        rot_out_wxyz = torch_utils.quat_mul(self._q_flat_wxyz, rot_flat_wxyz)
+        rot[:] = torch_utils.wxyz_to_xyzw(rot_out_wxyz).reshape_as(rot)
+
+
 def _normalize_window_world_frame(arrays: Dict[str, Tensor]) -> None:
     """Normalize a motion window into a canonical z-up world frame in-place.
 
     Behavior:
-    - Uses the canonical root (body 0) at frame 0 to:
+    - Uses the canonical root (body 0) at frame 0 from `ref_*` to:
       - Subtract its XY position from all body positions (Z is unchanged).
       - Remove its yaw around +Z from all body orientations.
     - Applies the same SE(3) transform to:
-      - Positions: rg_pos[...]
-      - Rotations: rb_rot[...]
-      - Linear velocities: body_vel[...]
-      - Angular velocities: body_ang_vel[...]
-    - If prefixed variants (robot_, ref_, ft_ref_) exist, applies the same
-      transform to them as well.
+      - Positions: {ref_,ft_ref_}rg_pos[...]
+      - Rotations: {ref_,ft_ref_}rb_rot[...]
+      - Linear velocities: {ref_,ft_ref_}body_vel[...]
+      - Angular velocities: {ref_,ft_ref_}body_ang_vel[...]
     """
-    if "rg_pos" not in arrays or "rb_rot" not in arrays:
-        return
-    if "body_vel" not in arrays or "body_ang_vel" not in arrays:
-        return
+    if "ref_rg_pos" not in arrays or "ref_rb_rot" not in arrays:
+        raise ValueError("ref_rg_pos and ref_rb_rot are required")
+    if "ref_body_vel" not in arrays or "ref_body_ang_vel" not in arrays:
+        raise ValueError("ref_body_vel and ref_body_ang_vel are required")
 
-    rg_pos = arrays["rg_pos"]
-    rb_rot = arrays["rb_rot"]
-    body_vel = arrays["body_vel"]
-    body_ang_vel = arrays["body_ang_vel"]
-
-    if rg_pos.ndim != 3 or rb_rot.ndim != 3:
-        return
-    if body_vel.ndim != 3 or body_ang_vel.ndim != 3:
-        return
-    if rg_pos.shape[0] == 0 or rg_pos.shape[1] == 0:
-        return
+    rg_pos = arrays["ref_rg_pos"]
+    rb_rot = arrays["ref_rb_rot"]
 
     # Root pose at frame 0, body 0 (XYZW quaternion, z-up).
     p_root0 = rg_pos[0, 0]  # [3]
     q_root0 = rb_rot[0, 0]  # [4]
 
-    # Center XY so that root XY at frame 0 becomes (0, 0).
+    # Compute XY offset from root at frame 0 (will be applied in _apply_to_set).
     offset_xy = p_root0.clone()
     offset_xy[2] = 0.0
-    rg_pos[..., 0] -= offset_xy[0]
-    rg_pos[..., 1] -= offset_xy[1]
 
     # Extract yaw from q_root0 (XYZW) using z-up convention.
     x = q_root0[0]
@@ -996,82 +1063,18 @@ def _normalize_window_world_frame(arrays: Dict[str, Tensor]) -> None:
         dim=-1,
     )  # [4], XYZW
 
-    T, B, _ = rg_pos.shape
-    q_flat = q_heading_inv.view(1, 1, 4).expand(T, B, 4).reshape(-1, 4)
+    t, b, _ = rg_pos.shape
+    q_flat = q_heading_inv.view(1, 1, 4).expand(t, b, 4).reshape(-1, 4)
+    normalizer = _WorldFrameZUpNormalizer(
+        arrays=arrays,
+        offset_xy=offset_xy,
+        q_flat_xyzw=q_flat,
+        ref_rg_pos_shape=rg_pos.shape,
+        ref_rb_rot_shape=rb_rot.shape,
+    )
 
-    def _quat_rotate_xyzw(q: Tensor, v: Tensor) -> Tensor:
-        # q: [..., 4] (XYZW), v: [..., 3]
-        vx = v[..., 0]
-        vy = v[..., 1]
-        vz = v[..., 2]
-        qx = q[..., 0]
-        qy = q[..., 1]
-        qz = q[..., 2]
-        qw = q[..., 3]
-        # v' = v + 2 * q_vec x (q_vec x v + w * v)
-        uvx = qy * vz - qz * vy
-        uvy = qz * vx - qx * vz
-        uvz = qx * vy - qy * vx
-        uuvx = qy * uvz - qz * uvy
-        uuvy = qz * uvx - qx * uvz
-        uuvz = qx * uvy - qy * uvx
-        scale = 2.0 * qw
-        uvx = uvx * scale
-        uvy = uvy * scale
-        uvz = uvz * scale
-        uuvx = uuvx * 2.0
-        uuvy = uuvy * 2.0
-        uuvz = uuvz * 2.0
-        rx = vx + uvx + uuvx
-        ry = vy + uvy + uuvy
-        rz = vz + uvz + uuvz
-        return torch.stack([rx, ry, rz], dim=-1)
-
-    def _quat_mul_xyzw(q1: Tensor, q2: Tensor) -> Tensor:
-        # q1, q2: [..., 4] (XYZW)
-        x1, y1, z1, w1 = torch.unbind(q1, dim=-1)
-        x2, y2, z2, w2 = torch.unbind(q2, dim=-1)
-        w = w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2
-        x = w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2
-        y = w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2
-        z = w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2
-        return torch.stack([x, y, z, w], dim=-1)
-
-    def _apply_to_set(prefix: str) -> None:
-        pos_key = f"{prefix}rg_pos" if prefix else "rg_pos"
-        rot_key = f"{prefix}rb_rot" if prefix else "rb_rot"
-        vel_key = f"{prefix}body_vel" if prefix else "body_vel"
-        ang_key = f"{prefix}body_ang_vel" if prefix else "body_ang_vel"
-        if (
-            pos_key not in arrays
-            or rot_key not in arrays
-            or vel_key not in arrays
-            or ang_key not in arrays
-        ):
-            return
-        pos = arrays[pos_key]
-        rot = arrays[rot_key]
-        vel = arrays[vel_key]
-        ang = arrays[ang_key]
-        if pos.shape != rg_pos.shape or rot.shape != rb_rot.shape:
-            return
-        # Center XY using canonical offset.
-        pos[..., 0] -= offset_xy[0]
-        pos[..., 1] -= offset_xy[1]
-        # Rotate vectors.
-        pos_flat = pos.reshape(-1, 3)
-        vel_flat = vel.reshape(-1, 3)
-        ang_flat = ang.reshape(-1, 3)
-        pos[:] = _quat_rotate_xyzw(q_flat, pos_flat).reshape_as(pos)
-        vel[:] = _quat_rotate_xyzw(q_flat, vel_flat).reshape_as(vel)
-        ang[:] = _quat_rotate_xyzw(q_flat, ang_flat).reshape_as(ang)
-        # Rotate orientations.
-        rot_flat = rot.reshape(-1, 4)
-        rot[:] = _quat_mul_xyzw(q_flat, rot_flat).reshape_as(rot)
-
-    _apply_to_set("")
-    for pfx in ["robot_", "ref_", "ft_ref_"]:
-        _apply_to_set(pfx)
+    for pfx in ("ref_", "ft_ref_"):
+        normalizer.apply(pfx)
 
 
 @dataclass
@@ -1132,7 +1135,7 @@ class ClipBatch:
             )
 
         max_frame_length = max(
-            sample.tensors["dof_pos"].shape[0] for sample in samples
+            sample.tensors["ref_dof_pos"].shape[0] for sample in samples
         )
         max_frame_length = int(max_frame_length)
 
@@ -1180,11 +1183,7 @@ def _cache_collate_fn(
     batch_size: int,
 ) -> ClipBatch:
     """Collate function for motion cache DataLoader (supports validation padding)."""
-    if (
-        mode == "val"
-        and batch_size > len(samples)
-        and len(samples) > 0
-    ):
+    if mode == "val" and batch_size > len(samples) and len(samples) > 0:
         extra = batch_size - len(samples)
         gen = torch.Generator()
         idx = torch.randint(0, len(samples), size=(extra,), generator=gen)
@@ -1342,10 +1341,10 @@ class Hdf5MotionDataset(Dataset[MotionClipSample]):
             if excluded_motion_names is not None
             else None
         )
-        self._world_frame_normalization_enabled = bool(world_frame_normalization)
-        self._allowed_prefixes: Optional[Tuple[str, ...]] = (
-            tuple(allowed_prefixes) if allowed_prefixes is not None else None
+        self._world_frame_normalization_enabled = bool(
+            world_frame_normalization
         )
+        self._allowed_prefixes: Tuple[str, ...] = ("ref_", "ft_ref_")
 
         # Normalize manifest path(s) to a list for aggregation.
         if isinstance(manifest_path, (str, os.PathLike)):
@@ -1394,7 +1393,9 @@ class Hdf5MotionDataset(Dataset[MotionClipSample]):
                         "manifests; clip keys must be globally unique."
                     )
                 meta_global = dict(meta)
-                meta_global["shard"] = int(meta_global.get("shard", 0)) + shard_offset
+                meta_global["shard"] = (
+                    int(meta_global.get("shard", 0)) + shard_offset
+                )
                 self.clips[key] = meta_global
 
         if len(self.shards) == 0:
@@ -1458,9 +1459,9 @@ class Hdf5MotionDataset(Dataset[MotionClipSample]):
                             window_index=window_index,
                         )
                     )
+                    window_index += 1
                 offset += window_length
                 remaining = max(0, length - offset)
-                window_index += 1
 
         return windows
 
@@ -1474,86 +1475,65 @@ class Hdf5MotionDataset(Dataset[MotionClipSample]):
 
         arrays: Dict[str, Tensor] = {}
 
-        # Helper: choose first-present dataset name from candidates
-        def _first_present(candidates: List[str]) -> Optional[str]:
-            for name in candidates:
-                if name in shard_handle:
-                    return name
-            return None
+        # Policy: only read from prefixed motion tensors.
+        # Legacy/non-prefixed datasets may exist in the shard, but are ignored.
 
-        # Prefer canonical datasets; fall back to prefixed aliases to be robust to legacy/new shards
+        # Mandatory reference source: ref_*
         for logical_name, dataset_name in MANDATORY_DATASETS.items():
-            candidates: List[str] = [dataset_name]
-            # Backward-compat aliases and prefixed variants
-            if logical_name == "dof_vel":
-                # legacy alias
-                candidates.append("dof_vels")
-            # prefixed variants (future-proof)
-            candidates.extend(
-                [
-                    f"robot_{dataset_name}",
-                    f"ref_{dataset_name}",
-                    f"ft_ref_{dataset_name}",
-                ]
-            )
-            chosen = _first_present(candidates)
-            if chosen is None:
+            dname = f"ref_{dataset_name}"
+            if dname not in shard_handle:
                 raise KeyError(
-                    f"Dataset '{dataset_name}' (or aliases {candidates[1:]}) missing in shard index {window.shard_index}"
+                    f"Missing mandatory dataset '{dname}' in shard index {window.shard_index}"
                 )
-            np_array = shard_handle[chosen][start:end]
-            arrays[logical_name] = torch.from_numpy(np_array).to(torch.float32)
+            np_array = shard_handle[dname][start:end]
+            arrays[f"ref_{logical_name}"] = torch.from_numpy(np_array).to(
+                torch.float32
+            )
 
-        # Optionally read additional prefixed datasets when present to make multiple sources available at runtime
-        _prefixes = (
-            list(self._allowed_prefixes)
-            if getattr(self, "_allowed_prefixes", None) is not None
-            else ["robot_", "ref_", "ft_ref_"]
-        )
-        for pfx in _prefixes:
-            for logical_name, dataset_name in MANDATORY_DATASETS.items():
-                dname = f"{pfx}{dataset_name}"
-                if dname in shard_handle:
-                    np_array = shard_handle[dname][start:end]
-                    arrays[f"{pfx}{logical_name}"] = torch.from_numpy(
-                        np_array
-                    ).to(torch.float32)
+        # Optional filtered reference source: ft_ref_*
+        for logical_name, dataset_name in MANDATORY_DATASETS.items():
+            dname = f"ft_ref_{dataset_name}"
+            if dname in shard_handle:
+                np_array = shard_handle[dname][start:end]
+                arrays[f"ft_ref_{logical_name}"] = torch.from_numpy(
+                    np_array
+                ).to(torch.float32)
 
         if "frame_flag" in shard_handle:
             frame_flag_np = shard_handle["frame_flag"][start:end]
             frame_flag = torch.from_numpy(frame_flag_np).to(torch.long)
         else:
             frame_flag = torch.ones(window.length, dtype=torch.long)
-            if window.length > 0:
+            if window.length > 1:
                 frame_flag[0] = 0
                 frame_flag[-1] = 2
+            elif window.length == 1:
+                # Single-frame window: mark as both start and end (use 2 for end)
+                frame_flag[0] = 2
         arrays["frame_flag"] = frame_flag
 
         if self._world_frame_normalization_enabled:
             _normalize_window_world_frame(arrays)
 
-        # Derived root_* for canonical source (after normalization)
-        arrays["root_pos"] = arrays["rg_pos"][:, 0, :]
-        arrays["root_rot"] = arrays["rb_rot"][:, 0, :]
-        arrays["root_vel"] = arrays["body_vel"][:, 0, :]
-        arrays["root_ang_vel"] = arrays["body_ang_vel"][:, 0, :]
+        # Derived root_* for ref_* (after normalization)
+        arrays["ref_root_pos"] = arrays["ref_rg_pos"][:, 0, :]
+        arrays["ref_root_rot"] = arrays["ref_rb_rot"][:, 0, :]
+        arrays["ref_root_vel"] = arrays["ref_body_vel"][:, 0, :]
+        arrays["ref_root_ang_vel"] = arrays["ref_body_ang_vel"][:, 0, :]
 
-        # Derived root_* for optional prefixed sources if present (after normalization)
-        for pfx in _prefixes:
-            rg_key = f"{pfx}rg_pos"
-            rb_key = f"{pfx}rb_rot"
-            bv_key = f"{pfx}body_vel"
-            bav_key = f"{pfx}body_ang_vel"
-            if (
-                rg_key in arrays
-                and rb_key in arrays
-                and bv_key in arrays
-                and bav_key in arrays
-            ):
-                arrays[f"{pfx}root_pos"] = arrays[rg_key][:, 0, :]
-                arrays[f"{pfx}root_rot"] = arrays[rb_key][:, 0, :]
-                arrays[f"{pfx}root_vel"] = arrays[bv_key][:, 0, :]
-                arrays[f"{pfx}root_ang_vel"] = arrays[bav_key][:, 0, :]
+        # Derived root_* for optional ft_ref_* (after normalization)
+        if (
+            "ft_ref_rg_pos" in arrays
+            and "ft_ref_rb_rot" in arrays
+            and "ft_ref_body_vel" in arrays
+            and "ft_ref_body_ang_vel" in arrays
+        ):
+            arrays["ft_ref_root_pos"] = arrays["ft_ref_rg_pos"][:, 0, :]
+            arrays["ft_ref_root_rot"] = arrays["ft_ref_rb_rot"][:, 0, :]
+            arrays["ft_ref_root_vel"] = arrays["ft_ref_body_vel"][:, 0, :]
+            arrays["ft_ref_root_ang_vel"] = arrays["ft_ref_body_ang_vel"][
+                :, 0, :
+            ]
 
         return MotionClipSample(
             motion_key=window.motion_key,
@@ -2228,10 +2208,12 @@ class MotionClipBatchCache:
         self._step_counter += 1
 
         total = int(lengths.shape[0])
-        if (
-            not (self._curriculum_enabled and self._scorer is not None)
-            or total == 0
-        ):
+        if total == 0:
+            raise ValueError(
+                "Cannot sample from an empty batch. Ensure the cache contains "
+                "at least one motion clip before calling sample_env_assignments."
+            )
+        if not (self._curriculum_enabled and self._scorer is not None):
             # Fallback to uniform
             clip_indices = torch.randint(
                 low=0, high=total, size=(num_envs,), device=device
@@ -2363,12 +2345,20 @@ class MotionClipBatchCache:
         end = start + length
 
         output: Dict[str, np.ndarray] = {}
+        # Policy: only read/export prefixed motion tensors.
+        # Legacy/non-prefixed datasets may exist in the shard, but are ignored.
+
         for logical_name, dataset_name in MANDATORY_DATASETS.items():
-            if dataset_name in shard_handle:
-                output[logical_name] = shard_handle[dataset_name][start:end]
-            elif logical_name == "dof_vel" and "dof_vels" in shard_handle:
-                # Backward-compat: allow 'dof_vels' when 'dof_vel' is missing
-                output[logical_name] = shard_handle["dof_vels"][start:end]
+            ref_key = f"ref_{dataset_name}"
+            if ref_key in shard_handle:
+                output[f"ref_{logical_name}"] = shard_handle[ref_key][
+                    start:end
+                ]
+            ft_ref_key = f"ft_ref_{dataset_name}"
+            if ft_ref_key in shard_handle:
+                output[f"ft_ref_{logical_name}"] = shard_handle[ft_ref_key][
+                    start:end
+                ]
 
         if "frame_flag" in shard_handle:
             output["frame_flag"] = shard_handle["frame_flag"][start:end]
@@ -2403,20 +2393,13 @@ class MotionClipBatchCache:
             t0 = time.time()
             batch = next(self._iterator)
             t1 = time.time()
-            # logger.info(
-            #     f"Perf/Cache/dataloader_next_ms={((t1 - t0) * 1e3):.2f}"
-            # )
         except StopIteration:
             # For training (infinite sampler), this path shouldn't trigger often; safeguard anyway
             self._iterator = self._build_iterator(reset_epoch=True)
             t0 = time.time()
             batch = next(self._iterator)
             t1 = time.time()
-            # logger.info(
-            #     f"Perf/Cache/dataloader_next_ms={((t1 - t0) * 1e3):.2f} (reset)"
-            # )
 
-        batch = self._filter_clip_batch_prefixes(batch)
         staged = self._stage_batch(batch, record_event=True)
         # Move pending event into current/next slot
         if self._current_batch is None:
@@ -2425,59 +2408,6 @@ class MotionClipBatchCache:
             self._next_ready_event = self._pending_ready_event
         self._pending_ready_event = None
         return staged
-
-    def _filter_clip_batch_prefixes(self, batch: ClipBatch) -> ClipBatch:
-        """Drop unused motion sources at cache level to reduce device memory.
-
-        Behavior:
-        - Always keep canonical bases required by RefMotionCommand:
-          dof_pos, dof_vel, rg_pos, rb_rot, body_vel, body_ang_vel,
-          root_pos, root_rot, root_vel, root_ang_vel.
-        - Always keep frame_flag (time metadata).
-        - If _allowed_prefixes is not None, additionally keep any tensor whose
-          name starts with one of the allowed prefixes (e.g. "ref_", "ft_ref_").
-        - Drop all other tensors.
-        """
-        if self._allowed_prefixes is None:
-            return batch
-
-        allowed_bases = {
-            "dof_pos",
-            "dof_vel",
-            "rg_pos",
-            "rb_rot",
-            "body_vel",
-            "body_ang_vel",
-            "root_pos",
-            "root_rot",
-            "root_vel",
-            "root_ang_vel",
-        }
-
-        tensors = batch.tensors
-        filtered: Dict[str, Tensor] = {}
-        for name, tensor in tensors.items():
-            if name == "frame_flag" or name in allowed_bases:
-                filtered[name] = tensor
-                continue
-            keep = False
-            for pfx in self._allowed_prefixes:
-                if name.startswith(pfx):
-                    keep = True
-                    break
-            if keep:
-                filtered[name] = tensor
-
-        if len(filtered) == len(tensors):
-            return batch
-
-        return ClipBatch(
-            tensors=filtered,
-            lengths=batch.lengths,
-            motion_keys=batch.motion_keys,
-            raw_motion_keys=batch.raw_motion_keys,
-            max_frame_length=batch.max_frame_length,
-        )
 
     def _stage_batch(
         self, batch: ClipBatch, record_event: bool = False
@@ -2554,9 +2484,7 @@ class MotionClipBatchCache:
                 ev.record(self._copy_stream)
                 self._pending_ready_event = ev
             t1 = time.time()
-            # logger.info(
-            #     f"Perf/Cache/stage_schedule_ms={((t1 - t0) * 1e3):.2f} bytes={total_bytes} (copy-stream)"
-            # )
+
         else:
             t0 = time.time()
             tensors = {

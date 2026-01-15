@@ -36,7 +36,7 @@ def global_bodylink_pos_far(
     threshold: float,
     command_name: str = "ref_motion",
     keybody_names: list[str] | None = None,
-    ref_prefix: str = "",
+    ref_prefix: str = "ref_",
 ) -> torch.Tensor:
     """Any body link position deviates more than threshold (world frame)."""
     command: RefMotionCommand = env.command_manager.get_term(command_name)
@@ -64,7 +64,7 @@ def anchor_ref_z_far(
     env: ManagerBasedRLEnv,
     threshold: float,
     command_name: str = "ref_motion",
-    ref_prefix: str = "",
+    ref_prefix: str = "ref_",
 ) -> torch.Tensor:
     """Anchor link z difference exceeds threshold (world frame)."""
     command: RefMotionCommand = env.command_manager.get_term(command_name)
@@ -80,7 +80,7 @@ def ref_gravity_projection_far(
     threshold: float,
     asset_name: str = "robot",
     command_name: str = "ref_motion",
-    ref_prefix: str = "",
+    ref_prefix: str = "ref_",
 ) -> torch.Tensor:
     """Difference in projected gravity z-component between ref and robot exceeds threshold.
 
@@ -126,7 +126,7 @@ def keybody_ref_z_far(
     threshold: float,
     command_name: str = "ref_motion",
     keybody_names: list[str] | None = None,
-    ref_prefix: str = "",
+    ref_prefix: str = "ref_",
 ) -> torch.Tensor:
     """Any key body link z difference exceeds threshold (world frame)."""
     command: RefMotionCommand = env.command_manager.get_term(command_name)

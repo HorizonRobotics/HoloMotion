@@ -26,7 +26,7 @@ def key_dof_position_tracking_exp(
     std: float,
     command_name: str = "ref_motion",
     key_dofs: list[str] | None = None,
-    ref_prefix: str = "",
+    ref_prefix: str = "ref_",
 ) -> torch.Tensor:
     command: RefMotionCommand = env.command_manager.get_term(command_name)
     keydof_idxs = _get_dof_indices(command.robot, key_dofs)
@@ -46,7 +46,7 @@ def key_dof_velocity_tracking_exp(
     std: float,
     command_name: str = "ref_motion",
     key_dofs: list[str] | None = None,
-    ref_prefix: str = "",
+    ref_prefix: str = "ref_",
 ) -> torch.Tensor:
     command: RefMotionCommand = env.command_manager.get_term(command_name)
     keydof_idxs = _get_dof_indices(command.robot, key_dofs)
@@ -65,7 +65,7 @@ def motion_global_anchor_position_error_exp(
     env: ManagerBasedRLEnv,
     std: float,
     command_name: str = "ref_motion",
-    ref_prefix: str = "",
+    ref_prefix: str = "ref_",
 ) -> torch.Tensor:
     ref_motion_command: RefMotionCommand = env.command_manager.get_term(
         command_name
@@ -87,7 +87,7 @@ def motion_global_anchor_orientation_error_exp(
     env: ManagerBasedRLEnv,
     std: float,
     command_name: str = "ref_motion",
-    ref_prefix: str = "",
+    ref_prefix: str = "ref_",
 ) -> torch.Tensor:
     command: RefMotionCommand = env.command_manager.get_term(command_name)
     ref_anchor_quat = (
@@ -110,7 +110,7 @@ def motion_relative_body_position_error_exp(
     std: float,
     command_name: str = "ref_motion",
     keybody_names: list[str] | None = None,
-    ref_prefix: str = "",
+    ref_prefix: str = "ref_",
 ) -> torch.Tensor:
     command: RefMotionCommand = env.command_manager.get_term(command_name)
     # Get body indexes based on body names (similar to whole_body_tracking implementation)
@@ -190,7 +190,7 @@ def root_rel_keybodylink_pos_tracking_l2_exp(
     std: float,
     command_name: str = "ref_motion",
     keybody_names: list[str] | None = None,
-    ref_prefix: str = "",
+    ref_prefix: str = "ref_",
 ) -> torch.Tensor:
     command: RefMotionCommand = env.command_manager.get_term(command_name)
     # Get body indexes based on body names (similar to whole_body_tracking implementation)
@@ -264,7 +264,7 @@ def motion_relative_body_orientation_error_exp(
     std: float,
     command_name: str = "ref_motion",
     keybody_names: list[str] | None = None,
-    ref_prefix: str = "",
+    ref_prefix: str = "ref_",
 ) -> torch.Tensor:
     command: RefMotionCommand = env.command_manager.get_term(command_name)
     # Get body indexes based on body names (similar to whole_body_tracking implementation)
@@ -328,7 +328,7 @@ def motion_global_body_linear_velocity_error_exp(
     std: float,
     command_name: str = "ref_motion",
     keybody_names: list[str] | None = None,
-    ref_prefix: str = "",
+    ref_prefix: str = "ref_",
 ) -> torch.Tensor:
     command: RefMotionCommand = env.command_manager.get_term(command_name)
     # Get body indexes based on body names (similar to whole_body_tracking implementation)
@@ -348,7 +348,7 @@ def motion_global_body_angular_velocity_error_exp(
     std: float,
     command_name: str = "ref_motion",
     keybody_names: list[str] | None = None,
-    ref_prefix: str = "",
+    ref_prefix: str = "ref_",
 ) -> torch.Tensor:
     command: RefMotionCommand = env.command_manager.get_term(command_name)
     # Get body indexes based on body names (similar to whole_body_tracking implementation)
@@ -367,7 +367,7 @@ def root_pos_xy_tracking_exp(
     env: ManagerBasedRLEnv,
     std: float,
     command_name: str = "ref_motion",
-    ref_prefix: str = "",
+    ref_prefix: str = "ref_",
 ) -> torch.Tensor:
     command: RefMotionCommand = env.command_manager.get_term(command_name)
     ref_root_pos = command.get_ref_motion_root_global_pos_cur(
@@ -386,7 +386,7 @@ def root_rot_tracking_exp(
     env: ManagerBasedRLEnv,
     std: float,
     command_name: str = "ref_motion",
-    ref_prefix: str = "",
+    ref_prefix: str = "ref_",
 ) -> torch.Tensor:
     command: RefMotionCommand = env.command_manager.get_term(command_name)
     ref_root_quat = command.get_ref_motion_root_global_rot_quat_wxyz_cur(
@@ -406,7 +406,7 @@ def root_pos_rel_z_tracking_exp(
     env: ManagerBasedRLEnv,
     std: float,
     command_name: str = "ref_motion",
-    ref_prefix: str = "",
+    ref_prefix: str = "ref_",
 ) -> torch.Tensor:
     command: RefMotionCommand = env.command_manager.get_term(command_name)
     robot_root_z = command.robot.data.root_pos_w[:, 2]
@@ -422,7 +422,7 @@ def root_lin_vel_tracking_l2_exp(
     env: ManagerBasedRLEnv,
     std: float,
     command_name: str = "ref_motion",
-    ref_prefix: str = "",
+    ref_prefix: str = "ref_",
 ) -> torch.Tensor:
     """Track root linear velocity in each entity's own root frame.
 
@@ -460,7 +460,7 @@ def root_ang_vel_tracking_l2_exp(
     env: ManagerBasedRLEnv,
     std: float,
     command_name: str = "ref_motion",
-    ref_prefix: str = "",
+    ref_prefix: str = "ref_",
 ) -> torch.Tensor:
     """Track root angular velocity in each entity's own root frame.
 
@@ -499,7 +499,7 @@ def root_rel_keybodylink_pos_tracking_l2_exp_bydmmc_style(
     std: float,
     command_name: str = "ref_motion",
     keybody_names: list[str] | None = None,
-    ref_prefix: str = "",
+    ref_prefix: str = "ref_",
 ) -> torch.Tensor:
     """Track keybody positions using per-entity heading-aligned frames.
 
@@ -572,7 +572,7 @@ def root_rel_keybodylink_rot_tracking_l2_exp(
     std: float,
     command_name: str = "ref_motion",
     keybody_names: list[str] | None = None,
-    ref_prefix: str = "",
+    ref_prefix: str = "ref_",
 ) -> torch.Tensor:
     """Track root-relative keybody rotations in each entity's root frame.
 
@@ -624,7 +624,7 @@ def root_rel_keybodylink_lin_vel_tracking_l2_exp(
     std: float,
     command_name: str = "ref_motion",
     keybody_names: list[str] | None = None,
-    ref_prefix: str = "",
+    ref_prefix: str = "ref_",
 ) -> torch.Tensor:
     """Track keybody linear velocities with motion_relative frame alignment.
 
@@ -722,7 +722,7 @@ def root_rel_keybodylink_ang_vel_tracking_l2_exp(
     std: float,
     command_name: str = "ref_motion",
     keybody_names: list[str] | None = None,
-    ref_prefix: str = "",
+    ref_prefix: str = "ref_",
 ) -> torch.Tensor:
     """Track root-relative keybody angular velocities in root frames.
 

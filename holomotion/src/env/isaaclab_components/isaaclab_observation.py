@@ -921,7 +921,7 @@ class ObservationFunctions:
     def _get_obs_ref_motion_states(
         env: ManagerBasedRLEnv,
         ref_motion_command_name: str = "ref_motion",
-        ref_prefix: str = "",
+        ref_prefix: str = "ref_",
     ):
         """Reference motion states (flattened) via RefMotionCommand schema."""
         command = env.command_manager.get_term(ref_motion_command_name)
@@ -933,7 +933,7 @@ class ObservationFunctions:
     def _get_obs_ref_motion_states_fut(
         env: ManagerBasedRLEnv,
         ref_motion_command_name: str = "ref_motion",
-        ref_prefix: str = "",
+        ref_prefix: str = "ref_",
     ):
         """Future reference motion states (flattened)."""
         command = env.command_manager.get_term(ref_motion_command_name)
@@ -945,7 +945,7 @@ class ObservationFunctions:
     def _get_obs_vr_ref_motion_states(
         env: ManagerBasedRLEnv,
         ref_motion_command_name: str = "ref_motion",
-        ref_prefix: str = "",
+        ref_prefix: str = "ref_",
     ):
         command = env.command_manager.get_term(ref_motion_command_name)
         return command._get_obs_vr_ref_motion_states(obs_prefix=ref_prefix)
@@ -954,7 +954,7 @@ class ObservationFunctions:
     def _get_obs_vr_ref_motion_states_fut(
         env: ManagerBasedRLEnv,
         ref_motion_command_name: str = "ref_motion",
-        ref_prefix: str = "",
+        ref_prefix: str = "ref_",
     ):
         """Future reference motion states (flattened)."""
         command = env.command_manager.get_term(ref_motion_command_name)
@@ -964,7 +964,7 @@ class ObservationFunctions:
     def _get_obs_ref_dof_pos_cur(
         env: ManagerBasedRLEnv,
         ref_motion_command_name: str = "ref_motion",
-        ref_prefix: str = "",
+        ref_prefix: str = "ref_",
     ) -> torch.Tensor:  # [num_envs, num_dofs]
         """Reference current DoF positions in simulator DoF order."""
         command = env.command_manager.get_term(ref_motion_command_name)
@@ -974,7 +974,7 @@ class ObservationFunctions:
     def _get_obs_ref_dof_vel_cur(
         env: ManagerBasedRLEnv,
         ref_motion_command_name: str = "ref_motion",
-        ref_prefix: str = "",
+        ref_prefix: str = "ref_",
     ) -> torch.Tensor:  # [num_envs, num_dofs]
         """Reference current DoF velocities in simulator DoF order."""
         command = env.command_manager.get_term(ref_motion_command_name)
@@ -984,7 +984,7 @@ class ObservationFunctions:
     def _get_obs_ref_root_height_cur(
         env: ManagerBasedRLEnv,
         ref_motion_command_name: str = "ref_motion",
-        ref_prefix: str = "",
+        ref_prefix: str = "ref_",
     ) -> torch.Tensor:  # [num_envs, 1]
         """Reference current root height: world z minus env-origin z."""
         command = env.command_manager.get_term(ref_motion_command_name)
@@ -1000,7 +1000,7 @@ class ObservationFunctions:
     def _get_obs_ref_dof_pos_fut(
         env: ManagerBasedRLEnv,
         ref_motion_command_name: str = "ref_motion",
-        ref_prefix: str = "",
+        ref_prefix: str = "ref_",
     ) -> torch.Tensor:  # [num_envs, n_fut_frames * num_dofs]
         """Future reference DoF positions (flattened over time) in simulator DoF order."""
         command = env.command_manager.get_term(ref_motion_command_name)
@@ -1014,7 +1014,7 @@ class ObservationFunctions:
     def _get_obs_ref_dof_pos_fut_1_4(
         env: ManagerBasedRLEnv,
         ref_motion_command_name: str = "ref_motion",
-        ref_prefix: str = "",
+        ref_prefix: str = "ref_",
     ) -> torch.Tensor:  # [num_envs, n_fut_frames * num_dofs]
         """Future reference DoF positions (flattened over time) in simulator DoF order."""
         command = env.command_manager.get_term(ref_motion_command_name)
@@ -1029,7 +1029,7 @@ class ObservationFunctions:
     def _get_obs_ref_dof_pos_fut_5_8(
         env: ManagerBasedRLEnv,
         ref_motion_command_name: str = "ref_motion",
-        ref_prefix: str = "",
+        ref_prefix: str = "ref_",
     ) -> torch.Tensor:  # [num_envs, n_fut_frames * num_dofs]
         """Future reference DoF positions (flattened over time) in simulator DoF order."""
         command = env.command_manager.get_term(ref_motion_command_name)
@@ -1044,7 +1044,7 @@ class ObservationFunctions:
     def _get_obs_ref_dof_vel_fut(
         env: ManagerBasedRLEnv,
         ref_motion_command_name: str = "ref_motion",
-        ref_prefix: str = "",
+        ref_prefix: str = "ref_",
     ) -> torch.Tensor:  # [num_envs, n_fut_frames * num_dofs]
         """Future reference DoF velocities (flattened over time) in simulator DoF order."""
         command = env.command_manager.get_term(ref_motion_command_name)
@@ -1058,7 +1058,7 @@ class ObservationFunctions:
     def _get_obs_ref_dof_vel_fut_1_4(
         env: ManagerBasedRLEnv,
         ref_motion_command_name: str = "ref_motion",
-        ref_prefix: str = "",
+        ref_prefix: str = "ref_",
     ) -> torch.Tensor:  # [num_envs, n_fut_frames * num_dofs]
         """Future reference DoF velocities (flattened over time) in simulator DoF order."""
         command = env.command_manager.get_term(ref_motion_command_name)
@@ -1073,7 +1073,7 @@ class ObservationFunctions:
     def _get_obs_ref_root_height_fut(
         env: ManagerBasedRLEnv,
         ref_motion_command_name: str = "ref_motion",
-        ref_prefix: str = "",
+        ref_prefix: str = "ref_",
     ) -> torch.Tensor:  # [num_envs, n_fut_frames]
         """Future reference root heights per frame: world z minus env-origin z."""
         command = env.command_manager.get_term(ref_motion_command_name)
@@ -1089,7 +1089,7 @@ class ObservationFunctions:
     def _get_obs_ref_root_height_fut_1_4(
         env: ManagerBasedRLEnv,
         ref_motion_command_name: str = "ref_motion",
-        ref_prefix: str = "",
+        ref_prefix: str = "ref_",
     ) -> torch.Tensor:  # [num_envs, n_fut_frames]
         """Future reference root heights per frame: world z minus env-origin z."""
         command = env.command_manager.get_term(ref_motion_command_name)
@@ -1106,7 +1106,7 @@ class ObservationFunctions:
     def _get_obs_ref_root_height_fut_5_8(
         env: ManagerBasedRLEnv,
         ref_motion_command_name: str = "ref_motion",
-        ref_prefix: str = "",
+        ref_prefix: str = "ref_",
     ) -> torch.Tensor:  # [num_envs, n_fut_frames]
         """Future reference root heights per frame: world z minus env-origin z."""
         command = env.command_manager.get_term(ref_motion_command_name)
@@ -1125,7 +1125,7 @@ class ObservationFunctions:
         env: ManagerBasedRLEnv,
         robot_asset_name: str = "robot",
         ref_motion_command_name: str = "ref_motion",
-        ref_prefix: str = "",
+        ref_prefix: str = "ref_",
     ):
         command = env.command_manager.get_term(ref_motion_command_name)
         global_ref_motion_anchor_pos = (
@@ -1168,7 +1168,7 @@ class ObservationFunctions:
         env: ManagerBasedRLEnv,
         robot_asset_name: str = "robot",
         ref_motion_command_name: str = "ref_motion",
-        ref_prefix: str = "",
+        ref_prefix: str = "ref_",
     ):
         command = env.command_manager.get_term(ref_motion_command_name)
         global_ref_motion_anchor_pos = (
@@ -1204,7 +1204,7 @@ class ObservationFunctions:
         env: ManagerBasedRLEnv,
         robot_asset_name: str = "robot",
         ref_motion_command_name: str = "ref_motion",
-        ref_prefix: str = "",
+        ref_prefix: str = "ref_",
     ):
         command = env.command_manager.get_term(ref_motion_command_name)
         global_ref_motion_anchor_pos = (

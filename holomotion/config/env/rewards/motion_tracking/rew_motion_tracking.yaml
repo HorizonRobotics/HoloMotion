@@ -4,10 +4,6 @@ rewards:
   _config:
     reward_prefix: "ref_"
 
-  is_alive:
-    weight: 5.0
-    params: {}
-
   root_pos_xy_tracking_exp:
     weight: 1.0
     params:
@@ -67,15 +63,11 @@ rewards:
       ref_prefix: ${rewards._config.reward_prefix}
 
   action_rate_l2:
-    weight: -0.3
+    weight: -0.1
     params: {}
 
-  # action_acc_l2:
-  #   weight: -0.1
-  #   params: {}
-
   joint_acc_l2:
-    weight: -5.0e-7
+    weight: -5.0e-6
     params: {}
 
   joint_pos_limits:
