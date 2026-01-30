@@ -2241,7 +2241,7 @@ class PPO:
                 _ = self.env.reset_all()
                 if hasattr(motion_cmd, "setup_offline_eval_deterministic"):
                     motion_cmd.setup_offline_eval_deterministic(
-                        apply_pending_swap=True
+                        apply_pending_swap=False
                     )
 
                 # Read current batch metadata AFTER reset + setup

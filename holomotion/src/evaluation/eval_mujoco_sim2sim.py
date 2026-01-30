@@ -1356,7 +1356,18 @@ class MujocoEvaluator:
         return fut_concat.reshape(-1).astype(np.float32)
 
     def _get_obs_rel_robot_root_ang_vel(self):
-        return self.robot_global_bodylink_ang_vel[self.root_body_idx]
+        q_root_wxyz = torch.as_tensor(
+            self.robot_global_bodylink_rot[self.root_body_idx],
+            dtype=torch.float32,
+            device="cpu",
+        )
+        w_root_w = torch.as_tensor(
+            self.robot_global_bodylink_ang_vel[self.root_body_idx],
+            dtype=torch.float32,
+            device="cpu",
+        )
+        w_root_b = quat_apply(quat_inv(q_root_wxyz), w_root_w)
+        return w_root_b.detach().cpu().numpy().astype(np.float32)
 
     def _get_obs_last_action(self):
         return np.array(self.actions_onnx, dtype=np.float32).reshape(-1)
