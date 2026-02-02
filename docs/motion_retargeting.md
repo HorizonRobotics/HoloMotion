@@ -34,7 +34,7 @@ or modify 'amass_dir' in 'script/motion_retargeting/\*.sh' !Please check all rel
 
 Check data paths in the configuration scripts:
 
-- `holomotion/scripts/motion_retargeting/run_motion_retargeting_gmr.sh`
+- `holomotion/scripts/motion_retargeting/run_motion_retargeting_gmr_smplx.sh`
 
 ## Quick Start
 ### 1. Motion Retargeting
