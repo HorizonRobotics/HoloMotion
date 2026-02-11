@@ -145,9 +145,40 @@ class PolicyNodeJustDance(Node):
         self.motion_in_progress = False
         self.motion_mode_first_entry = True
 
+    def _get_policy_atomic_obs_list(self, config):
+        """Resolve the atomic obs list used to build the ONNX policy input.
+
+        Supports both legacy configs (obs_groups.policy) and PULSE-stage2 configs
+        that use a unified group (obs_groups.unified) with actor_/critic_ prefixes.
+        """
+        obs_cfg = config.get("obs", None)
+
+        obs_groups = obs_cfg.get("obs_groups", None)
+
+        if obs_groups.get("policy", None) is not None:
+            return {"atomic_obs_list": obs_groups.policy.atomic_obs_list}
+
+        if obs_groups.get("unified", None) is not None:
+            atomic = []
+            for term_dict in obs_groups.unified.atomic_obs_list:
+                name = str(list(term_dict.keys())[0])
+                if name.startswith("actor_"):
+                    atomic.append(term_dict)
+            if not atomic:
+                raise ValueError(
+                    "obs_groups.unified found but contains no actor_* terms."
+                )
+            return {"atomic_obs_list": atomic}
+
+        raise ValueError(
+            "Unsupported obs config : expected obs_groups.policy or obs_groups.unified."
+        )
+
     def _find_actor_place_holder_ndim(self):
         n_dim = 0
-        for obs_dict in self.motion_config.obs.obs_groups.policy.atomic_obs_list:
+        for (
+            obs_dict
+        ) in self.motion_config.obs.obs_groups.policy.atomic_obs_list:
             if list(obs_dict.keys())[0] == "place_holder":
                 n_dim = obs_dict["place_holder"].params.n_dim
         return n_dim
@@ -163,7 +194,7 @@ class PolicyNodeJustDance(Node):
             dof_names_onnx=self.velocity_dof_names_onnx,
             default_angles_onnx=self.velocity_default_angles_onnx,
             evaluator=self,
-            obs_policy_cfg=self.velocity_config.obs.obs_groups.policy,
+            obs_policy_cfg=self._get_policy_atomic_obs_list(self.velocity_config),
         )
 
         # Use motion model's parameters for motion obs_builder
@@ -171,7 +202,7 @@ class PolicyNodeJustDance(Node):
             dof_names_onnx=self.motion_dof_names_onnx,
             default_angles_onnx=self.motion_default_angles_onnx,
             evaluator=self,
-            obs_policy_cfg=self.motion_config.obs.obs_groups.policy,
+            obs_policy_cfg=self._get_policy_atomic_obs_list(self.motion_config),
         )
 
         # Set default obs_builder to velocity mode
@@ -636,6 +667,25 @@ class PolicyNodeJustDance(Node):
         return self.n_motion_frames - 1
 
     # =========== Policy Obeservation Methods ===========
+    def _get_obs_actor_velocity_command(self):
+        return self._get_obs_velocity_command()
+
+    def _get_obs_actor_projected_gravity(self):
+        return self._get_obs_projected_gravity()
+
+    def _get_obs_actor_rel_robot_root_ang_vel(self):
+        return self._get_obs_rel_robot_root_ang_vel()
+
+    def _get_obs_actor_dof_pos(self):
+        return self._get_obs_dof_pos()
+
+    def _get_obs_actor_dof_vel(self):
+        return self._get_obs_dof_vel()
+        
+    def _get_obs_actor_last_action(self):
+        return self._get_obs_last_action()
+
+
 
     def _get_obs_velocity_command(self):
         """Get velocity command observation (reuses pre-allocated array)."""

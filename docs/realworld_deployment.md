@@ -158,7 +158,7 @@ nmcli con down "$CON_NAME" && nmcli con up "$CON_NAME"
 
 ### Step 4: Launch the Policy Controller
 
-#### Step 4 Preflight Checklist
+#### Preflight Checklist
 
 Before running, ensure the following are ready.
 
@@ -254,10 +254,22 @@ flowchart TD
   - `velocity_tracking_model_folder`: velocity tracking model folder under `models/`
   - `motion_clip_dir`: motion clip data folder under `src/`
 
+**Pre-trained Models**
+
+We provide a pre-trained velocity tracking model that you can download and use:
+
+- **Velocity Tracking Model**: Download from [Hugging Face](https://huggingface.co/HorizonRobotics/HoloMotion_v1.2/tree/main/holomotion_v1.2_velocity_tracking_model)
+
+To use this model:
+
+1. Download the `holomotion_v1.2_velocity_tracking_model` folder from the Hugging Face repository
+2. Place the downloaded folder under `models/` (e.g., `models/holomotion_v1.2_velocity_tracking_model/`)
+4. Update `velocity_tracking_model_folder` in the `g1_29dof_holomotion.yaml` to point to this folder
+
 **Adding New Motion Tracking Models**
 
 1. Create a new folder under `models/` based on the following example model folder structure (e.g., `models/your_model_dir_name/`)
-2. Update `motion_tracking_model_folder` in the config file
+2. Update `motion_tracking_model_folder` in the `g1_29dof_holomotion.yaml`
 3. Ensure the motion clip data files are in the `motion_clip_dir`
 
 Example model folder structure (motion model):
@@ -362,6 +374,20 @@ docker tag <your_image_name> holomotion:orin_foxy_jp5.1_docker_humble_deploy_202
 
 ### Step 4: Start Docker Container
 
+> **Important**: Before running Docker commands, ensure your user is added to the docker group. If you encounter permission errors, add your user to the docker group:
+
+```bash
+sudo usermod -aG docker $USER
+```
+
+After adding your user to the docker group, you need to log out and log back in (or restart your session) for the changes to take effect. Verify with:
+
+```bash
+groups
+```
+
+You should see `docker` in the list of groups.
+
 > **Important**: You need to run this step **every time** you want to use the robot. The script will automatically remove any existing container and start a fresh one.
 
 ```bash
@@ -399,6 +425,12 @@ Before running, ensure the following are ready.
 - Motion data directory exists and contains .npz files (retargeted results)
   - `motion_clip_dir`: under `src/motion_data/`
 - Config file path used by launch is correct
+
+**Pre-trained Models**
+
+You can download and use the pre-trained velocity tracking model. Refer to the [Pre-trained Models](#configuration-files-used-by-step-4) section above for general instructions. 
+
+> **Note**: The model folder should be placed in your local repository before starting the Docker container, as the repository is mounted into the container.
 
 **One-click start in the docker**
 
