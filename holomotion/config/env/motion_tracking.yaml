@@ -70,22 +70,10 @@ env:
           anchor_bodylink_name: ${robot.anchor_body}
           asset_name: robot
           debug_vis: true
-          root_pose_perturb_range:
-            x: [-0.05, 0.05]
-            y: [-0.05, 0.05]
-            z: [-0.01, 0.01]
-            roll: [-0.1, 0.1]
-            pitch: [-0.1, 0.1]
-            yaw: [-0.2, 0.2]
-          root_vel_perturb_range:
-            x: [-0.3, 0.3]
-            y: [-0.3, 0.3]
-            z: [-0.1, 0.1]
-            roll: [-0.3, 0.3]
-            pitch: [-0.3, 0.3]
-            yaw: [-0.4, 0.4]
-          dof_pos_perturb_range: [-0.1, 0.1]
-          dof_vel_perturb_range: [-1.0, 1.0]
+          root_pose_perturb_range: ${domain_rand.motion_init_perturb.root_pose_perturb_range}
+          root_vel_perturb_range: ${domain_rand.motion_init_perturb.root_vel_perturb_range}
+          dof_pos_perturb_range: ${domain_rand.motion_init_perturb.dof_pos_perturb_range}
+          dof_vel_perturb_range: ${domain_rand.motion_init_perturb.dof_vel_perturb_range}
           resample_time_interval_s: 100
           n_fut_frames: ${obs.n_fut_frames}
           target_fps: 50
@@ -95,3 +83,106 @@ env:
       clip_observations: 100.0
 
     resample_motion_when_training: True
+
+    curriculum:
+      enabled: false
+
+      robot_friction_completion_rate:
+        enabled: True
+        func: robot_friction_range_by_completion_rate
+        params:
+          num_updates: 5
+          cr_thresholds: [0.10, 0.20, 0.28, 0.34, 0.40]
+          static_friction_target: [0.3, 1.6]
+          dynamic_friction_target: [0.3, 1.2]
+          body_names: ".*"
+          restitution_range: [0.0, 0.5]
+          num_buckets: 64
+
+      rigid_body_com_completion_rate:
+        enabled: True
+        func: rigid_body_com_by_completion_rate
+        params:
+          num_updates: 5
+          cr_thresholds: [0.10, 0.20, 0.28, 0.34, 0.40]
+          state_prefix: "_cr_curr"
+          asset_name: "robot"
+          body_names: "torso_link"
+          com_range_target:
+            x: [-0.025, 0.025]
+            y: [-0.05, 0.05]
+            z: [-0.05, 0.05]
+
+      default_dof_pos_bias_completion_rate:
+        enabled: True
+        func: default_dof_pos_bias_by_completion_rate
+        params:
+          num_updates: 5
+          cr_thresholds: [0.10, 0.20, 0.28, 0.34, 0.40]
+          state_prefix: "_cr_curr"
+          joint_names:
+            - ".*"
+          pos_distribution_params_target: [-0.01, 0.01]
+          operation: add
+          distribution: uniform
+
+      push_by_setting_velocity_completion_rate:
+        enabled: True
+        func: isaaclab_mdp.modify_term_cfg
+        params:
+          address: "events.push_by_setting_velocity.params"
+          modify_fn: push_by_setting_velocity_range_by_completion_rate
+          modify_params:
+            num_updates: 3
+            cr_thresholds: [0.20, 0.30, 0.40]
+            velocity_range_target:
+              x: [-0.5, 0.5]
+              y: [-0.5, 0.5]
+              z: [-0.2, 0.2]
+              roll: [-0.52, 0.52]
+              pitch: [-0.52, 0.52]
+              yaw: [-0.78, 0.78]
+
+      randomize_actuator_gains_completion_rate:
+        enabled: True
+        func: randomize_actuator_gains_by_completion_rate
+        params:
+          num_updates: 3
+          cr_thresholds: [0.20, 0.30, 0.40]
+          asset_name: "robot"
+          body_names: ".*"
+          stiffness_distribution_params_target: [0.9, 1.1]
+          damping_distribution_params_target: [0.9, 1.1]
+          operation: scale
+          distribution: uniform
+
+      action_rate_l2_completion_rate:
+        enabled: true
+        func: reward_term_weight_by_completion_rate
+        params:
+          reward_term_name: "action_rate_l2"
+          final_weight: -0.1
+          start_scale: 0.1
+          num_updates: 5
+          cr_thresholds: [0.10, 0.20, 0.28, 0.34, 0.40]
+
+      joint_pos_limits_completion_rate:
+        enabled: true
+        func: reward_term_weight_by_completion_rate
+        params:
+          reward_term_name: "joint_pos_limits"
+          final_weight: -10.0
+          start_scale: 0.1
+          num_updates: 5
+          cr_thresholds: [0.10, 0.20, 0.28, 0.34, 0.40]
+
+      undesired_contacts_completion_rate:
+        enabled: true
+        func: reward_term_weight_by_completion_rate
+        params:
+          reward_term_name: "undesired_contacts"
+          final_weight: -0.1
+          start_scale: 0.1
+          num_updates: 5
+          cr_thresholds: [0.10, 0.20, 0.28, 0.34, 0.40]
+

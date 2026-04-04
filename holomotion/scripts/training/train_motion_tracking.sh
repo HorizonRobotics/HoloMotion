@@ -1,6 +1,6 @@
 # Project HoloMotion
 #
-# Copyright (c) 2024-2025 Horizon Robotics. All Rights Reserved.
+# Copyright (c) 2024-2026 Horizon Robotics. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -24,9 +24,9 @@ else
     USE_MULTI_GPU=true
 fi
 
-config_name="train_g1_29dof_motion_tracking"
 
-# ckpt_path="your_pretrained_ckpt_path"
+config_name="train_g1_29dof_motion_tracking_mlp"
+# config_name="train_g1_29dof_motion_tracking_tf-moe"
 
 num_envs=4096
 
@@ -36,7 +36,6 @@ COMMON_ARGS=(
     "num_envs=${num_envs}"
     "headless=true"
     "experiment_name=${config_name}"
-    # "checkpoint=${ckpt_path}"
 )
 
 trap cleanup SIGINT SIGTERM

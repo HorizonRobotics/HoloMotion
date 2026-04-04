@@ -44,6 +44,7 @@ WOODEN_SMPL_HEIGHT_OFFSET = 0.2
 @dataclass(frozen=True)
 class SmplSequence:
     """A minimal SMPL motion sequence loaded from npz."""
+
     poses: np.ndarray  # (T, 66) = root(3) + body(63), axis-angle
     trans: np.ndarray  # (T, 3)
     betas: np.ndarray  # (B,)
@@ -56,8 +57,18 @@ def parse_args() -> argparse.Namespace:
         description="Generate vis.html from a SMPL npz using a HTML template."
     )
     ap.add_argument("--npz", type=Path, help="Path to input .npz")
-    ap.add_argument("--template", type=Path, default=DEFAULT_TEMPLATE_PATH, help="Path to HTML template")
-    ap.add_argument("--out", type=Path, default=DEFAULT_OUT_HTML, help="Path to output HTML")
+    ap.add_argument(
+        "--template",
+        type=Path,
+        default=DEFAULT_TEMPLATE_PATH,
+        help="Path to HTML template",
+    )
+    ap.add_argument(
+        "--out",
+        type=Path,
+        default=DEFAULT_OUT_HTML,
+        help="Path to output HTML",
+    )
 
     ap.add_argument(
         "--pose_joints",
@@ -92,7 +103,9 @@ def euler_fix_rot(euler_deg=EULER_FIX_DEG, order=EULER_ORDER) -> R:
 
 def _require_key(data: np.lib.npyio.NpzFile, key: str) -> np.ndarray:
     if key not in data:
-        raise KeyError(f"Missing key '{key}' in npz. Available: {list(data.keys())}")
+        raise KeyError(
+            f"Missing key '{key}' in npz. Available: {list(data.keys())}"
+        )
     return data[key]
 
 
@@ -109,7 +122,9 @@ def load_npz(path: Path) -> SmplSequence:
     fps = float(np.asarray(_require_key(data, "mocap_framerate")))
     gender = str(np.asarray(_require_key(data, "gender")))
 
-    return SmplSequence(poses=poses, trans=trans, betas=betas, fps=fps, gender=gender)
+    return SmplSequence(
+        poses=poses, trans=trans, betas=betas, fps=fps, gender=gender
+    )
 
 
 def validate_sequence(seq: SmplSequence, pose_joints: int) -> int:
@@ -123,9 +138,13 @@ def validate_sequence(seq: SmplSequence, pose_joints: int) -> int:
     exp_dim = int(pose_joints) * 3
 
     if seq.poses.shape[1] != exp_dim:
-        raise ValueError(f"unexpected poses shape: {seq.poses.shape}, expected (T,{exp_dim})")
+        raise ValueError(
+            f"unexpected poses shape: {seq.poses.shape}, expected (T,{exp_dim})"
+        )
     if seq.trans.shape[0] != T:
-        raise ValueError(f"poses frames ({T}) != trans frames ({seq.trans.shape[0]})")
+        raise ValueError(
+            f"poses frames ({T}) != trans frames ({seq.trans.shape[0]})"
+        )
 
     return T
 
@@ -163,14 +182,19 @@ def build_smpl_frames(
     poses_js = np.concatenate([body_aa, np.zeros((T, 6), np.float32)], axis=1)
 
     shapes = seq.betas.reshape(-1).tolist()
-    frames = [[{
-        "id": 0,
-        "gender": seq.gender,
-        "Rh": [Rh[f].tolist()],
-        "Th": [Th[f].tolist()],
-        "poses": [poses_js[f].tolist()],
-        "shapes": shapes,
-    }] for f in range(T)]
+    frames = [
+        [
+            {
+                "id": 0,
+                "gender": seq.gender,
+                "Rh": [Rh[f].tolist()],
+                "Th": [Th[f].tolist()],
+                "poses": [poses_js[f].tolist()],
+                "shapes": shapes,
+            }
+        ]
+        for f in range(T)
+    ]
 
     return frames, T
 
@@ -185,9 +209,9 @@ def render_html(template_path: Path, frames: list, T: int, fps: float) -> str:
         "</div></div>"
     )
 
-    return (template
-            .replace("{{ smpl_data_json }}", smpl_data_json)
-            .replace("{{ caption_html }}", caption_html))
+    return template.replace("{{ smpl_data_json }}", smpl_data_json).replace(
+        "{{ caption_html }}", caption_html
+    )
 
 
 def main(

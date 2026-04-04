@@ -1,3 +1,21 @@
+# Project HoloMotion
+#
+# Copyright (c) 2024-2026 Horizon Robotics. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#       http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+# implied. See the License for the specific language governing
+# permissions and limitations under the License.
+
+
+
 import json
 import logging
 import os
@@ -21,6 +39,9 @@ from holomotion.src.motion_retargeting.utils.torch_humanoid_batch import (
 )
 from holomotion.src.motion_retargeting.utils import (
     rotation_conversions as rot_conv,
+)
+from holomotion.src.motion_retargeting.reference_filtering import (
+    butterworth_filter_ref_arrays as shared_butterworth_filter_ref_arrays,
 )
 
 
@@ -136,32 +157,12 @@ def _angular_velocity_from_quat(
 def butterworth_filter_ref_arrays(
     arrays: Dict[str, np.ndarray], fps: float, cutoff_hz: float, order: int
 ) -> Dict[str, np.ndarray]:
-    out: Dict[str, np.ndarray] = {}
-    dt = 1.0 / float(fps) if float(fps) > 0.0 else 0.0
-    if "ref_dof_pos" in arrays:
-        a = arrays["ref_dof_pos"].astype(np.float32, copy=True)
-        s = _butterworth_lowpass_smooth_time(a, fps, cutoff_hz, order)
-        v = _finite_difference_time(s, dt)
-        out["ft_ref_dof_pos"] = s
-        out["ft_ref_dof_vel"] = v
-    if "ref_global_translation" in arrays:
-        a = arrays["ref_global_translation"].astype(np.float32, copy=True)
-        s = _butterworth_lowpass_smooth_time(a, fps, cutoff_hz, order)
-        v = _finite_difference_time(s, dt)
-        out["ft_ref_global_translation"] = s
-        out["ft_ref_global_velocity"] = v
-    if "ref_global_rotation_quat" in arrays:
-        q = arrays["ref_global_rotation_quat"].astype(np.float32, copy=True)
-        q = _quat_normalize(q)
-        q = _quat_hemisphere_align(q)
-        qs = _butterworth_lowpass_smooth_time(q, fps, cutoff_hz, order)
-        qs = _quat_normalize(qs)
-        q_dot = _finite_difference_time(qs, dt)
-        out["ft_ref_global_rotation_quat"] = _quat_normalize(qs)
-        out["ft_ref_global_angular_velocity"] = _angular_velocity_from_quat(
-            qs, q_dot
-        )
-    return out
+    return shared_butterworth_filter_ref_arrays(
+        arrays=arrays,
+        fps=fps,
+        cutoff_hz=cutoff_hz,
+        order=order,
+    )
 
 
 def _summary(arr: np.ndarray) -> Dict[str, float]:
@@ -347,7 +348,9 @@ def _compute_fk_motion(
     frame_flag[-1] = 2
     return {
         "ref_dof_pos": fk_result.dof_pos.squeeze(0).numpy().astype(np.float32),
-        "ref_dof_vel": fk_result.dof_vels.squeeze(0).numpy().astype(np.float32),
+        "ref_dof_vel": fk_result.dof_vels.squeeze(0)
+        .numpy()
+        .astype(np.float32),
         "ref_global_translation": fk_result.global_translation.squeeze(0)
         .numpy()
         .astype(np.float32),

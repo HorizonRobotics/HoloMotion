@@ -1,0 +1,47 @@
+# @package _global_
+
+defaults:
+  - /training: train_base
+  - /algo: ppo
+  - /robot: unitree/G1/29dof/29dof_training_isaaclab
+  - /env: velocity_tracking
+  - /env/terminations: termination_velocity_tracking
+  - /env/observations: velocity_tracking/obs_velocity_tracking
+  - /env/rewards: velocity_tracking/rew_velocity_tracking
+  - /env/domain_randomization: domain_rand_medium
+  - /env/terrain: isaaclab_rough
+  - /modules: velocity_tracking/velocity_tracking_mlp
+
+project_name: HoloMotionVelocityTrackingG1
+
+# checkpoint: ???
+
+train_hdf5_roots:
+  - /horizon-bucket/robot_lab/users/maiyue01.chen/h5_datasets/h5_unitree_walk_20160119
+
+env:
+  config:
+    commands:
+      base_velocity:
+        params:
+          resampling_time_range: [3.0, 6.0]
+          rel_standing_envs: 0.2
+          rel_yaw_envs: 0.2
+          heading_command: false
+          heading_control_stiffness: 0.5
+          ranges:
+            lin_vel_x: [-1.0, 1.0]
+            lin_vel_y: [-0.5, 0.5]
+            ang_vel_z: [-1.0, 1.0]
+            heading: [-3.14, 3.14]
+
+algo:
+  config:
+    symmetry_loss:
+      enabled: true
+      coef: 0.1
+
+robot:
+  init_state:
+    default_joint_angles:
+      waist_pitch_joint: 0.0

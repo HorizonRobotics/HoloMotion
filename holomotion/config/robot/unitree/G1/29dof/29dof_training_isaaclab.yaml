@@ -306,6 +306,9 @@ robot:
       right_wrist_yaw_joint: 0.0
 
   actuators:
+    actuator_type: unitree_erfi # implicit, unitree, or unitree_erfi
+    ema_filter_enabled: false
+    ema_filter_alpha: 1.0
     all_joints:
       joint_names_expr:
         - ".*_hip_yaw_joint"
@@ -433,6 +436,37 @@ robot:
       ".*_wrist_pitch_joint": 0.075
       ".*_wrist_yaw_joint": 0.075
 
+  dof_sign_by_name:
+    left_hip_pitch_joint: 1.0
+    left_hip_roll_joint: -1.0
+    left_hip_yaw_joint: -1.0
+    left_knee_joint: 1.0
+    left_ankle_pitch_joint: 1.0
+    left_ankle_roll_joint: -1.0
+    right_hip_pitch_joint: 1.0
+    right_hip_roll_joint: -1.0
+    right_hip_yaw_joint: -1.0
+    right_knee_joint: 1.0
+    right_ankle_pitch_joint: 1.0
+    right_ankle_roll_joint: -1.0
+    waist_yaw_joint: -1.0
+    waist_roll_joint: -1.0
+    waist_pitch_joint: 1.0
+    left_shoulder_pitch_joint: 1.0
+    left_shoulder_roll_joint: -1.0
+    left_shoulder_yaw_joint: -1.0
+    left_elbow_joint: 1.0
+    left_wrist_roll_joint: -1.0
+    left_wrist_pitch_joint: 1.0
+    left_wrist_yaw_joint: -1.0
+    right_shoulder_pitch_joint: 1.0
+    right_shoulder_roll_joint: -1.0
+    right_shoulder_yaw_joint: -1.0
+    right_elbow_joint: 1.0
+    right_wrist_roll_joint: -1.0
+    right_wrist_pitch_joint: 1.0
+    right_wrist_yaw_joint: -1.0
+
   asset:
     collapse_fixed_joints: True
     replace_cylinder_with_capsule: True
@@ -456,6 +490,13 @@ robot:
       assetRoot: "./"
       assetFileName: "assets/robots/${robot.humanoid_type}/g1_29dof_rev_1_0.xml"
 
+    sampling_strategy: ${algo.config.sampling_strategy}
+    weighted_bin: ${algo.config.weighted_bin}
+    curriculum: ${algo.config.curriculum}
+    dump_sampled_motion_keys: false
+    dump_sampled_motion_keys_interval: 1
+    dump_sampled_motion_keys_dir: "sampled_motion_cache_keys"
+
     max_frame_length: 300 # 6s
     min_frame_length: 50 # 1s
     handpicked_motion_names: null
@@ -463,12 +504,9 @@ robot:
 
     world_frame_normalization: true
 
-    backend: "hdf5_simple"
-    train_hdf5_roots: null
-    val_hdf5_roots: ${robot.motion.train_hdf5_roots}
-
-    hdf5_root: null # deprecated, use train_hdf5_roots instead
-    val_hdf5_root: null # deprecated, use val_hdf5_roots instead
+    backend: "hdf5_v2" # hdf5, hdf5_v2
+    train_hdf5_roots: ${train_hdf5_roots}
+    val_hdf5_roots: ${train_hdf5_roots}
 
     dof_names: ${robot.dof_names}
     body_names: ${robot.body_names}
@@ -477,13 +515,23 @@ robot:
     extend_config: ${robot.extend_config}
 
     dataloader:
-      num_workers: 4
+      num_workers: 2
       prefetch_factor: 1
-      pin_memory: false
-      persistent_workers: true
+      pin_memory: true
+      persistent_workers: false
+      timeout: 600
+
+    fk_robot_file_path: ${robot.asset.urdf_file}
+    fk_vel_smoothing_sigma: 2.0
+
+    online_filter:
+      enabled: false
+      butter_order: 4
+      butter_cutoff_hz_pool: []
 
     cache:
-      max_num_clips: 4096 # Batch size for motion clips
+      batch_progress_bar: false
+      max_num_clips: ${num_envs} # Batch size for motion clips
       device: "cuda" # "cuda" or "cpu"; cuda stages on GPU
       swap_interval_steps: ${robot.motion.max_frame_length} # Swap cache every N steps
       allowed_prefixes:

@@ -1,6 +1,6 @@
 # Project HoloMotion
 #
-# Copyright (c) 2024-2025 Horizon Robotics. All Rights Reserved.
+# Copyright (c) 2024-2026 Horizon Robotics. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,7 +16,9 @@
 
 import torch
 import time
+import os
 import yaml
+from collections import deque
 from functools import wraps
 from easydict import EasyDict
 import random
@@ -49,7 +51,6 @@ from holomotion.src.env.isaaclab_components import (
     build_scene_config,
     build_terminations_config,
 )
-from holomotion.src.modules.agent_modules import ObsSeqSerializer
 from holomotion.src.env.isaaclab_components.isaaclab_observation import (
     ObservationFunctions,
 )
@@ -116,7 +117,11 @@ class VelocityTrackingEnv:
 
         # self._init_motion_tracking_components()
         self._init_isaaclab_env()
-        self._init_serializers()
+        # self._init_serializers()
+        self._completion_total_queue = deque(maxlen=1000)
+        self._completion_success_queue = deque(maxlen=1000)
+        self.metrics = {}
+        self._robot_prev_joint_vel = None
 
     @property
     def num_envs(self):
@@ -183,6 +188,33 @@ class VelocityTrackingEnv:
             resolve=True,
         )
 
+        # Headless + no rendering: disable base_velocity debug visualization.
+        # In k8s headless runs, IsaacSim/IsaacLab command debug_vis may wedge
+        # during/after simulation start (seen on velocity-tracking only).
+        # Keep an escape hatch for debugging/video.
+        allow_debug_vis = (not self.headless) or (self.render_mode is not None)
+        force_debug_vis = bool(
+            int(os.environ.get("HOLOMOTION_VELCMD_DEBUG_VIS", "0"))
+        )
+        if (
+            (not allow_debug_vis)
+            and (not force_debug_vis)
+            and isinstance(_commands_config_dict, dict)
+            and ("base_velocity" in _commands_config_dict)
+        ):
+            bv = _commands_config_dict.get("base_velocity", {})
+            bv_params = bv.get("params", {})
+            if isinstance(bv_params, dict) and bool(
+                bv_params.get("debug_vis", False)
+            ):
+                bv_params["debug_vis"] = False
+                bv["params"] = bv_params
+                _commands_config_dict["base_velocity"] = bv
+                logger.warning(
+                    "Disabled base_velocity debug_vis for headless non-render runs. "
+                    "Set HOLOMOTION_VELCMD_DEBUG_VIS=1 to force-enable."
+                )
+
         _simulation_config_dict = EasyDict(
             OmegaConf.to_container(
                 self.config.simulation,
@@ -205,6 +237,7 @@ class VelocityTrackingEnv:
                 "replicate_physics": self.config.replicate_physics,
                 "robot": _robot_config_dict,
                 "terrain": _terrain_config_dict,
+                "domain_rand": _domain_rand_config_dict,
                 "lighting": _scene_config_dict.lighting,
                 "contact_sensor": _scene_config_dict.contact_sensor,
             }
@@ -314,9 +347,18 @@ class VelocityTrackingEnv:
 
         isaaclab_env_cfg = VelocityTrackingEnvCfg()
 
-        # dump_yaml("./isaaclab_env_cfg.yaml", isaaclab_env_cfg)
+        isaaclab_envconfig_dump_path = os.path.join(
+            self.log_dir, "isaaclab_env_cfg.yaml"
+        )
+        dump_yaml(isaaclab_envconfig_dump_path, isaaclab_env_cfg)
 
+        logger.info(
+            "Constructing IsaacLab ManagerBasedRLEnv (velocity_tracking) ..."
+        )
         self._env = ManagerBasedRLEnv(isaaclab_env_cfg, self.render_mode)
+        logger.info(
+            "IsaacLab ManagerBasedRLEnv constructed (velocity_tracking)."
+        )
 
         logger.info("IsaacLab environment initialized !")
         return self._env
@@ -330,7 +372,45 @@ class VelocityTrackingEnv:
         )
         # IsaacLab separates terminated vs time_outs, combine them for consistency
         dones = terminated | time_outs
+        self._update_completion_rate_stats(terminated, time_outs, infos)
         return obs_dict, rewards, dones, time_outs, infos
+
+    def _update_completion_rate_stats(
+        self,
+        terminated: torch.Tensor,
+        time_outs: torch.Tensor,
+        infos: dict,
+    ) -> None:
+        """Log completion rate over recent done batches.
+
+        Definition:
+        - Completed: time_outs==True and terminated==False.
+        - Failed: terminated==True.
+        The rolling window stores per-step done counts (only when any done occurs).
+        """
+        done_mask = (terminated | time_outs).reshape(-1).bool()
+        if torch.any(done_mask):
+            done_count = int(done_mask.sum().item())
+            completed_mask = (
+                time_outs.reshape(-1).bool()
+                & ~terminated.reshape(-1).bool()
+                & done_mask
+            )
+            completed_count = int(completed_mask.sum().item())
+            self._completion_total_queue.append(done_count)
+            self._completion_success_queue.append(completed_count)
+
+        denom = sum(self._completion_total_queue)
+        completion_rate = (
+            float(sum(self._completion_success_queue)) / float(denom)
+            if denom > 0
+            else 0.0
+        )
+        if ("log" not in infos) or (not isinstance(infos["log"], dict)):
+            infos["log"] = {}
+        infos["log"]["Task/Completion_Rate"] = torch.tensor(
+            completion_rate, device=self.device, dtype=torch.float32
+        )
 
     def reset_idx(self, env_ids: torch.Tensor):
         return self._env.reset(env_ids=env_ids)
@@ -344,146 +424,5 @@ class VelocityTrackingEnv:
         logger.info("Setting environment to evaluation mode")
         self.is_evaluating = True
 
-    def _init_serializers(self):
-        if not hasattr(self.config, "obs"):
-            return
-        obs_config = self.config.obs
-
-        # New path: build serializers from obs_schema when provided. This allows
-        # using IsaacLab obs_groups as the single source of truth and only
-        # treating the schema as a logical view of the flat observation vector.
-        obs_schema_cfg = obs_config.get("obs_schema", None)
-        if obs_schema_cfg is not None:
-            self._build_serializers_from_schema()
-            return
-
-        # Backward-compatible path: use explicit serialization_schema entries.
-        if obs_config.get("serialization_schema", None):
-            self.obs_serializer = ObsSeqSerializer(
-                obs_config.serialization_schema
-            )
-
-        if obs_config.get("critic_serialization_schema", None):
-            self.critic_obs_serializer = ObsSeqSerializer(
-                obs_config.critic_serialization_schema
-            )
-
-        if obs_config.get("teacher_serialization_schema", None):
-            self.teacher_obs_serializer = ObsSeqSerializer(
-                obs_config.teacher_serialization_schema
-            )
-
-        if obs_config.get("command_serilization_schema", None):
-            self.command_obs_serializer = ObsSeqSerializer(
-                obs_config.command_serilization_schema
-            )
-
-    def _build_serializers_from_schema(self) -> None:
-        obs_cfg_dict = OmegaConf.to_container(self.config.obs, resolve=True)
-        obs_groups_cfg = obs_cfg_dict["obs_groups"]
-        obs_schema_cfg = obs_cfg_dict.get("obs_schema", {})
-
-        # Ensure env state is initialized so that observation functions can be
-        # evaluated to infer base feature dimensions.
-        self.reset_all()
-
-        def _build_group_serializer(group_name: str) -> ObsSeqSerializer:
-            group_cfg = obs_groups_cfg[group_name]
-            schema_group_cfg = obs_schema_cfg.get(group_name, {})
-            # Support both flat schemas (seq_name -> cfg) and legacy
-            # schemas with an extra "sequences" nesting.
-            if "sequences" in schema_group_cfg:
-                sequences_cfg = schema_group_cfg["sequences"]
-            else:
-                sequences_cfg = schema_group_cfg
-
-            # Map obs term name -> its config dict (params, history_length, etc.).
-            term_cfg_map = {}
-            for term_dict in group_cfg["atomic_obs_list"]:
-                for term_name, term_cfg in term_dict.items():
-                    term_cfg_map[term_name] = term_cfg or {}
-
-            def _infer_base_dim(term_name: str) -> int:
-                term_cfg = term_cfg_map.get(term_name, {})
-                params_cfg = term_cfg.get("params", {})
-                params = resolve_holo_config(params_cfg)
-                method_name = f"_get_obs_{term_name}"
-                func = getattr(ObservationFunctions, method_name, None)
-                if func is None:
-                    func = getattr(isaaclab_mdp, term_name, None)
-                if func is None:
-                    raise ValueError(
-                        f"Unknown observation function for term: {term_name}"
-                    )
-                out = func(self._env, **params)
-                if out.ndim != 2:
-                    raise ValueError(
-                        f"Expected obs term '{term_name}' to return 2D tensor, "
-                        f"got shape {tuple(out.shape)}"
-                    )
-
-                # Base per-step feature dim from the observation function.
-                per_step_dim = int(out.shape[-1])
-
-                # IsaacLab history stacking and flattening are configured via
-                # `history_length` and `flatten_history_dim` on each atomic term.
-                # Mirror that logic here so the serializer sees the same flat dim
-                # as the observation manager.
-                history_length = int(term_cfg.get("history_length", 1))
-                flatten_history = bool(
-                    term_cfg.get("flatten_history_dim", False)
-                )
-
-                if flatten_history and history_length > 1:
-                    base_dim = per_step_dim * history_length
-                else:
-                    base_dim = per_step_dim
-
-                return base_dim
-
-            schema_list = []
-            for seq_name, seq_cfg in sequences_cfg.items():
-                seq_len = int(seq_cfg.get("seq_len", 1))
-                if seq_len <= 0:
-                    raise ValueError(
-                        f"Sequence '{seq_name}' in group '{group_name}' "
-                        f"must have positive seq_len, got {seq_len}"
-                    )
-                term_names = seq_cfg.get("terms", [])
-                feat_dim = 0
-                for term_name in term_names:
-                    base_dim = _infer_base_dim(term_name)
-                    if base_dim % seq_len != 0:
-                        raise ValueError(
-                            f"Sequence '{seq_name}' term '{term_name}' "
-                            f"flattened dim {base_dim} not divisible by "
-                            f"seq_len {seq_len}"
-                        )
-                    feat_dim += int(base_dim // seq_len)
-
-                schema_list.append(
-                    {
-                        "obs_name": seq_name,
-                        "seq_len": seq_len,
-                        "feat_dim": feat_dim,
-                    }
-                )
-
-            return ObsSeqSerializer(schema_list)
-
-        self.obs_serializer = _build_group_serializer("policy")
-        self.critic_obs_serializer = _build_group_serializer("critic")
-
     def seed(self, seed: int):
-        """Seed python, numpy and torch RNGs for this env wrapper and IsaacLab.
-
-        Args:
-            seed: Base seed value to use.
-        """
-        random.seed(seed)
-        np.random.seed(seed)
-        torch.manual_seed(seed)
-        if torch.cuda.is_available():
-            torch.cuda.manual_seed_all(seed)
-        if hasattr(self._env, "seed"):
-            self._env.seed(seed)
+        self._env.seed(seed)

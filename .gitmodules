@@ -23,10 +23,6 @@ path = thirdparties/unitree_ros2
 url = https://github.com/unitreerobotics/unitree_ros2
 branch = master
 
-[submodule "thirdparties/unitree_mujoco"]
-path = thirdparties/unitree_mujoco
-url = https://github.com/unitreerobotics/unitree_mujoco.git
-
 [submodule "thirdparties/unitree_sdk2_python"]
 path = thirdparties/unitree_sdk2_python
 url = https://github.com/unitreerobotics/unitree_sdk2_python.git

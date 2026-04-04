@@ -30,6 +30,12 @@ experiment_save_dir: ???
 dump_npzs: false
 export_policy: true
 
+algo:
+  config:
+    dynamo_backend: null
+    # Video recording for offline evaluation (env.render() -> MP4 at target_fps)
+    record_video: false # enable MP4 recording during offline evaluation
+
 env:
   config:
     simulation:
@@ -43,4 +49,50 @@ robot:
     hdf5_root: ${motion_h5_path}
     val_hdf5_root: ${motion_h5_path}
     dataloader:
-      num_workers: 1
+      num_workers: 0
+
+# terrain:
+#   terrain_type: usd
+#   usd_path: assets/isaac/4.1/Isaac/Environments/Grid/gridroom_black.usd
+# usd_path: assets/isaac/4.1/Isaac/Environments/Terrains/rough_plane.usd
+
+terrain:
+  terrain_type: generator
+  prim_path: /World/ground
+  static_friction: 1.0
+  dynamic_friction: 1.0
+  restitution: 0.0
+  friction_combine_mode: multiply
+  restitution_combine_mode: multiply
+  debug_vis: false
+  max_init_terrain_level: 0
+
+  # Use RandomSpawnTerrainImporter for optional random XY spawn inside the plane patch.
+  # When false, env origins are placed on a regular grid as in the default importer.
+  random_spawn: true
+
+  # TerrainGeneratorCfg parameters.
+  generator:
+    num_rows: 1
+    num_cols: 1
+    size: [8.0, 8.0]
+    border_width: 10.0
+    horizontal_scale: 0.1
+    vertical_scale: 0.005
+    slope_threshold: null
+    difficulty_range: [0.0, 0.0]
+    color_scheme: height
+    sub_terrains:
+      plane:
+        type: random_uniform
+        proportion: 1.0
+        noise_range: [0.0, 0.0]
+        noise_step: 0.25
+        downsampled_scale: 0.5
+
+  # Offline visual material configuration (PreviewSurface, no MDL/Nucleus).
+  visual_material:
+    type: color
+    diffuse_color: [0.25, 0.25, 0.25]
+    metallic: 0.0
+    roughness: 0.5

@@ -63,7 +63,6 @@ source install/setup.bash
 
 # Configure conda environment paths for CUDA and library linking
 # NOTE: Update this path to match your actual conda environment location
-CONDA_PREFIX="/root/miniconda3/envs/humanoid_deploy"
 export CYCLONEDDS_HOME=/root/cyclonedds/install
 export CMAKE_PREFIX_PATH=$CYCLONEDDS_HOME:$CMAKE_PREFIX_PATH
 source ../../deploy.env

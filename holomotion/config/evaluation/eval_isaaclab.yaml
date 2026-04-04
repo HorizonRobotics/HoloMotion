@@ -15,6 +15,8 @@ headless: ???
 
 motion_h5_path: null
 checkpoint: null
+log_dir: null
+ckpt_pt_names: null
 
 num_processes: ???
 main_process: ???
@@ -27,8 +29,20 @@ save_dir: ${experiment_dir}/.hydra
 output_dir: ${experiment_dir}/output
 experiment_save_dir: ???
 
-dump_npzs: false
 export_policy: false
+export_only: false
+
+dump_npzs: false
+calc_per_clip_metrics: false
+generate_report: false
+dof_mode: "23"
+
+obs:
+  critic_obs_prefix: "ref_"
+
+rewards:
+  _config:
+    reward_prefix: "ref_"
 
 algo:
   config:
@@ -38,19 +52,27 @@ algo:
 
 env:
   config:
-    seed: 114514
+    seed: 42
     simulation:
-      episode_length_s: 3600
+      episode_length_s: 36000
 
 robot:
   motion:
+    backend: "hdf5_v2"
     cache_max_num_clips: ${num_envs}
-    max_frame_length: 10000
-    min_frame_length: 0
-    hdf5_root: ${motion_h5_path}
-    val_hdf5_root: ${motion_h5_path}
+    train_hdf5_roots: ${robot.motion.val_hdf5_roots}
+    val_hdf5_roots: ${motion_h5_path}
+    max_frame_length: 10000  # 20s
+    min_frame_length: 1
+    # handpicked_motion_names: ${handpicked_motion_names}
+    world_frame_normalization: false
     dataloader:
-      num_workers: 1
+      num_workers: 2
+      pin_memory: true
+      persistent_workers: false
+      prefetch_factor: 1
+      timeout: 600
+      batch_progress_bar: true
 
 terrain:
   terrain_type: generator

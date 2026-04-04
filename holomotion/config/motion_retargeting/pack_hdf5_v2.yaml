@@ -1,0 +1,21 @@
+# @package _global_
+
+defaults:
+  - _self_
+  - /robot: unitree/G1/29dof/29dof_training_isaaclab
+
+hydra:
+  job:
+    chdir: false
+
+# IO
+holomotion_npz_root: ???
+hdf5_root: ???
+
+# Runtime
+chunks_t: 1024
+compression: lzf  # lzf|gzip|none
+shard_target_gb: 1.0
+shard_target_mode: h5_filesize  # h5_filesize|npz_filesize|uncompressed_nbytes
+num_jobs: 16
+debug_local_mode: false

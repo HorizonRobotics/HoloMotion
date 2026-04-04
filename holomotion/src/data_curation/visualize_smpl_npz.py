@@ -124,15 +124,43 @@ class AppConfig:
 
 def parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser(description="SMPL NPZ viewer UI.")
-    ap.add_argument("--port", type=int, default=8000, help="Local HTTP port for serving assets.")
-    ap.add_argument("--smpl_npz_to_html", type=Path, default=Path("smpl_npz_to_html.py"), help="Path to smpl_npz_to_html.py")
-    ap.add_argument("--template", type=Path, default=Path("templates/index_wooden_static.html"), help="HTML template path")
-    ap.add_argument("--out", type=Path, default=Path("_generated/vis.html"), help="Output vis.html path")
-    ap.add_argument("--title", type=str, default="NPZ Viewer", help="Window title")
+    ap.add_argument(
+        "--port",
+        type=int,
+        default=8000,
+        help="Local HTTP port for serving assets.",
+    )
+    ap.add_argument(
+        "--smpl_npz_to_html",
+        type=Path,
+        default=Path("smpl_npz_to_html.py"),
+        help="Path to smpl_npz_to_html.py",
+    )
+    ap.add_argument(
+        "--template",
+        type=Path,
+        default=Path("templates/index_wooden_static.html"),
+        help="HTML template path",
+    )
+    ap.add_argument(
+        "--out",
+        type=Path,
+        default=Path("_generated/vis.html"),
+        help="Output vis.html path",
+    )
+    ap.add_argument(
+        "--title", type=str, default="NPZ Viewer", help="Window title"
+    )
     ap.add_argument("--width", type=int, default=800, help="Window width")
     ap.add_argument("--height", type=int, default=600, help="Window height")
-    ap.add_argument("--no-auto-pick", action="store_false", help="Do not auto-open file picker at startup")
-    ap.add_argument("--debug", action="store_true", help="Enable pywebview debug/devtools")
+    ap.add_argument(
+        "--no-auto-pick",
+        action="store_false",
+        help="Do not auto-open file picker at startup",
+    )
+    ap.add_argument(
+        "--debug", action="store_true", help="Enable pywebview debug/devtools"
+    )
     return ap.parse_args()
 
 
@@ -171,7 +199,9 @@ class StaticServer:
         def _serve():
             os.chdir(self.root)  # serve assets from project root
             handler = http.server.SimpleHTTPRequestHandler
-            with socketserver.TCPServer(("127.0.0.1", self.port), handler) as httpd:
+            with socketserver.TCPServer(
+                ("127.0.0.1", self.port), handler
+            ) as httpd:
                 httpd.serve_forever()
 
         self._thread = threading.Thread(target=_serve, daemon=True)
@@ -179,7 +209,13 @@ class StaticServer:
 
 
 class MakeVisRunner:
-    def __init__(self, root: Path, smpl_npz_to_html: Path, template: Path, out_html: Path):
+    def __init__(
+        self,
+        root: Path,
+        smpl_npz_to_html: Path,
+        template: Path,
+        out_html: Path,
+    ):
         self.root = root
         self.smpl_npz_to_html = smpl_npz_to_html
         self.template = template
@@ -211,9 +247,13 @@ def pick_npz_dialog(window) -> Optional[Path]:
     # Prefer new enum if available; fallback to deprecated constant.
     try:
         dialog_open = webview.FileDialog.OPEN  # type: ignore[attr-defined]
-        paths = window.create_file_dialog(dialog_open, allow_multiple=False, file_types=file_types)
+        paths = window.create_file_dialog(
+            dialog_open, allow_multiple=False, file_types=file_types
+        )
     except Exception:
-        paths = window.create_file_dialog(webview.OPEN_DIALOG, allow_multiple=False, file_types=file_types)
+        paths = window.create_file_dialog(
+            webview.OPEN_DIALOG, allow_multiple=False, file_types=file_types
+        )
 
     return Path(paths[0]) if paths else None
 
@@ -234,7 +274,9 @@ class UIAPI:
             return
 
         safe_name = js_escape(npz.name)
-        self.window.evaluate_js(f"setBusy(true); setStatus('Generating: {safe_name}');")
+        self.window.evaluate_js(
+            f"setBusy(true); setStatus('Generating: {safe_name}');"
+        )
 
         def worker():
             self._busy = True
@@ -247,7 +289,9 @@ class UIAPI:
                 )
             except Exception as e:
                 msg = js_escape(str(e))
-                self.window.evaluate_js(f"setBusy(false); setStatus('Failed: {msg}');")
+                self.window.evaluate_js(
+                    f"setBusy(false); setStatus('Failed: {msg}');"
+                )
             finally:
                 self._busy = False
 
@@ -267,9 +311,19 @@ class UIAPI:
 # -----------------------------
 def build_config(args: argparse.Namespace) -> AppConfig:
     root = Path(__file__).resolve().parent
-    smpl_npz_to_html = (root / args.smpl_npz_to_html).resolve() if not args.smpl_npz_to_html.is_absolute() else args.smpl_npz_to_html
-    template = (root / args.template).resolve() if not args.template.is_absolute() else args.template
-    out_html = (root / args.out).resolve() if not args.out.is_absolute() else args.out
+    smpl_npz_to_html = (
+        (root / args.smpl_npz_to_html).resolve()
+        if not args.smpl_npz_to_html.is_absolute()
+        else args.smpl_npz_to_html
+    )
+    template = (
+        (root / args.template).resolve()
+        if not args.template.is_absolute()
+        else args.template
+    )
+    out_html = (
+        (root / args.out).resolve() if not args.out.is_absolute() else args.out
+    )
 
     return AppConfig(
         root=root,
@@ -290,19 +344,27 @@ def main() -> None:
     cfg = build_config(args)
 
     if not is_port_available(cfg.port):
-        raise RuntimeError(f"Port {cfg.port} is already in use. Try --port 8001")
+        raise RuntimeError(
+            f"Port {cfg.port} is already in use. Try --port 8001"
+        )
 
     server = StaticServer(cfg.root, cfg.port)
     server.start()
 
-    runner = MakeVisRunner(cfg.root, cfg.smpl_npz_to_html, cfg.template, cfg.out_html)
+    runner = MakeVisRunner(
+        cfg.root, cfg.smpl_npz_to_html, cfg.template, cfg.out_html
+    )
 
-    window = webview.create_window(cfg.window_title, html=SHELL_HTML, width=cfg.width, height=cfg.height)
+    window = webview.create_window(
+        cfg.window_title, html=SHELL_HTML, width=cfg.width, height=cfg.height
+    )
     api = UIAPI(window, cfg, runner)
     window.expose(api.pick_and_generate)
 
     # Auto pick once on initial load (optional)
-    window.events.loaded += lambda: threading.Thread(target=api.auto_pick_once, daemon=True).start()
+    window.events.loaded += lambda: threading.Thread(
+        target=api.auto_pick_once, daemon=True
+    ).start()
 
     webview.start(debug=cfg.debug)
 

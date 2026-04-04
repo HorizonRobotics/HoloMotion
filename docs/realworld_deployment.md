@@ -169,6 +169,32 @@ Before running, ensure the following are ready.
   - `motion_clip_dir`: under `src/motion_data/`
 - Config file path used by launch is correct
 
+#### Motion Reference Source
+
+Motion tracking supports two reference sources:
+
+- **Offline motion mode**: the robot executes the selected `.npz` motion clip from `motion_clip_dir`.
+- **Online teleoperation mode**: the robot uses live `latest_obs` data streamed from the teleoperation workstation / VR pipeline. See [Holomotion teleop setup](../deployment/holomotion_teleop/holomotion_teleop_setup.md) for Pico / XRoboToolkit, ZMQ publishing, and launch order on the workstation.
+
+The mode is selected by YAML settings in `g1_29dof_holomotion.yaml`:
+
+- **Offline motion mode**
+  - `vr.enable_teleop_reference: false`
+  - `vr.require_vr_data_for_motion: false`
+  - Result: even if ZMQ data is still arriving, the robot ignores it and motion tracking uses offline `.npz` clips only.
+- **Online teleoperation mode**
+  - `vr.enable_teleop_reference: true`
+  - `vr.require_vr_data_for_motion: true`
+  - `vr.latest_obs_zmq_uri: "tcp://<workstation-ip>:6001"`
+  - Result: motion mode waits for live teleoperation data before entering and uses the incoming `latest_obs` stream as the motion reference.
+
+If you want teleoperation to be available but not mandatory, you can also use:
+
+- `vr.enable_teleop_reference: true`
+- `vr.require_vr_data_for_motion: false`
+
+In that configuration, motion mode can still start without waiting for VR readiness, but live teleoperation data may be used when available at mode entry.
+
 #### One-click start
 
 ```bash
@@ -185,7 +211,7 @@ The 29 DOF robot operates in two main modes:
 | Mode    | How to Enter                                                          | Controls                                                                                                                     | Switch             |
 | ------- | --------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- | ------------------ |
 | Velocity tracking | 1) Press Start to stand up, then press A<br/>2) From motion tracking: press Y | Left stick: move (vx, vy)<br/>Right stick: rotate (yaw)<br/>D-Pad: select motion clip (Left=first, Right=last, Up=prev, Down=next) | B: enter motion tracking   |
-| Motion tracking | Press B                                                               | Executes selected motion clip automatically                                                                                        | Y: back to velocity tracking |
+| Motion tracking | Press B                                                               | Executes selected motion clip or online teleoperation automatically                                                                                        | Y: back to velocity tracking |
 
 #### Control Flow
 
@@ -214,7 +240,7 @@ flowchart TD
 
     %% Motion tracking mode
     H4 --> I[Motion tracking Mode]
-    I --> I1[Execute Selected Motion Clip]
+    I --> I1[Execute Motion Clip or Teleoperation]
     I --> I2[Y: Back to Velocity tracking]
 
     %% Mode switching
@@ -248,16 +274,20 @@ flowchart TD
 
 **System Configuration**
 
-- File: `holomotion/deployment/unitree_g1_ros2_29dof/src/config/g1_29dof_holomotion.yaml`
+- File: `HoloMotion/deployment/unitree_g1_ros2_29dof/src/config/g1_29dof_holomotion.yaml`
 - Key parameters:
   - `motion_tracking_model_folder`: motion tracking model folder under `models/`
   - `velocity_tracking_model_folder`: velocity tracking model folder under `models/`
   - `motion_clip_dir`: motion clip data folder under `src/`
+  - `vr.enable_teleop_reference`: enable or disable live teleoperation reference
+  - `vr.require_vr_data_for_motion`: whether motion mode must wait for live teleoperation data
+  - `vr.latest_obs_zmq_uri`: teleoperation ZMQ endpoint used in online mode
 
 **Pre-trained Models**
 
 We provide a pre-trained velocity tracking model that you can download and use:
 
+- **Motion Tracking Model**: Download from [Hugging Face](https://huggingface.co/HorizonRobotics/HoloMotion_v1.2/tree/main/holomotion_v1.2_motion_tracking_model)
 - **Velocity Tracking Model**: Download from [Hugging Face](https://huggingface.co/HorizonRobotics/HoloMotion_v1.2/tree/main/holomotion_v1.2_velocity_tracking_model)
 
 To use this model:
@@ -275,7 +305,7 @@ To use this model:
 Example model folder structure (motion model):
 
 ```bash
-Holomotion/deployment/unitree_g1_ros2_29dof/src/models/your_model_dir_name
+HoloMotion/deployment/unitree_g1_ros2_29dof/src/models/your_model_dir_name
 ├── config.yaml
 ├── exported
     └── your_model_name.onnx
@@ -425,6 +455,7 @@ Before running, ensure the following are ready.
 - Motion data directory exists and contains .npz files (retargeted results)
   - `motion_clip_dir`: under `src/motion_data/`
 - Config file path used by launch is correct
+- Motion reference source is configured as intended (see [Motion Reference Source](#motion-reference-source))
 
 **Pre-trained Models**
 

@@ -1,0 +1,313 @@
+# @package _global_
+
+obs:
+  context_length: 32
+  n_fut_frames: 10
+  target_fps: 50
+  actor_obs_prefix: "ref_"
+  critic_obs_prefix: "ref_"
+
+  obs_groups:
+    unified:
+      atomic_obs_list:
+        - actor_ref_gravity_projection_cur:
+            func: ref_gravity_projection_cur
+            history_length: ${obs.context_length}
+            flatten_history_dim: false
+            params:
+              ref_prefix: ${obs.actor_obs_prefix}
+            noise:
+              type: AdditiveUniformNoiseCfg
+              params:
+                n_min: ${domain_rand.obs_noise.actor_ref_gravity_projection_cur.n_min}
+                n_max: ${domain_rand.obs_noise.actor_ref_gravity_projection_cur.n_max}
+
+        - actor_ref_gravity_projection_fut:
+            func: ref_gravity_projection_fut
+            params:
+              ref_prefix: ${obs.actor_obs_prefix}
+            noise:
+              type: AdditiveUniformNoiseCfg
+              params:
+                n_min: ${domain_rand.obs_noise.actor_ref_gravity_projection_fut.n_min}
+                n_max: ${domain_rand.obs_noise.actor_ref_gravity_projection_fut.n_max}
+
+        # Reference base linear velocity
+        - actor_ref_base_linvel_cur:
+            func: ref_base_linvel_cur
+            history_length: ${obs.context_length}
+            flatten_history_dim: false
+            params:
+              ref_prefix: ${obs.actor_obs_prefix}
+            noise:
+              type: AdditiveUniformNoiseCfg
+              params:
+                n_min: ${domain_rand.obs_noise.actor_ref_base_linvel_cur.n_min}
+                n_max: ${domain_rand.obs_noise.actor_ref_base_linvel_cur.n_max}
+                n_min_z: ${domain_rand.obs_noise.actor_ref_base_linvel_cur.n_min_z}
+                n_max_z: ${domain_rand.obs_noise.actor_ref_base_linvel_cur.n_max_z}
+
+        - actor_ref_base_linvel_fut:
+            func: ref_base_linvel_fut
+            params:
+              ref_prefix: ${obs.actor_obs_prefix}
+            noise:
+              type: AdditiveUniformNoiseCfg
+              params:
+                n_min: ${domain_rand.obs_noise.actor_ref_base_linvel_fut.n_min}
+                n_max: ${domain_rand.obs_noise.actor_ref_base_linvel_fut.n_max}
+                n_min_z: ${domain_rand.obs_noise.actor_ref_base_linvel_fut.n_min_z}
+                n_max_z: ${domain_rand.obs_noise.actor_ref_base_linvel_fut.n_max_z}
+
+        - actor_ref_base_angvel_cur:
+            func: ref_base_angvel_cur
+            history_length: ${obs.context_length}
+            flatten_history_dim: false
+            params:
+              ref_prefix: ${obs.actor_obs_prefix}
+            noise:
+              type: AdditiveUniformNoiseCfg
+              params:
+                n_min: ${domain_rand.obs_noise.actor_ref_base_angvel_cur.n_min}
+                n_max: ${domain_rand.obs_noise.actor_ref_base_angvel_cur.n_max}
+                n_min_z: ${domain_rand.obs_noise.actor_ref_base_angvel_cur.n_min_z}
+                n_max_z: ${domain_rand.obs_noise.actor_ref_base_angvel_cur.n_max_z}
+
+        - actor_ref_base_angvel_fut:
+            func: ref_base_angvel_fut
+            params:
+              ref_prefix: ${obs.actor_obs_prefix}
+            noise:
+              type: AdditiveUniformNoiseCfg
+              params:
+                n_min: ${domain_rand.obs_noise.actor_ref_base_angvel_fut.n_min}
+                n_max: ${domain_rand.obs_noise.actor_ref_base_angvel_fut.n_max}
+                n_min_z: ${domain_rand.obs_noise.actor_ref_base_angvel_fut.n_min_z}
+                n_max_z: ${domain_rand.obs_noise.actor_ref_base_angvel_fut.n_max_z}
+
+        - actor_ref_dof_pos_cur:
+            func: ref_dof_pos_cur
+            history_length: ${obs.context_length}
+            flatten_history_dim: false
+            params:
+              ref_prefix: ${obs.actor_obs_prefix}
+            noise:
+              type: AdditiveUniformNoiseCfg
+              params:
+                n_min: ${domain_rand.obs_noise.actor_ref_dof_pos_cur.n_min}
+                n_max: ${domain_rand.obs_noise.actor_ref_dof_pos_cur.n_max}
+
+        - actor_ref_dof_pos_fut:
+            func: ref_dof_pos_fut
+            params:
+              ref_prefix: ${obs.actor_obs_prefix}
+            noise:
+              type: AdditiveUniformNoiseCfg
+              params:
+                n_min: ${domain_rand.obs_noise.actor_ref_dof_pos_fut.n_min}
+                n_max: ${domain_rand.obs_noise.actor_ref_dof_pos_fut.n_max}
+
+        - actor_ref_motion_filter_cutoff_hz:
+            func: ref_motion_filter_cutoff_hz
+
+        - actor_ref_root_height_cur:
+            func: ref_root_height_cur
+            history_length: ${obs.context_length}
+            flatten_history_dim: false
+            params:
+              ref_prefix: ${obs.actor_obs_prefix}
+            noise:
+              type: AdditiveUniformNoiseCfg
+              params:
+                n_min: ${domain_rand.obs_noise.actor_ref_root_height_cur.n_min}
+                n_max: ${domain_rand.obs_noise.actor_ref_root_height_cur.n_max}
+
+        - actor_ref_root_height_fut:
+            func: ref_root_height_fut
+            params:
+              ref_prefix: ${obs.actor_obs_prefix}
+            noise:
+              type: AdditiveUniformNoiseCfg
+              params:
+                n_min: ${domain_rand.obs_noise.actor_ref_root_height_fut.n_min}
+                n_max: ${domain_rand.obs_noise.actor_ref_root_height_fut.n_max}
+
+        - actor_ref_keybody_rel_pos_cur:
+            func: ref_keybody_rel_pos_cur
+            history_length: ${obs.context_length}
+            flatten_history_dim: false
+            params:
+              ref_prefix: ${obs.actor_obs_prefix}
+              keybody_names:
+                - "left_knee_link"
+                - "right_knee_link"
+                - "left_ankle_roll_link"
+                - "right_ankle_roll_link"
+                - "left_elbow_link"
+                - "right_elbow_link"
+                - "left_wrist_yaw_link"
+                - "right_wrist_yaw_link"
+            noise:
+              type: AdditiveUniformNoiseCfg
+              params:
+                n_min: ${domain_rand.obs_noise.actor_ref_keybody_rel_pos_cur.n_min}
+                n_max: ${domain_rand.obs_noise.actor_ref_keybody_rel_pos_cur.n_max}
+
+        - actor_ref_keybody_rel_pos_fut:
+            func: ref_keybody_rel_pos_fut
+            params:
+              ref_prefix: ${obs.actor_obs_prefix}
+              keybody_names:
+                - "left_knee_link"
+                - "right_knee_link"
+                - "left_ankle_roll_link"
+                - "right_ankle_roll_link"
+                - "left_elbow_link"
+                - "right_elbow_link"
+                - "left_wrist_yaw_link"
+                - "right_wrist_yaw_link"
+            noise:
+              type: AdditiveUniformNoiseCfg
+              params:
+                n_min: ${domain_rand.obs_noise.actor_ref_keybody_rel_pos_fut.n_min}
+                n_max: ${domain_rand.obs_noise.actor_ref_keybody_rel_pos_fut.n_max}
+
+        - actor_projected_gravity:
+            func: projected_gravity
+            history_length: ${obs.context_length}
+            flatten_history_dim: false
+            noise:
+              type: AdditiveUniformNoiseCfg
+              params:
+                n_min: ${domain_rand.obs_noise.actor_projected_gravity.n_min}
+                n_max: ${domain_rand.obs_noise.actor_projected_gravity.n_max}
+
+        - actor_rel_robot_root_ang_vel:
+            func: rel_robot_root_ang_vel
+            history_length: ${obs.context_length}
+            flatten_history_dim: false
+            noise:
+              type: AdditiveUniformNoiseCfg
+              params:
+                n_min: ${domain_rand.obs_noise.actor_rel_robot_root_ang_vel.n_min}
+                n_max: ${domain_rand.obs_noise.actor_rel_robot_root_ang_vel.n_max}
+
+        - actor_dof_pos:
+            func: dof_pos
+            history_length: ${obs.context_length}
+            flatten_history_dim: false
+            noise:
+              type: AdditiveUniformNoiseCfg
+              params:
+                n_min: ${domain_rand.obs_noise.actor_dof_pos.n_min}
+                n_max: ${domain_rand.obs_noise.actor_dof_pos.n_max}
+
+        - actor_dof_vel:
+            func: dof_vel
+            history_length: ${obs.context_length}
+            flatten_history_dim: false
+            noise:
+              type: AdditiveUniformNoiseCfg
+              params:
+                n_min: ${domain_rand.obs_noise.actor_dof_vel.n_min}
+                n_max: ${domain_rand.obs_noise.actor_dof_vel.n_max}
+
+        - actor_last_action:
+            func: last_action
+            history_length: ${obs.context_length}
+            flatten_history_dim: false
+
+        - critic_ref_dof_pos_cur:
+            func: ref_dof_pos_cur
+            params:
+              ref_prefix: ${obs.critic_obs_prefix}
+
+        - critic_ref_dof_pos_fut:
+            func: ref_dof_pos_fut
+            params:
+              ref_prefix: ${obs.critic_obs_prefix}
+
+        - critic_ref_root_height_fut:
+            func: ref_root_height_fut
+            params:
+              ref_prefix: ${obs.critic_obs_prefix}
+
+        - critic_ref_root_height_cur:
+            func: ref_root_height_cur
+            params:
+              ref_prefix: ${obs.critic_obs_prefix}
+
+        - critic_global_anchor_diff:
+            func: global_anchor_diff
+            params:
+              ref_prefix: ${obs.critic_obs_prefix}
+
+        - critic_ref_motion_cur_heading_aligned_root_pos:
+            func: ref_motion_cur_heading_aligned_root_pos
+            params:
+              ref_prefix: ${obs.critic_obs_prefix}
+
+        - critic_ref_motion_fut_heading_aligned_root_pos:
+            func: ref_motion_fut_heading_aligned_root_pos
+            params:
+              ref_prefix: ${obs.critic_obs_prefix}
+
+        - critic_ref_motion_cur_heading_aligned_root_rot6d:
+            func: ref_motion_cur_heading_aligned_root_rot6d
+            params:
+              ref_prefix: ${obs.critic_obs_prefix}
+
+        - critic_ref_motion_fut_heading_aligned_root_rot6d:
+            func: ref_motion_fut_heading_aligned_root_rot6d
+            params:
+              ref_prefix: ${obs.critic_obs_prefix}
+
+        - critic_ref_motion_cur_heading_aligned_root_lin_vel:
+            func: ref_motion_cur_heading_aligned_root_lin_vel
+            params:
+              ref_prefix: ${obs.critic_obs_prefix}
+
+        - critic_ref_motion_fut_heading_aligned_root_lin_vel:
+            func: ref_motion_fut_heading_aligned_root_lin_vel
+            params:
+              ref_prefix: ${obs.critic_obs_prefix}
+
+        - critic_ref_motion_cur_heading_aligned_root_ang_vel:
+            func: ref_motion_cur_heading_aligned_root_ang_vel
+            params:
+              ref_prefix: ${obs.critic_obs_prefix}
+
+        - critic_ref_motion_fut_heading_aligned_root_ang_vel:
+            func: ref_motion_fut_heading_aligned_root_ang_vel
+            params:
+              ref_prefix: ${obs.critic_obs_prefix}
+
+        - critic_rel_robot_root_lin_vel:
+            func: rel_robot_root_lin_vel
+
+        - critic_rel_robot_root_ang_vel:
+            func: rel_robot_root_ang_vel
+
+        - critic_global_robot_bodylink_lin_vel_flat:
+            func: global_robot_bodylink_lin_vel_flat
+
+        - critic_global_robot_bodylink_ang_vel_flat:
+            func: global_robot_bodylink_ang_vel_flat
+
+        - critic_root_rel_robot_bodylink_pos_flat:
+            func: root_rel_robot_bodylink_pos_flat
+
+        - critic_root_rel_robot_bodylink_rot_mat_flat:
+            func: root_rel_robot_bodylink_rot_mat_flat
+
+        - critic_dof_pos:
+            func: dof_pos
+
+        - critic_dof_vel:
+            func: dof_vel
+
+        - critic_last_action:
+            func: last_action
+
+      enable_corruption: true
+      concatenate_terms: false

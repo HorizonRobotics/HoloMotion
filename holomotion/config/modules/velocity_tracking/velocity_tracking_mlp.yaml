@@ -1,0 +1,75 @@
+# @package _global_
+
+modules:
+  actor:
+    type: MLP
+    fix_sigma: false
+    noise_std_type: scalar
+    obs_norm:
+      enabled: true
+      epsilon: 1.0e-8 # Reduced for better stability in DDP
+      update_method: ema # ema or cumulative
+      ema_momentum: 1.0e-4
+      update_at_train: true
+      update_at_eval: false
+      enable_clipping: true # Enable clipping for DDP stability
+      clip_range: 10.0 # Reduced clip range for better stability
+      sync_interval_steps: 4 # Periodically sync obs normalizers across ranks during rollout
+
+    hidden_norm: rmsnorm
+    layer_config:
+      hidden_dims:
+        - 512
+        - 512
+        - 512
+      activation: SiLU
+
+    obs_schema:
+      flattened_obs:
+        seq_len: ${obs.context_length}
+        terms:
+          - unified/actor_velocity_command
+          - unified/actor_projected_gravity
+          - unified/actor_rel_robot_root_ang_vel
+          - unified/actor_dof_pos
+          - unified/actor_dof_vel
+          - unified/actor_last_action
+
+    output_dim: robot_action_dim
+
+  critic:
+    type: MLP
+
+    obs_norm:
+      enabled: true
+      epsilon: 1.0e-8 # Reduced for better stability in DDP
+      update_method: ema # ema or cumulative
+      ema_momentum: 1.0e-4
+      update_at_train: true
+      update_at_eval: false
+      enable_clipping: true # Enable clipping for DDP stability
+      clip_range: 10.0 # Reduced clip range for better stability
+      sync_interval_steps: 4 # Periodically sync obs normalizers across ranks during rollout
+
+    hidden_norm: rmsnorm
+    layer_config:
+      hidden_dims:
+        - 512
+        - 512
+        - 512
+      activation: SiLU
+
+    obs_schema:
+      flattened_obs:
+        seq_len: 1
+        terms:
+          - unified/critic_velocity_command
+          - unified/critic_rel_robot_root_lin_vel
+          - unified/critic_rel_robot_root_ang_vel
+          - unified/critic_root_rel_robot_bodylink_pos_flat
+          - unified/critic_root_rel_robot_bodylink_rot_mat_flat
+          - unified/critic_dof_pos
+          - unified/critic_dof_vel
+          - unified/critic_last_action
+
+    output_dim: 1

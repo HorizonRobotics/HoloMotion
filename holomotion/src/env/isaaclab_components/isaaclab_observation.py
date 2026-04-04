@@ -1,3 +1,20 @@
+# Project HoloMotion
+#
+# Copyright (c) 2024-2026 Horizon Robotics. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#       http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+# implied. See the License for the specific language governing
+# permissions and limitations under the License.
+
+
 import isaaclab.envs.mdp as isaaclab_mdp
 import isaaclab.sim as sim_utils
 from dataclasses import fields as dataclass_fields
@@ -37,6 +54,106 @@ from omegaconf import DictConfig, ListConfig, OmegaConf
 from holomotion.src.env.isaaclab_components.isaaclab_utils import (
     resolve_holo_config,
 )
+from holomotion.src.utils.frame_utils import (
+    positions_world_to_env_frame,
+    root_relative_positions_from_env_frame,
+)
+
+
+def _build_noise_cfg(noise_cfg):
+    noise_cfg = resolve_holo_config(noise_cfg)
+    if not (isinstance(noise_cfg, dict) and "type" in noise_cfg):
+        return noise_cfg
+
+    noise_cls = getattr(isaaclab_noise, noise_cfg["type"])
+    noise_params = resolve_holo_config(noise_cfg.get("params", {}))
+    if not isinstance(noise_params, dict):
+        return noise_cls(**noise_params)
+
+    noise_params = dict(noise_params)
+    if "n_min_z" in noise_params or "n_max_z" in noise_params:
+        base_n_min = noise_params["n_min"]
+        base_n_max = noise_params["n_max"]
+        noise_params["n_min"] = torch.tensor(
+            [base_n_min, base_n_min, noise_params.pop("n_min_z", base_n_min)],
+            dtype=torch.float32,
+        )
+        noise_params["n_max"] = torch.tensor(
+            [base_n_max, base_n_max, noise_params.pop("n_max_z", base_n_max)],
+            dtype=torch.float32,
+        )
+
+    return noise_cls(**noise_params)
+
+
+class MirrorFunctions:
+    """Generic observation mirroring utilities."""
+
+    @staticmethod
+    def mirror_dof(
+        x: torch.Tensor, *, perm: torch.Tensor, sign: torch.Tensor
+    ) -> torch.Tensor:
+        """Mirror DOF-aligned tensor [..., A] with permutation and sign."""
+        if x.shape[-1] != int(perm.numel()):
+            raise ValueError(
+                f"mirror_dof expected last dim {perm.numel()}, got {x.shape[-1]}"
+            )
+        if perm.device != x.device or perm.dtype != torch.long:
+            perm = perm.to(device=x.device, dtype=torch.long)
+        if sign.device != x.device or sign.dtype != x.dtype:
+            sign = sign.to(device=x.device, dtype=x.dtype)
+        mirrored = torch.index_select(x, dim=x.ndim - 1, index=perm)
+        sign_view = sign.view(*([1] * (mirrored.ndim - 1)), sign.numel())
+        return mirrored * sign_view
+
+    @staticmethod
+    def mirror_action(
+        actions: torch.Tensor, *, perm: torch.Tensor, sign: torch.Tensor
+    ) -> torch.Tensor:
+        """Mirror action tensor [..., A] in DOF space with permutation and sign."""
+        return MirrorFunctions.mirror_dof(actions, perm=perm, sign=sign)
+
+    @staticmethod
+    def mirror_vec3(x: torch.Tensor) -> torch.Tensor:
+        """Mirror a true vector [..., 3] with sign [1, -1, 1]."""
+        if x.shape[-1] != 3:
+            raise ValueError(
+                f"mirror_vec3 expected last dim 3, got {x.shape[-1]}"
+            )
+        sign = torch.tensor(
+            [1.0, -1.0, 1.0], device=x.device, dtype=x.dtype
+        ).view(*([1] * (x.ndim - 1)), 3)
+        return x * sign
+
+    @staticmethod
+    def mirror_axial_vec3(x: torch.Tensor) -> torch.Tensor:
+        """Mirror an axial vector [..., 3] with sign [-1, 1, -1]."""
+        if x.shape[-1] != 3:
+            raise ValueError(
+                f"mirror_axial_vec3 expected last dim 3, got {x.shape[-1]}"
+            )
+        sign = torch.tensor(
+            [-1.0, 1.0, -1.0], device=x.device, dtype=x.dtype
+        ).view(*([1] * (x.ndim - 1)), 3)
+        return x * sign
+
+    @staticmethod
+    def mirror_velocity_command(x: torch.Tensor) -> torch.Tensor:
+        """Mirror velocity command [..., 3] or [..., 4] preserving move_mask."""
+        last_dim = x.shape[-1]
+        if last_dim == 3:
+            sign = torch.tensor(
+                [1.0, -1.0, -1.0], device=x.device, dtype=x.dtype
+            ).view(*([1] * (x.ndim - 1)), 3)
+            return x * sign
+        if last_dim == 4:
+            sign = torch.tensor(
+                [1.0, 1.0, -1.0, -1.0], device=x.device, dtype=x.dtype
+            ).view(*([1] * (x.ndim - 1)), 4)
+            return x * sign
+        raise ValueError(
+            f"mirror_velocity_command expected last dim 3 or 4, got {last_dim}"
+        )
 
 
 class ObservationFunctions:
@@ -72,6 +189,31 @@ class ObservationFunctions:
             body_indices.append(robot.body_names.index(name))
 
         return body_indices
+
+    @staticmethod
+    def _slice_future_frames(
+        tensor: torch.Tensor,
+        *,
+        num_frames: int | None,
+        obs_name: str,
+    ) -> torch.Tensor:
+        if num_frames is None:
+            return tensor
+        num_frames = int(num_frames)
+        if num_frames <= 0:
+            raise ValueError(
+                f"{obs_name} num_frames must be positive, got {num_frames}."
+            )
+        if tensor.ndim < 2:
+            raise ValueError(
+                f"{obs_name} expected future tensor with ndim >= 2, got {tensor.ndim}."
+            )
+        if int(tensor.shape[1]) < num_frames:
+            raise ValueError(
+                f"{obs_name} requested {num_frames} future frames, but only "
+                f"{int(tensor.shape[1])} are available."
+            )
+        return tensor[:, :num_frames, ...]
 
     # ------- Robot Head / mid360 States -------
     @staticmethod
@@ -309,7 +451,11 @@ class ObservationFunctions:
     # ------- Robot Root States -------
     @staticmethod
     def _get_obs_global_robot_root_pos(env: ManagerBasedRLEnv):
-        """Asset root position in the environment frame."""
+        """Asset root position in the environment frame.
+
+        IsaacLab's root position helpers subtract `env.scene.env_origins`, so
+        this is not the raw simulator-world position.
+        """
         return isaaclab_mdp.root_pos_w(env)
 
     @staticmethod
@@ -395,10 +541,6 @@ class ObservationFunctions:
             root_quat_wxyz, g_w
         )  # [num_envs, 3]
 
-        # projected_gravity: torch.Tensor = isaaclab_math.quat_rotate_inverse(
-        #     root_quat_wxyz, g_w
-        # )  # [num_envs, 3]
-
         return projected_gravity
 
     @staticmethod
@@ -459,12 +601,20 @@ class ObservationFunctions:
         robot_asset_name: str = "robot",
         keybody_names: list[str] | None = None,
     ):
-        """Positions of specified bodylinks in the environment frame."""
+        """Positions of specified bodylinks in the environment frame.
+
+        Body link poses are stored in simulator-world coordinates, so this
+        helper subtracts `env.scene.env_origins` to match IsaacLab's
+        environment-frame root helpers.
+        """
         robot_ptr = env.scene[robot_asset_name]
         keybody_idxs = ObservationFunctions._get_body_indices(
             robot_ptr, keybody_names
         )
-        keybody_global_pos = robot_ptr.data.body_pos_w[:, keybody_idxs]
+        keybody_global_pos = positions_world_to_env_frame(
+            robot_ptr.data.body_pos_w[:, keybody_idxs],
+            env.scene.env_origins,
+        )
         return keybody_global_pos  # [num_envs, num_keybodies, 3]
 
     @staticmethod
@@ -546,7 +696,7 @@ class ObservationFunctions:
         robot_asset_name: str = "robot",
         keybody_names: list[str] | None = None,
     ) -> torch.Tensor:  # [num_envs, num_keybodies, 3]
-        """Positions of specified bodylinks relative to the robot's root frame."""
+        """Root-relative bodylink positions from environment-frame positions."""
         # Get global states
         keybody_global_pos: torch.Tensor = (
             ObservationFunctions._get_obs_global_robot_bodylink_pos(
@@ -561,23 +711,11 @@ class ObservationFunctions:
             ObservationFunctions._get_obs_global_robot_root_rot_wxyz(env)
         )  # [num_envs, 4]
 
-        # Transform to root frame
-        # Position relative to root
-        rel_pos_global: torch.Tensor = (
-            keybody_global_pos - global_root_pos[..., None, :]
-        )  # [num_envs, num_keybodies, 3]
-
-        # Rotate to root frame using inverse root rotation
-        root_inv_rot: torch.Tensor = isaaclab_math.quat_inv(
-            root_global_rot_wxyz
-        )  # [num_envs, 4]
-        num_bodies = keybody_global_pos.shape[1]
-        rel_pos_root: torch.Tensor = isaaclab_math.quat_apply(
-            root_inv_rot[..., None, :].expand(-1, num_bodies, -1),
-            rel_pos_global,
-        )  # [num_envs, num_keybodies, 3]
-
-        return rel_pos_root
+        return root_relative_positions_from_env_frame(
+            body_pos_env=keybody_global_pos,
+            root_pos_env=global_root_pos,
+            root_quat_w=root_global_rot_wxyz,
+        )
 
     @staticmethod
     def _get_obs_root_rel_robot_bodylink_rot_wxyz(
@@ -971,6 +1109,112 @@ class ObservationFunctions:
         return command.get_ref_motion_dof_pos_cur(prefix=ref_prefix)
 
     @staticmethod
+    def _get_obs_immediate_next_two_dof_pos(
+        env: ManagerBasedRLEnv,
+        ref_motion_command_name: str = "ref_motion",
+        ref_prefix: str = "ref_",
+    ) -> torch.Tensor:  # [num_envs, 2 * num_dofs]
+        """Immediate next two DoF positions in simulator DoF order."""
+        command = env.command_manager.get_term(ref_motion_command_name)
+        return command.get_immediate_next_two_dof_pos(prefix=ref_prefix)
+
+    @staticmethod
+    def _get_obs_ref_motion_cur_heading_aligned_root_pos(
+        env: ManagerBasedRLEnv,
+        ref_motion_command_name: str = "ref_motion",
+        ref_prefix: str = "ref_",
+    ) -> torch.Tensor:  # [num_envs, 3]
+        """Reference current heading-aligned root position."""
+        command = env.command_manager.get_term(ref_motion_command_name)
+        return command.get_ref_motion_cur_heading_aligned_root_pos(
+            prefix=ref_prefix
+        )
+
+    @staticmethod
+    def _get_obs_ref_motion_fut_heading_aligned_root_pos(
+        env: ManagerBasedRLEnv,
+        ref_motion_command_name: str = "ref_motion",
+        ref_prefix: str = "ref_",
+    ) -> torch.Tensor:  # [num_envs, T, 3]
+        """Future reference heading-aligned root position."""
+        command = env.command_manager.get_term(ref_motion_command_name)
+        return command.get_ref_motion_fut_heading_aligned_root_pos(
+            prefix=ref_prefix
+        )
+
+    @staticmethod
+    def _get_obs_ref_motion_cur_heading_aligned_root_rot6d(
+        env: ManagerBasedRLEnv,
+        ref_motion_command_name: str = "ref_motion",
+        ref_prefix: str = "ref_",
+    ) -> torch.Tensor:  # [num_envs, 6]
+        """Reference current heading-aligned root rotation (rot6d)."""
+        command = env.command_manager.get_term(ref_motion_command_name)
+        return command.get_ref_motion_cur_heading_aligned_root_rot6d(
+            prefix=ref_prefix
+        )
+
+    @staticmethod
+    def _get_obs_ref_motion_fut_heading_aligned_root_rot6d(
+        env: ManagerBasedRLEnv,
+        ref_motion_command_name: str = "ref_motion",
+        ref_prefix: str = "ref_",
+    ) -> torch.Tensor:  # [num_envs, T, 6]
+        """Future reference heading-aligned root rotation (rot6d)."""
+        command = env.command_manager.get_term(ref_motion_command_name)
+        return command.get_ref_motion_fut_heading_aligned_root_rot6d(
+            prefix=ref_prefix
+        )
+
+    @staticmethod
+    def _get_obs_ref_motion_cur_heading_aligned_root_lin_vel(
+        env: ManagerBasedRLEnv,
+        ref_motion_command_name: str = "ref_motion",
+        ref_prefix: str = "ref_",
+    ) -> torch.Tensor:  # [num_envs, 3]
+        """Reference current heading-aligned root linear velocity."""
+        command = env.command_manager.get_term(ref_motion_command_name)
+        return command.get_ref_motion_cur_heading_aligned_root_lin_vel(
+            prefix=ref_prefix
+        )
+
+    @staticmethod
+    def _get_obs_ref_motion_fut_heading_aligned_root_lin_vel(
+        env: ManagerBasedRLEnv,
+        ref_motion_command_name: str = "ref_motion",
+        ref_prefix: str = "ref_",
+    ) -> torch.Tensor:  # [num_envs, T, 3]
+        """Future reference heading-aligned root linear velocity."""
+        command = env.command_manager.get_term(ref_motion_command_name)
+        return command.get_ref_motion_fut_heading_aligned_root_lin_vel(
+            prefix=ref_prefix
+        )
+
+    @staticmethod
+    def _get_obs_ref_motion_cur_heading_aligned_root_ang_vel(
+        env: ManagerBasedRLEnv,
+        ref_motion_command_name: str = "ref_motion",
+        ref_prefix: str = "ref_",
+    ) -> torch.Tensor:  # [num_envs, 3]
+        """Reference current heading-aligned root angular velocity."""
+        command = env.command_manager.get_term(ref_motion_command_name)
+        return command.get_ref_motion_cur_heading_aligned_root_ang_vel(
+            prefix=ref_prefix
+        )
+
+    @staticmethod
+    def _get_obs_ref_motion_fut_heading_aligned_root_ang_vel(
+        env: ManagerBasedRLEnv,
+        ref_motion_command_name: str = "ref_motion",
+        ref_prefix: str = "ref_",
+    ) -> torch.Tensor:  # [num_envs, T, 3]
+        """Future reference heading-aligned root angular velocity."""
+        command = env.command_manager.get_term(ref_motion_command_name)
+        return command.get_ref_motion_fut_heading_aligned_root_ang_vel(
+            prefix=ref_prefix
+        )
+
+    @staticmethod
     def _get_obs_ref_dof_vel_cur(
         env: ManagerBasedRLEnv,
         ref_motion_command_name: str = "ref_motion",
@@ -979,6 +1223,15 @@ class ObservationFunctions:
         """Reference current DoF velocities in simulator DoF order."""
         command = env.command_manager.get_term(ref_motion_command_name)
         return command.get_ref_motion_dof_vel_cur(prefix=ref_prefix)
+
+    @staticmethod
+    def _get_obs_ref_motion_filter_cutoff_hz(
+        env: ManagerBasedRLEnv,
+        ref_motion_command_name: str = "ref_motion",
+    ) -> torch.Tensor:
+        """Return clip-level filter metadata; this is prefix-independent."""
+        command = env.command_manager.get_term(ref_motion_command_name)
+        return command.get_ref_motion_filter_cutoff_hz_cur()
 
     @staticmethod
     def _get_obs_ref_root_height_cur(
@@ -1001,71 +1254,175 @@ class ObservationFunctions:
         env: ManagerBasedRLEnv,
         ref_motion_command_name: str = "ref_motion",
         ref_prefix: str = "ref_",
+        num_frames: int | None = None,
     ) -> torch.Tensor:  # [num_envs, n_fut_frames * num_dofs]
         """Future reference DoF positions (flattened over time) in simulator DoF order."""
         command = env.command_manager.get_term(ref_motion_command_name)
         dof_pos_fut = command.get_ref_motion_dof_pos_fut(
             prefix=ref_prefix
         )  # [B, T, D(sim)]
-        B, T, D = dof_pos_fut.shape
-        return dof_pos_fut.reshape(B, T * D)
+        dof_pos_fut = ObservationFunctions._slice_future_frames(
+            dof_pos_fut,
+            num_frames=num_frames,
+            obs_name="ref_dof_pos_fut",
+        )
+        return dof_pos_fut
 
     @staticmethod
-    def _get_obs_ref_dof_pos_fut_1_4(
+    def _get_obs_ref_gravity_projection_cur(
         env: ManagerBasedRLEnv,
         ref_motion_command_name: str = "ref_motion",
         ref_prefix: str = "ref_",
-    ) -> torch.Tensor:  # [num_envs, n_fut_frames * num_dofs]
-        """Future reference DoF positions (flattened over time) in simulator DoF order."""
+    ) -> torch.Tensor:  # [num_envs, 3]
+        """Reference gravity projection."""
         command = env.command_manager.get_term(ref_motion_command_name)
-        dof_pos_fut = command.get_ref_motion_dof_pos_fut(
+        gravity_projection = command.get_ref_motion_gravity_projection_cur(
             prefix=ref_prefix
-        )  # [B, T, D(sim)]
-        dof_pos_fut = dof_pos_fut[:, :4, ...]
-        B, T, D = dof_pos_fut.shape
-        return dof_pos_fut.reshape(B, T * D)
+        )
+        return gravity_projection
 
     @staticmethod
-    def _get_obs_ref_dof_pos_fut_5_8(
+    def _get_obs_ref_gravity_projection_fut(
         env: ManagerBasedRLEnv,
         ref_motion_command_name: str = "ref_motion",
         ref_prefix: str = "ref_",
-    ) -> torch.Tensor:  # [num_envs, n_fut_frames * num_dofs]
-        """Future reference DoF positions (flattened over time) in simulator DoF order."""
+        num_frames: int | None = None,
+    ) -> torch.Tensor:  # [num_envs, T, 3]
+        """Future reference gravity projection."""
         command = env.command_manager.get_term(ref_motion_command_name)
-        dof_pos_fut = command.get_ref_motion_dof_pos_fut(
+        gravity_projection = command.get_ref_motion_gravity_projection_fut(
             prefix=ref_prefix
-        )  # [B, T, D(sim)]
-        dof_pos_fut = dof_pos_fut[:, 4:8, ...]
-        B, T, D = dof_pos_fut.shape
-        return dof_pos_fut.reshape(B, T * D)
+        )
+        gravity_projection = ObservationFunctions._slice_future_frames(
+            gravity_projection,
+            num_frames=num_frames,
+            obs_name="ref_gravity_projection_fut",
+        )
+        return gravity_projection
+
+    @staticmethod
+    def _get_obs_ref_base_linvel_cur(
+        env: ManagerBasedRLEnv,
+        ref_motion_command_name: str = "ref_motion",
+        ref_prefix: str = "ref_",
+    ) -> torch.Tensor:  # [num_envs, 3]
+        """Reference base linear velocity."""
+        command = env.command_manager.get_term(ref_motion_command_name)
+        base_linvel = command.get_ref_motion_base_linvel_cur(prefix=ref_prefix)
+        return base_linvel
+
+    @staticmethod
+    def _get_obs_ref_base_linvel_fut(
+        env: ManagerBasedRLEnv,
+        ref_motion_command_name: str = "ref_motion",
+        ref_prefix: str = "ref_",
+        num_frames: int | None = None,
+    ) -> torch.Tensor:  # [num_envs, T, 3]
+        """Future reference base linear velocity."""
+        command = env.command_manager.get_term(ref_motion_command_name)
+        base_linvel = command.get_ref_motion_base_linvel_fut(prefix=ref_prefix)
+        base_linvel = ObservationFunctions._slice_future_frames(
+            base_linvel,
+            num_frames=num_frames,
+            obs_name="ref_base_linvel_fut",
+        )
+        return base_linvel
+
+    @staticmethod
+    def _get_obs_ref_base_angvel_cur(
+        env: ManagerBasedRLEnv,
+        ref_motion_command_name: str = "ref_motion",
+        ref_prefix: str = "ref_",
+    ) -> torch.Tensor:  # [num_envs, 3]
+        """Reference base angular velocity."""
+        command = env.command_manager.get_term(ref_motion_command_name)
+        base_angvel = command.get_ref_motion_base_angvel_cur(prefix=ref_prefix)
+        return base_angvel
+
+    @staticmethod
+    def _get_obs_ref_keybody_rel_pos_cur(
+        env: ManagerBasedRLEnv,
+        ref_motion_command_name: str = "ref_motion",
+        ref_prefix: str = "ref_",
+        keybody_names: list[str] | None = None,
+    ) -> torch.Tensor:  # [num_envs, num_keybodies, 3]
+        """Reference keybody root-relative positions."""
+        command = env.command_manager.get_term(ref_motion_command_name)
+        ref_keybody_rel_pos = command.get_ref_motion_bodylink_rel_pos_cur(
+            prefix=ref_prefix
+        )  # [B, N, 3]
+        if keybody_names is None:
+            return ref_keybody_rel_pos
+        robot_ptr = env.scene["robot"]
+        keybody_idxs = ObservationFunctions._get_body_indices(
+            robot_ptr, keybody_names
+        )
+        kb_rel_pos = ref_keybody_rel_pos[:, keybody_idxs, :]
+        bs = kb_rel_pos.shape[0]
+        return kb_rel_pos.reshape(bs, -1)
+
+    @staticmethod
+    def _get_obs_ref_keybody_rel_pos_fut(
+        env: ManagerBasedRLEnv,
+        ref_motion_command_name: str = "ref_motion",
+        ref_prefix: str = "ref_",
+        keybody_names: list[str] | None = None,
+        num_frames: int | None = None,
+    ) -> torch.Tensor:  # [num_envs, T, num_keybodies, 3]
+        """Future reference keybody root-relative positions."""
+        command = env.command_manager.get_term(ref_motion_command_name)
+        ref_keybody_rel_pos_fut = command.get_ref_motion_bodylink_rel_pos_fut(
+            prefix=ref_prefix
+        )  # [B, T, N, 3]
+        ref_keybody_rel_pos_fut = ObservationFunctions._slice_future_frames(
+            ref_keybody_rel_pos_fut,
+            num_frames=num_frames,
+            obs_name="ref_keybody_rel_pos_fut",
+        )
+        if keybody_names is None:
+            return ref_keybody_rel_pos_fut
+        robot_ptr = env.scene["robot"]
+        keybody_idxs = ObservationFunctions._get_body_indices(
+            robot_ptr, keybody_names
+        )
+        kb_rel_pos_fut = ref_keybody_rel_pos_fut[:, :, keybody_idxs, :]
+        bs, t, _, _ = kb_rel_pos_fut.shape
+        return kb_rel_pos_fut.reshape(bs, t, -1)
+
+    @staticmethod
+    def _get_obs_ref_base_angvel_fut(
+        env: ManagerBasedRLEnv,
+        ref_motion_command_name: str = "ref_motion",
+        ref_prefix: str = "ref_",
+        num_frames: int | None = None,
+    ) -> torch.Tensor:  # [num_envs, T, 3]
+        """Future reference base angular velocity."""
+        command = env.command_manager.get_term(ref_motion_command_name)
+        base_angvel = command.get_ref_motion_base_angvel_fut(prefix=ref_prefix)
+        base_angvel = ObservationFunctions._slice_future_frames(
+            base_angvel,
+            num_frames=num_frames,
+            obs_name="ref_base_angvel_fut",
+        )
+        return base_angvel
 
     @staticmethod
     def _get_obs_ref_dof_vel_fut(
         env: ManagerBasedRLEnv,
         ref_motion_command_name: str = "ref_motion",
         ref_prefix: str = "ref_",
+        num_frames: int | None = None,
     ) -> torch.Tensor:  # [num_envs, n_fut_frames * num_dofs]
         """Future reference DoF velocities (flattened over time) in simulator DoF order."""
         command = env.command_manager.get_term(ref_motion_command_name)
         dof_vel_fut = command.get_ref_motion_dof_vel_fut(
             prefix=ref_prefix
         )  # [B, T, D(sim)]
-        B, T, D = dof_vel_fut.shape
-        return dof_vel_fut.reshape(B, T * D)
-
-    @staticmethod
-    def _get_obs_ref_dof_vel_fut_1_4(
-        env: ManagerBasedRLEnv,
-        ref_motion_command_name: str = "ref_motion",
-        ref_prefix: str = "ref_",
-    ) -> torch.Tensor:  # [num_envs, n_fut_frames * num_dofs]
-        """Future reference DoF velocities (flattened over time) in simulator DoF order."""
-        command = env.command_manager.get_term(ref_motion_command_name)
-        dof_vel_fut = command.get_ref_motion_dof_vel_fut(
-            prefix=ref_prefix
-        )  # [B, T, D(sim)]
-        dof_vel_fut = dof_vel_fut[:, :4, ...]
+        dof_vel_fut = ObservationFunctions._slice_future_frames(
+            dof_vel_fut,
+            num_frames=num_frames,
+            obs_name="ref_dof_vel_fut",
+        )
         B, T, D = dof_vel_fut.shape
         return dof_vel_fut.reshape(B, T * D)
 
@@ -1074,50 +1431,22 @@ class ObservationFunctions:
         env: ManagerBasedRLEnv,
         ref_motion_command_name: str = "ref_motion",
         ref_prefix: str = "ref_",
+        num_frames: int | None = None,
     ) -> torch.Tensor:  # [num_envs, n_fut_frames]
         """Future reference root heights per frame: world z minus env-origin z."""
         command = env.command_manager.get_term(ref_motion_command_name)
         world_pos = command.get_ref_motion_root_global_pos_fut(
             prefix=ref_prefix
         )  # [B, T, 3]
+        world_pos = ObservationFunctions._slice_future_frames(
+            world_pos,
+            num_frames=num_frames,
+            obs_name="ref_root_height_fut",
+        )
         heights = (
             world_pos[..., 2] - env.scene.env_origins[:, None, 2]
         )  # [B, T]
-        return heights
-
-    @staticmethod
-    def _get_obs_ref_root_height_fut_1_4(
-        env: ManagerBasedRLEnv,
-        ref_motion_command_name: str = "ref_motion",
-        ref_prefix: str = "ref_",
-    ) -> torch.Tensor:  # [num_envs, n_fut_frames]
-        """Future reference root heights per frame: world z minus env-origin z."""
-        command = env.command_manager.get_term(ref_motion_command_name)
-        world_pos = command.get_ref_motion_root_global_pos_fut(
-            prefix=ref_prefix
-        )  # [B, T, 3]
-        heights = (
-            world_pos[..., 2] - env.scene.env_origins[:, None, 2]
-        )  # [B, T]
-        heights = heights[:, :4]
-        return heights
-    
-    @staticmethod
-    def _get_obs_ref_root_height_fut_5_8(
-        env: ManagerBasedRLEnv,
-        ref_motion_command_name: str = "ref_motion",
-        ref_prefix: str = "ref_",
-    ) -> torch.Tensor:  # [num_envs, n_fut_frames]
-        """Future reference root heights per frame: world z minus env-origin z."""
-        command = env.command_manager.get_term(ref_motion_command_name)
-        world_pos = command.get_ref_motion_root_global_pos_fut(
-            prefix=ref_prefix
-        )  # [B, T, 3]
-        heights = (
-            world_pos[..., 2] - env.scene.env_origins[:, None, 2]
-        )  # [B, T]
-        heights = heights[:, 4:8]
-        return heights
+        return heights[..., None]
 
     # @torch.compile
     @staticmethod
@@ -1128,10 +1457,11 @@ class ObservationFunctions:
         ref_prefix: str = "ref_",
     ):
         command = env.command_manager.get_term(ref_motion_command_name)
-        global_ref_motion_anchor_pos = (
+        env_ref_motion_anchor_pos = positions_world_to_env_frame(
             command.get_ref_motion_anchor_bodylink_global_pos_cur(
                 prefix=ref_prefix
-            )
+            ),
+            env.scene.env_origins,
         )
         global_ref_motino_anchor_rot_wxyz = (
             command.get_ref_motion_anchor_bodylink_global_rot_wxyz_cur(
@@ -1151,7 +1481,7 @@ class ObservationFunctions:
         pos_diff, rot_diff = isaaclab_math.subtract_frame_transforms(
             t01=global_robot_anchor_pos,
             q01=global_robot_anchor_rot_wxyz,
-            t02=global_ref_motion_anchor_pos,
+            t02=env_ref_motion_anchor_pos,
             q02=global_ref_motino_anchor_rot_wxyz,
         )
         rot_diff_mat = isaaclab_math.matrix_from_quat(rot_diff)
@@ -1171,10 +1501,11 @@ class ObservationFunctions:
         ref_prefix: str = "ref_",
     ):
         command = env.command_manager.get_term(ref_motion_command_name)
-        global_ref_motion_anchor_pos = (
+        env_ref_motion_anchor_pos = positions_world_to_env_frame(
             command.get_ref_motion_anchor_bodylink_global_pos_cur(
                 prefix=ref_prefix
-            )
+            ),
+            env.scene.env_origins,
         )
         global_ref_motino_anchor_rot_wxyz = (
             command.get_ref_motion_anchor_bodylink_global_rot_wxyz_cur(
@@ -1194,7 +1525,7 @@ class ObservationFunctions:
         pos_diff, _ = isaaclab_math.subtract_frame_transforms(
             t01=global_robot_anchor_pos,
             q01=global_robot_anchor_rot_wxyz,
-            t02=global_ref_motion_anchor_pos,
+            t02=env_ref_motion_anchor_pos,
             q02=global_ref_motino_anchor_rot_wxyz,
         )
         return pos_diff
@@ -1207,10 +1538,11 @@ class ObservationFunctions:
         ref_prefix: str = "ref_",
     ):
         command = env.command_manager.get_term(ref_motion_command_name)
-        global_ref_motion_anchor_pos = (
+        env_ref_motion_anchor_pos = positions_world_to_env_frame(
             command.get_ref_motion_anchor_bodylink_global_pos_cur(
                 prefix=ref_prefix
-            )
+            ),
+            env.scene.env_origins,
         )
         global_ref_motino_anchor_rot_wxyz = (
             command.get_ref_motion_anchor_bodylink_global_rot_wxyz_cur(
@@ -1230,7 +1562,7 @@ class ObservationFunctions:
         _, rot_diff = isaaclab_math.subtract_frame_transforms(
             t01=global_robot_anchor_pos,
             q01=global_robot_anchor_rot_wxyz,
-            t02=global_ref_motion_anchor_pos,
+            t02=env_ref_motion_anchor_pos,
             q02=global_ref_motino_anchor_rot_wxyz,
         )
         rot_diff_mat = isaaclab_math.matrix_from_quat(rot_diff)
@@ -1250,11 +1582,18 @@ class ObservationFunctions:
         velocity_command = isaaclab_mdp.generated_commands(
             env,
             command_name="base_velocity",
-        )  # [num_envs, 3]
-        move_mask = velocity_command.norm(dim=-1) > 0.1
+        )
+        # Some IsaacLab velocity commands may append extra channels (e.g., heading).
+        # For velocity-tracking PPO we only use (vx, vy, yaw_rate) to keep the
+        # observation contract stable.
+        if velocity_command.shape[-1] > 3:
+            velocity_command = velocity_command[..., :3]
+        move_mask = (velocity_command.norm(dim=-1) > 0.1).to(
+            dtype=velocity_command.dtype
+        )
         return torch.cat(
             [
-                move_mask.unsqueeze(-1),
+                move_mask[..., None],
                 velocity_command,
             ],
             dim=-1,
@@ -1263,6 +1602,49 @@ class ObservationFunctions:
     @staticmethod
     def _get_obs_place_holder(env: ManagerBasedRLEnv, n_dim: int):
         return torch.zeros(env.num_envs, n_dim, device=env.device)
+
+    @staticmethod
+    def _get_obs_ref_headling_aligned_vel_cmd(
+        env: ManagerBasedRLEnv, ref_prefix: str = "ref_"
+    ):
+        heading_aligned_lin_vel_xyz = ObservationFunctions._get_obs_ref_motion_cur_heading_aligned_root_lin_vel(
+            env, ref_prefix=ref_prefix
+        )
+        heading_aligned_ang_vel_xyz = ObservationFunctions._get_obs_ref_motion_cur_heading_aligned_root_ang_vel(
+            env, ref_prefix=ref_prefix
+        )
+        heading_aligned_vel_cmd = torch.cat(
+            [
+                heading_aligned_lin_vel_xyz[:, :2],
+                heading_aligned_ang_vel_xyz[:, 2:3],
+            ],
+            dim=-1,
+        )
+        move_mask = (heading_aligned_vel_cmd.norm(dim=-1) > 0.1).to(
+            dtype=heading_aligned_vel_cmd.dtype
+        )
+        heading_aligned_vel_cmd = torch.cat(
+            [
+                move_mask[..., None],
+                heading_aligned_vel_cmd,
+            ],
+            dim=-1,
+        )
+        return heading_aligned_vel_cmd
+
+    @staticmethod
+    def _get_obs_heading_aligned_root_ang_vel(env: ManagerBasedRLEnv):
+        root_global_ang_vel = (
+            ObservationFunctions._get_obs_global_robot_root_ang_vel(env)
+        )
+        root_global_rot_wxyz = (
+            ObservationFunctions._get_obs_global_robot_root_rot_wxyz(env)
+        )
+        heading_quat_wxyz = isaaclab_math.yaw_quat(root_global_rot_wxyz)
+        heading_aligned_root_ang_vel = isaaclab_math.quat_apply_inverse(
+            heading_quat_wxyz, root_global_ang_vel
+        )
+        return heading_aligned_root_ang_vel
 
 
 @configclass
@@ -1296,21 +1678,18 @@ def build_observations_config(obs_config_dict: dict):
         # Add observation terms to the group
         for obs_term_dict in group_cfg["atomic_obs_list"]:
             for obs_name, obs_params in obs_term_dict.items():
-                # Look for observation function in ObservationFunctions class
-                method_name = f"_get_obs_{obs_name}"
+                obs_params = resolve_holo_config(obs_params)
+                func_name = obs_params.get("func", obs_name)
+                method_name = f"_get_obs_{func_name}"
 
                 if hasattr(ObservationFunctions, method_name):
-                    # Use custom observation function
                     func = getattr(ObservationFunctions, method_name)
-                elif hasattr(isaaclab_mdp, obs_name):
-                    # Use isaaclab isaaclab_mdp function directly
-                    func = getattr(isaaclab_mdp, obs_name)
+                elif hasattr(isaaclab_mdp, func_name):
+                    func = getattr(isaaclab_mdp, func_name)
                 else:
                     raise ValueError(
-                        f"Unknown observation function: {obs_name}"
+                        f"Unknown observation function: {func_name}"
                     )
-
-                obs_params = resolve_holo_config(obs_params)
 
                 obs_term_kwargs = {"func": func}
                 try:
@@ -1322,15 +1701,7 @@ def build_observations_config(obs_config_dict: dict):
 
                 noise_cfg = obs_params.get("noise")
                 if noise_cfg is not None:
-                    noise_cfg = resolve_holo_config(noise_cfg)
-                    if isinstance(noise_cfg, dict) and "type" in noise_cfg:
-                        noise_cls = getattr(isaaclab_noise, noise_cfg["type"])
-                        noise_params = resolve_holo_config(
-                            noise_cfg.get("params", {})
-                        )
-                        obs_term_kwargs["noise"] = noise_cls(**noise_params)
-                    else:
-                        obs_term_kwargs["noise"] = noise_cfg
+                    obs_term_kwargs["noise"] = _build_noise_cfg(noise_cfg)
 
                 for field_name in obs_term_field_names:
                     if field_name in {"func", "params", "noise"}:

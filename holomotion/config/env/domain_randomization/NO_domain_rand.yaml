@@ -1,3 +1,85 @@
 # @package _global_
 
-domain_rand: {}
+domain_rand:
+  action_delay:
+    enabled: false
+
+  erfi:
+    enabled: false
+
+  motion_init_perturb:
+    root_pose_perturb_range:
+      x: [0.0, 0.0]
+      y: [0.0, 0.0]
+      z: [0.0, 0.0]
+      roll: [0.0, 0.0]
+      pitch: [0.0, 0.0]
+      yaw: [0.0, 0.0]
+    root_vel_perturb_range:
+      x: [0.0, 0.0]
+      y: [0.0, 0.0]
+      z: [0.0, 0.0]
+      roll: [0.0, 0.0]
+      pitch: [0.0, 0.0]
+      yaw: [0.0, 0.0]
+    dof_pos_perturb_range: [0.0, 0.0]
+    dof_vel_perturb_range: [0.0, 0.0]
+
+  obs_noise:
+    actor_ref_gravity_projection_cur:
+      n_min: 0
+      n_max: 0
+    actor_ref_gravity_projection_fut:
+      n_min: 0
+      n_max: 0
+    actor_ref_base_linvel_cur:
+      n_min: 0
+      n_max: 0
+      n_min_z: 0
+      n_max_z: 0
+    actor_ref_base_linvel_fut:
+      n_min: 0
+      n_max: 0
+      n_min_z: 0
+      n_max_z: 0
+    actor_ref_base_angvel_cur:
+      n_min: 0
+      n_max: 0
+      n_min_z: 0
+      n_max_z: 0
+    actor_ref_base_angvel_fut:
+      n_min: 0
+      n_max: 0
+      n_min_z: 0
+      n_max_z: 0
+    actor_ref_dof_pos_cur:
+      n_min: 0
+      n_max: 0
+    actor_ref_dof_pos_fut:
+      n_min: 0
+      n_max: 0
+    actor_ref_root_height_cur:
+      n_min: 0
+      n_max: 0
+    actor_ref_root_height_fut:
+      n_min: 0
+      n_max: 0
+    actor_ref_keybody_rel_pos_cur:
+      n_min: 0
+      n_max: 0
+    actor_ref_keybody_rel_pos_fut:
+      n_min: 0
+      n_max: 0
+
+    actor_projected_gravity:
+      n_min: 0.0
+      n_max: 0.0
+    actor_rel_robot_root_ang_vel:
+      n_min: 0.0
+      n_max: 0.0
+    actor_dof_pos:
+      n_min: 0.0
+      n_max: 0.0
+    actor_dof_vel:
+      n_min: 0.0
+      n_max: 0.0

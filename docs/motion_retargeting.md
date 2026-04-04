@@ -36,6 +36,8 @@ Check data paths in the configuration scripts:
 
 - `holomotion/scripts/motion_retargeting/run_motion_retargeting_gmr_smplx.sh`
 
+Before using GMR, it is recommended to run `bash ./holomotion/scripts/motion_retargeting/apply_gmr_motion_retarget_patch.sh` first, which can help reduce singular solutions to some extent.
+
 ## Quick Start
 ### 1. Motion Retargeting
 

@@ -1,6 +1,9 @@
 isaacsim[all,extscache]==5.0.0
 isaaclab[isaacsim,all]==2.2.0
 
+
+setuptools
+wheel
 numpy==1.26.0
 smplx==0.1.28
 hydra-core==1.3.2
@@ -24,7 +27,6 @@ accelerate
 tabulate
 matplotlib
 pandas
-lmdb
 termcolor
 rich
 pytorch-tcn
@@ -44,10 +46,11 @@ chumpy
 pyvirtualdisplay
 pynput
 xxhash
-zarr
-tensorstore
 h5py>=3.8
 pygame
+tensordict==0.11.0
+pytorch_kinematics
+onnxscript
 
 # human_body_prior 依赖
 human-body-prior

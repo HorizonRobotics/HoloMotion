@@ -4,23 +4,44 @@ defaults:
   - _self_
 
 # Evaluation toggles
-headless: false               # true to run without GUI
-record_video: false           # true to save MP4 recordings
+headless: false # true to run without GUI
+record_video: false # true to save MP4 recordings
 video_width: 1280
 video_height: 720
 video_fps: 30
-camera_tracking: true         # true to make camera follow robot root body
-camera_height_offset: 0.3     # small offset (meters) above robot root for camera lookat point
-                              # NOTE: This offsets where camera LOOKS AT, not camera position
-                              # Use small values (0.2-0.5m) for proper framing, not large values
-camera_distance: 4.0          # camera distance from lookat point (meters)
-                              # Larger values = camera further away, smaller values = closer
-camera_azimuth: 150.0          # default viewer/offscreen azimuth (deg), side-ish view
-camera_elevation: -20.0       # default viewer/offscreen elevation (deg), slight downward angle
+camera_tracking: true # true to make camera follow robot root body
+camera_height_offset:
+  0.3 # small offset (meters) above robot root for camera lookat point
+  # NOTE: This offsets where camera LOOKS AT, not camera position
+  # Use small values (0.2-0.5m) for proper framing, not large values
+camera_distance:
+  4.0 # camera distance from lookat point (meters)
+  # Larger values = camera further away, smaller values = closer
+camera_azimuth: 150.0 # default viewer/offscreen azimuth (deg), side-ish view
+camera_elevation: -20.0 # default viewer/offscreen elevation (deg), slight downward angle
+
+# Offline evaluation pipeline (dataset mode)
+motion_npz_dir: null
+dump_npzs: true
+dump_onnx_io_npy: false
+calc_per_clip_metrics: false
+generate_report: false
+metric_calculation: "per_clip" # "per_clip" (Macro) or "per_frame" (Micro)
+dof_mode: "23" # "29" for full DoF, "23" for reduced DoF
+failure_pos_err_thresh_m: 0.25
+ray_actors_per_gpu: 16 # persistent Ray actors per GPU for batch eval
+ray_multi_ckpt_mode: "split" # "split" or "per_checkpoint" for multi-ONNX eval
+ckpt_onnx_root_dir: null # optional ONNX root directory for multi-checkpoint eval
+ckpt_onnx_names: null # optional list of ONNX file names to evaluate
+ray_parallel_metrics_postprocess: true # parallelize per-checkpoint metrics/report/export with Ray when evaluating multiple ckpts
+ray_metrics_postprocess_num_cpus: 24 # Ray resource accounting per checkpoint-postprocess task (0 = don't reserve CPUs)
+metrics_threadpool_max_workers: 24 # per-checkpoint ThreadPoolExecutor workers inside metrics.py (null => auto=min(num_files, 24))
 
 # Termination / scheduling
-max_policy_steps: 0        # 0 = unlimited; used in headless if no motion
-unitree_viewer_dt: 0.0167  # ~60 Hz viewer sync
+max_policy_steps: 0 # 0 = unlimited; used in headless if no motion
+policy_action_delay_step: 0 # max random action delay in 50 Hz policy steps; 0 disables delay
+action_delay_type: "episode" # "episode" samples once per reset, "step" re-samples every policy step
+unitree_viewer_dt: 0.0167 # ~60 Hz viewer sync
 unitree_domain_id: 0
 unitree_interface: "lo"
 unitree_use_joystick: false
@@ -28,7 +49,11 @@ unitree_joystick_type: "xbox"
 unitree_print_scene_information: false
 
 # Debug options
-debug_anchor_obs: false           # when true, dump anchor pose/obs debug CSV for sim2sim
-debug_anchor_obs_interval: 50     # log every N policy steps (>=1)
-use_isaac_root_alignment: true    # align free root state to IsaacLab reference root at frame 0
-isaac_action_playback: false      # when true, use per-frame actions recorded from IsaacLab instead of ONNX policy
+debug_anchor_obs: false # when true, dump anchor pose/obs debug CSV for sim2sim
+debug_anchor_obs_interval: 50 # log every N policy steps (>=1)
+use_isaac_root_alignment: true # align free root state to IsaacLab reference root at frame 0
+isaac_action_playback: false # when true, use per-frame actions recorded from IsaacLab instead of ONNX policy
+
+robot_xml_path: ???
+
+use_gpu: true

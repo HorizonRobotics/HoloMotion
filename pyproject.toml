@@ -1,16 +1,16 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
+requires = ["setuptools>=64.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "holomotion"
-version = "1.0.0"
+version = "1.2.0"
 description = "HoloMotion"
 authors = [
     {name = "Horizon Robotics"},
 ]
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.10"
 
 dependencies = []
 

@@ -1,6 +1,6 @@
 # Project HoloMotion
 #
-# Copyright (c) 2024-2025 Horizon Robotics. All Rights Reserved.
+# Copyright (c) 2024-2026 Horizon Robotics. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,21 +14,16 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
-import copy
 import os
-import re
 from pathlib import Path
-from typing import Optional
 
 import hydra
-import onnx
-import torch
-import torch.nn as nn
 from hydra.utils import get_class
 from loguru import logger
 from omegaconf import OmegaConf
 
 from holomotion.src.utils.config import compile_config
+from holomotion.src.utils.onnx_export import export_policy_to_onnx
 
 
 def load_training_config(
@@ -50,7 +45,8 @@ def load_training_config(
         config_path = checkpoint.parent.parent / "config.yaml"
         if not config_path.exists():
             logger.warning(
-                f"Training config not found at {config_path}, using evaluation config"
+                "Training config not found at "
+                f"{config_path}, using evaluation config"
             )
             return eval_config
 
@@ -71,143 +67,16 @@ def load_training_config(
     # For evaluation, merge eval_config into train_config
     config = OmegaConf.merge(train_config, eval_config)
 
-    # force set the terminations and domain rand with eval_config's
+    # For velocity tracking, always keep the robot configuration from training
+    if hasattr(train_config, "robot"):
+        config.robot = train_config.robot
+
+    # foce set the terminations and domain rand with eval_config's
     config.env.config.terminations = eval_config.env.config.terminations
+    config.env.config.domain_rand = eval_config.env.config.domain_rand
     config.env.config.domain_rand = eval_config.env.config.domain_rand
 
     return config
-
-
-def export_policy_to_onnx(
-    algo,
-    checkpoint_path: str,
-    onnx_name_suffix: Optional[str] = None,
-):
-    """Export a minimal ONNX that takes flattened obs and outputs actions only.
-
-    - Supports obs from configs like obs_isaaclab_nose (uses obs_serializer dims)
-    - Attaches metadata needed for MuJoCo sim2sim (PD params, defaults, action_scale)
-    """
-
-    checkpoint = Path(checkpoint_path)
-    export_dir = checkpoint.parent / "exported"
-    export_dir.mkdir(exist_ok=True)
-
-    onnx_name = checkpoint.name.replace(".pt", ".onnx")
-    if onnx_name_suffix is not None:
-        onnx_name_suffix = re.sub(r"[\s+]", "_", onnx_name_suffix)
-        onnx_name = onnx_name.replace(".onnx", f"_{onnx_name_suffix}.onnx")
-    onnx_path = export_dir / onnx_name
-
-    logger.info("Starting ONNX minimal policy export (actions-only)...")
-
-    # Set models to evaluation mode
-    algo.actor.eval()
-    algo.critic.eval()
-
-    class _OnnxPolicyHoloMotion(nn.Module):
-        def __init__(self, ppo_algo):
-            super().__init__()
-            # Always use Accelerate, so check if actor is wrapped
-            if hasattr(ppo_algo.actor, "module"):
-                self.actor = copy.deepcopy(ppo_algo.actor.module)
-            else:
-                self.actor = copy.deepcopy(ppo_algo.actor)
-            self.actor.to("cpu")
-            self.actor.eval()
-
-            # Copy normalizer state if enabled
-            self.obs_norm_enabled = bool(
-                getattr(ppo_algo, "obs_norm_enabled", False)
-            )
-            self.actor_obs_normalizer = None
-            if (
-                self.obs_norm_enabled
-                and getattr(ppo_algo, "obs_normalizer", None) is not None
-            ):
-                self.actor_obs_normalizer = copy.deepcopy(
-                    ppo_algo.obs_normalizer
-                )
-                self.actor_obs_normalizer.to("cpu")
-                self.actor_obs_normalizer.eval()
-
-        def forward(self, obs):
-            # obs: [B, F]
-            if self.obs_norm_enabled and self.actor_obs_normalizer is not None:
-                if hasattr(self.actor_obs_normalizer, "normalize"):
-                    obs = self.actor_obs_normalizer.normalize(obs)
-                else:
-                    obs = self.actor_obs_normalizer(obs)
-            actions, _, _, _, _ = self.actor(
-                obs, actions=None, mode="inference"
-            )
-            return actions
-
-    exporter = _OnnxPolicyHoloMotion(algo).to("cpu")
-
-    F = int(algo.obs_serializer.obs_flat_dim)
-    obs = torch.zeros(1, F, device="cpu")
-    torch.onnx.export(
-        exporter,
-        (obs,),
-        onnx_path,
-        export_params=True,
-        opset_version=11,
-        verbose=False,
-        input_names=["obs"],
-        output_names=["actions"],
-        dynamic_axes={},
-    )
-
-    # Attach rich metadata needed by MuJoCo sim2sim
-    attach_onnx_metadata_holomotion(
-        algo.env._env,
-        onnx_path=str(onnx_path),
-    )
-    logger.info(f"Successfully exported minimal policy to: {onnx_path}")
-
-    return str(onnx_path)
-
-
-def attach_onnx_metadata_holomotion(env, onnx_path: str):
-    def list_to_csv_str(
-        arr, *, decimals: int = 3, delimiter: str = ","
-    ) -> str:
-        fmt = f"{{:.{decimals}f}}"
-        return delimiter.join(
-            fmt.format(x) if isinstance(x, (int, float)) else str(x)
-            for x in arr  # numbers → format, strings → as-is
-        )
-
-    metadata = {
-        "joint_names": env.scene["robot"].data.joint_names,
-        "joint_stiffness": env.scene["robot"]
-        .data.joint_stiffness[0]
-        .cpu()
-        .tolist(),
-        "joint_damping": env.scene["robot"]
-        .data.joint_damping[0]
-        .cpu()
-        .tolist(),
-        "default_joint_pos": env.scene["robot"]
-        .data.default_joint_pos[0]
-        .cpu()
-        .tolist(),
-        "action_scale": env.action_manager.get_term("dof_pos")
-        ._scale[0]
-        .cpu()
-        .tolist(),
-    }
-
-    model = onnx.load(onnx_path)
-
-    for k, v in metadata.items():
-        entry = onnx.StringStringEntryProto()
-        entry.key = k
-        entry.value = list_to_csv_str(v) if isinstance(v, list) else str(v)
-        model.metadata_props.append(entry)
-
-    onnx.save(model, onnx_path)
 
 
 @hydra.main(
@@ -216,7 +85,7 @@ def attach_onnx_metadata_holomotion(env, onnx_path: str):
     version_base=None,
 )
 def main(config: OmegaConf):
-    """Evaluate the motion tracking model.
+    """Evaluate the velocity tracking model.
 
     Args:
         config: OmegaConf object containing the evaluation configuration.
@@ -249,10 +118,7 @@ def main(config: OmegaConf):
         and os.environ.get("TORCH_COMPILE_DISABLE", "0") != "1"
     ):
         logger.info(
-            "Tip: If you encounter Triton/compilation errors during evaluation,"
-        )
-        logger.info(
-            "     set environment variable: export TORCH_COMPILE_DISABLE=1"
+            "Tip: set TORCH_COMPILE_DISABLE=1 if Triton/compile errors occur"
         )
 
     if algo.accelerator.is_main_process:
@@ -275,7 +141,10 @@ def main(config: OmegaConf):
         if algo.accelerator.is_main_process:
             onnx_name_suffix = config.get("onnx_name_suffix", None)
             onnx_path = export_policy_to_onnx(
-                algo, config.checkpoint, onnx_name_suffix
+                algo,
+                config.checkpoint,
+                onnx_name_suffix=onnx_name_suffix,
+                use_kv_cache=config.get("use_kv_cache", True),
             )
             logger.info(f"Successfully exported policy to: {onnx_path}")
         algo.accelerator.wait_for_everyone()

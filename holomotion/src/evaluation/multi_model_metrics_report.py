@@ -1,3 +1,21 @@
+# Project HoloMotion
+#
+# Copyright (c) 2024-2026 Horizon Robotics. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#       http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+# implied. See the License for the specific language governing
+# permissions and limitations under the License.
+
+
+
 import argparse
 import itertools
 import json
@@ -85,7 +103,9 @@ class AnalysisReportGenerator:
         markdown_content = self._generate_markdown_report()
 
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        out_md = self.plots_dir / f"analysis_report_{self.dataset_name}_{ts}.md"
+        out_md = (
+            self.plots_dir / f"analysis_report_{self.dataset_name}_{ts}.md"
+        )
         out_md.write_text(markdown_content, encoding="utf-8")
         logger.info(f"Markdown report written to: {out_md}")
 
@@ -114,7 +134,9 @@ class AnalysisReportGenerator:
 
             per_clip = data.get("per_clip")
             if not per_clip:
-                logger.warning(f"File '{jf.name}' has empty 'per_clip'; skipping.")
+                logger.warning(
+                    f"File '{jf.name}' has empty 'per_clip'; skipping."
+                )
                 continue
 
             for clip in per_clip:
@@ -126,7 +148,9 @@ class AnalysisReportGenerator:
             return None
 
         df = pd.DataFrame(all_clips)
-        logger.info(f"Loaded {len(df)} clip records from {len(json_files)} JSON files.")
+        logger.info(
+            f"Loaded {len(df)} clip records from {len(json_files)} JSON files."
+        )
         return df
 
     def _create_kde_plot(self, metric: str, save_path: Path) -> None:
@@ -151,7 +175,9 @@ class AnalysisReportGenerator:
             linewidth=self.kde_linewidth,
         )
         ax.set_title(
-            f'Error Distribution for "{metric}" on {self.dataset_name}', fontsize=16, weight="bold"
+            f'Error Distribution for "{metric}" on {self.dataset_name}',
+            fontsize=16,
+            weight="bold",
         )
         ax.set_xlabel(f"Error Value ({metric})", fontsize=12)
         ax.set_ylabel("Density", fontsize=12)
@@ -174,7 +200,8 @@ class AnalysisReportGenerator:
 
         raw_labels = [self.radar_metric_mapping[m] for m in original_metrics]
         display_labels = [
-            textwrap.fill(label, width=20, break_long_words=False) for label in raw_labels
+            textwrap.fill(label, width=20, break_long_words=False)
+            for label in raw_labels
         ]
         num_metrics = len(original_metrics)
 
@@ -198,10 +225,14 @@ class AnalysisReportGenerator:
             for model in self.models:
                 val = rounded_median_df.loc[model, metric]
                 if pd.isna(val):
-                    normalized_df.loc[model, metric] = self.min_normalized_value
+                    normalized_df.loc[model, metric] = (
+                        self.min_normalized_value
+                    )
                     continue
 
-                lower_better = self.metric_types_for_radar.get(metric, "lower") == "lower"
+                lower_better = (
+                    self.metric_types_for_radar.get(metric, "lower") == "lower"
+                )
                 if lower_better:
                     base = (max_val - val) / rng
                 else:
@@ -210,7 +241,9 @@ class AnalysisReportGenerator:
                 norm = self.min_normalized_value + base * scale
                 normalized_df.loc[model, metric] = norm
 
-        angles = np.linspace(0, 2 * np.pi, num_metrics, endpoint=False).tolist()
+        angles = np.linspace(
+            0, 2 * np.pi, num_metrics, endpoint=False
+        ).tolist()
         angles += angles[:1]
 
         fig, ax = plt.subplots(
@@ -349,7 +382,9 @@ class AnalysisReportGenerator:
                 parts.append(stats_df.to_markdown(index=False, floatfmt=".4f"))
 
             findings: List[str] = []
-            lower_better = self.metric_types_for_radar.get(metric, "lower") == "lower"
+            lower_better = (
+                self.metric_types_for_radar.get(metric, "lower") == "lower"
+            )
 
             for m1, m2 in itertools.combinations(self.models, 2):
                 d1 = self.df.loc[self.df["model"] == m1, metric].dropna()
@@ -373,7 +408,9 @@ class AnalysisReportGenerator:
             if findings:
                 parts.append("\n".join(findings))
             else:
-                parts.append("No statistically significant differences between models.")
+                parts.append(
+                    "No statistically significant differences between models."
+                )
             safe_metric = metric.replace(" ", "_")
             plot_filename = f"{safe_metric}.png"
             plot_path = self.plots_dir / plot_filename
@@ -400,7 +437,7 @@ if __name__ == "__main__":
     name = json_dir.name
     for prefix in ("metrics_output_",):
         if name.startswith(prefix) and len(name) > len(prefix):
-            name = name[len(prefix):]
+            name = name[len(prefix) :]
             break
     dataset_name = name  # e.g. "AMASS"
     plots_dir = json_dir / f"analysis_plots_{dataset_name}"

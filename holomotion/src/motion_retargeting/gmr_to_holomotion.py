@@ -1,3 +1,20 @@
+# Project HoloMotion
+#
+# Copyright (c) 2024-2026 Horizon Robotics. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#       http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+# implied. See the License for the specific language governing
+# permissions and limitations under the License.
+
+
 import json, os, sys
 from pathlib import Path
 from typing import Dict, Tuple, Optional, List
@@ -872,9 +889,12 @@ def main(cfg: DictConfig) -> None:
                 pipeline = [str(s) for s in pipeline_val]
             elif isinstance(pipeline_val, str):
                 import ast
+
                 pipeline = ast.literal_eval(pipeline_val)
             else:
-                logger.warning(f"Unexpected pipeline type: {type(pipeline_val)}, value: {pipeline_val}")
+                logger.warning(
+                    f"Unexpected pipeline type: {type(pipeline_val)}, value: {pipeline_val}"
+                )
                 pipeline = []
         else:
             pipeline = []
@@ -882,7 +902,9 @@ def main(cfg: DictConfig) -> None:
         pipeline = []
 
     # Separate per-clip stages from dataset-level stages
-    per_clip_pipeline = [s for s in pipeline if s != "tagging"] if pipeline else []
+    per_clip_pipeline = (
+        [s for s in pipeline if s != "tagging"] if pipeline else []
+    )
     tagging_enabled = pipeline and "tagging" in pipeline
 
     logger.info("=" * 80)
@@ -893,9 +915,13 @@ def main(cfg: DictConfig) -> None:
         for i, stage in enumerate(pipeline, 1):
             logger.info(f"    {i}. {stage}")
         if tagging_enabled:
-            logger.info("  Note: 'tagging' is a dataset-level operation and will run after all clips are processed")
+            logger.info(
+                "  Note: 'tagging' is a dataset-level operation and will run after all clips are processed"
+            )
     else:
-        logger.info("  No preprocessing pipeline specified - no processors will be applied")
+        logger.info(
+            "  No preprocessing pipeline specified - no processors will be applied"
+        )
     logger.info("=" * 80)
 
     preprocessor = HoloMotionPreprocessor(

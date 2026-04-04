@@ -1,6 +1,6 @@
 # Project HoloMotion
 #
-# Copyright (c) 2024-2025 Horizon Robotics. All Rights Reserved.
+# Copyright (c) 2024-2026 Horizon Robotics. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,22 +14,18 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
-import copy
 import os
 import re
-import sys
 from pathlib import Path
-from typing import Optional
 
 import hydra
-import onnx
-import torch
-import torch.nn as nn
 from hydra.utils import get_class
 from loguru import logger
-from omegaconf import OmegaConf
+from omegaconf import ListConfig, OmegaConf
 
+from holomotion.src.evaluation.metrics import run_evaluation
 from holomotion.src.utils.config import compile_config
+from holomotion.src.utils.onnx_export import export_policy_to_onnx
 
 
 def load_training_config(
@@ -75,140 +71,98 @@ def load_training_config(
     # force set the terminations and domain rand with eval_config's
     config.env.config.terminations = eval_config.env.config.terminations
     config.env.config.domain_rand = eval_config.env.config.domain_rand
+    obs_groups = config.env.config.obs.obs_groups
+    if "policy" in obs_groups:
+        obs_groups.policy.enable_corruption = False
+    if "critic" in obs_groups:
+        obs_groups.critic.enable_corruption = False
+    if "unified" in obs_groups:
+        obs_groups.unified.enable_corruption = False
 
     return config
 
 
-def export_policy_to_onnx(
-    algo,
-    checkpoint_path: str,
-    onnx_name_suffix: Optional[str] = None,
-):
-    """Export a minimal ONNX that takes flattened obs and outputs actions only.
-
-    - Supports obs from configs like obs_isaaclab_nose (uses obs_serializer dims)
-    - Attaches metadata needed for MuJoCo sim2sim (PD params, defaults, action_scale)
-    """
-
-    checkpoint = Path(checkpoint_path)
-    export_dir = checkpoint.parent / "exported"
-    export_dir.mkdir(exist_ok=True)
-
-    onnx_name = checkpoint.name.replace(".pt", ".onnx")
-    if onnx_name_suffix is not None:
-        onnx_name_suffix = re.sub(r"[\s+]", "_", onnx_name_suffix)
-        onnx_name = onnx_name.replace(".onnx", f"_{onnx_name_suffix}.onnx")
-    onnx_path = export_dir / onnx_name
-
-    logger.info("Starting ONNX minimal policy export (actions-only)...")
-
-    # Set models to evaluation mode
-    algo.actor.eval()
-    algo.critic.eval()
-
-    class _OnnxPolicyHoloMotion(nn.Module):
-        def __init__(self, ppo_algo):
-            super().__init__()
-            # Always use Accelerate, so check if actor is wrapped
-            if hasattr(ppo_algo.actor, "module"):
-                self.actor = copy.deepcopy(ppo_algo.actor.module)
-            else:
-                self.actor = copy.deepcopy(ppo_algo.actor)
-            self.actor.to("cpu")
-            self.actor.eval()
-
-            # Copy normalizer state if enabled
-            self.obs_norm_enabled = bool(
-                getattr(ppo_algo, "obs_norm_enabled", False)
-            )
-            self.actor_obs_normalizer = None
-            if (
-                self.obs_norm_enabled
-                and getattr(ppo_algo, "obs_normalizer", None) is not None
-            ):
-                self.actor_obs_normalizer = copy.deepcopy(
-                    ppo_algo.obs_normalizer
-                )
-                self.actor_obs_normalizer.to("cpu")
-                self.actor_obs_normalizer.eval()
-
-        def forward(self, obs):
-            # obs: [B, F]
-            if self.obs_norm_enabled and self.actor_obs_normalizer is not None:
-                if hasattr(self.actor_obs_normalizer, "normalize"):
-                    obs = self.actor_obs_normalizer.normalize(obs)
-                else:
-                    obs = self.actor_obs_normalizer(obs)
-            actions, _, _, _, _ = self.actor(
-                obs, actions=None, mode="inference"
-            )
-            return actions
-
-    exporter = _OnnxPolicyHoloMotion(algo).to("cpu")
-
-    F = int(algo.obs_serializer.obs_flat_dim)
-    obs = torch.zeros(1, F, device="cpu")
-    torch.onnx.export(
-        exporter,
-        (obs,),
-        onnx_path,
-        export_params=True,
-        opset_version=11,
-        verbose=False,
-        input_names=["obs"],
-        output_names=["actions"],
-        dynamic_axes={},
-    )
-
-    # Attach rich metadata needed by MuJoCo sim2sim
-    attach_onnx_metadata_holomotion(
-        algo.env._env,
-        onnx_path=str(onnx_path),
-    )
-    logger.info(f"Successfully exported minimal policy to: {onnx_path}")
-
-    return str(onnx_path)
+def _infer_dataset_suffix(output_dir: str, checkpoint_path: str) -> str:
+    output_name = Path(output_dir).name
+    model_name = Path(checkpoint_path).stem
+    expected_prefix = f"isaaclab_eval_output_{model_name}_"
+    if output_name.startswith(expected_prefix):
+        return output_name[len(expected_prefix) :]
+    return output_name
 
 
-def attach_onnx_metadata_holomotion(env, onnx_path: str):
-    def list_to_csv_str(
-        arr, *, decimals: int = 3, delimiter: str = ","
-    ) -> str:
-        fmt = f"{{:.{decimals}f}}"
-        return delimiter.join(
-            fmt.format(x) if isinstance(x, (int, float)) else str(x)
-            for x in arr  # numbers → format, strings → as-is
+def _checkpoint_sort_key(checkpoint_path: Path):
+    match = re.search(r"model_(\d+)\.pt$", checkpoint_path.name)
+    if match is not None:
+        return (0, int(match.group(1)), checkpoint_path.name)
+    return (1, checkpoint_path.name)
+
+
+def _normalize_ckpt_pt_names(ckpt_pt_names) -> list[str]:
+    if ckpt_pt_names is None:
+        return []
+
+    if isinstance(ckpt_pt_names, ListConfig):
+        raw_names = list(ckpt_pt_names)
+    elif isinstance(ckpt_pt_names, (list, tuple)):
+        raw_names = list(ckpt_pt_names)
+    else:
+        raise TypeError(
+            f"ckpt_pt_names must be a list/tuple, got {type(ckpt_pt_names)}"
         )
 
-    metadata = {
-        "joint_names": env.scene["robot"].data.joint_names,
-        "joint_stiffness": env.scene["robot"]
-        .data.joint_stiffness[0]
-        .cpu()
-        .tolist(),
-        "joint_damping": env.scene["robot"]
-        .data.joint_damping[0]
-        .cpu()
-        .tolist(),
-        "default_joint_pos": env.scene["robot"]
-        .data.default_joint_pos[0]
-        .cpu()
-        .tolist(),
-        "action_scale": env.action_manager.get_term("dof_pos")
-        ._scale[0]
-        .cpu()
-        .tolist(),
-    }
+    normalized_names = []
+    for name in raw_names:
+        name_str = str(name).strip()
+        if name_str == "":
+            continue
+        if not name_str.endswith(".pt"):
+            name_str = f"{name_str}.pt"
+        normalized_names.append(name_str)
+    return normalized_names
 
-    model = onnx.load(onnx_path)
 
-    for k, v in metadata.items():
-        entry = onnx.StringStringEntryProto()
-        entry.key = k
-        entry.value = list_to_csv_str(v) if isinstance(v, list) else str(v)
-        model.metadata_props.append(entry)
+def _resolve_export_ckpt_paths(config: OmegaConf) -> list[Path]:
+    log_dir_value = config.get("log_dir", None)
+    checkpoint_value = config.get("checkpoint", None)
 
-    onnx.save(model, onnx_path)
+    if log_dir_value is None or str(log_dir_value).strip() == "":
+        if checkpoint_value is None or str(checkpoint_value).strip() == "":
+            raise ValueError(
+                "When export_only=true, set log_dir or checkpoint."
+            )
+        log_dir = Path(str(checkpoint_value)).parent
+    else:
+        log_dir = Path(str(log_dir_value))
+
+    if not log_dir.is_dir():
+        raise NotADirectoryError(
+            f"log_dir does not exist or is not a directory: {log_dir}"
+        )
+
+    ckpt_pt_names = _normalize_ckpt_pt_names(config.get("ckpt_pt_names", None))
+    if len(ckpt_pt_names) > 0:
+        selected_paths = []
+        missing_names = []
+        for name in ckpt_pt_names:
+            ckpt_path = log_dir / name
+            if ckpt_path.is_file():
+                selected_paths.append(ckpt_path)
+            else:
+                missing_names.append(name)
+
+        if len(missing_names) > 0:
+            raise FileNotFoundError(
+                f"Missing checkpoints in log_dir={log_dir}: {missing_names}"
+            )
+        return selected_paths
+
+    discovered_paths = sorted(log_dir.glob("*.pt"), key=_checkpoint_sort_key)
+    if len(discovered_paths) == 0:
+        raise FileNotFoundError(
+            f"No .pt checkpoints found in log_dir={log_dir}"
+        )
+    return discovered_paths
 
 
 @hydra.main(
@@ -223,16 +177,21 @@ def main(config: OmegaConf):
         config: OmegaConf object containing the evaluation configuration.
 
     """
-    # Load training config first
-    if config.checkpoint is None:
-        raise ValueError("Checkpoint path must be provided for evaluation")
+    export_only = bool(config.get("export_only", False))
+    if export_only:
+        checkpoint_paths = _resolve_export_ckpt_paths(config)
+        config = load_training_config(str(checkpoint_paths[0]), config)
+    else:
+        if config.checkpoint is None:
+            raise ValueError("Checkpoint path must be provided for evaluation")
+        checkpoint_paths = [Path(str(config.checkpoint))]
+        config = load_training_config(config.checkpoint, config)
 
-    config = load_training_config(config.checkpoint, config)
     # Compile config without accelerator (PPO will create it)
     config = compile_config(config, accelerator=None)
 
-    # Use checkpoint directory as log_dir for offline evaluation
-    log_dir = os.path.dirname(config.checkpoint)
+    # Use checkpoint directory as log_dir for offline evaluation/export.
+    log_dir = str(checkpoint_paths[0].parent)
     headless = config.headless
 
     # PPO creates Accelerator, AppLauncher, and environment internally
@@ -257,19 +216,41 @@ def main(config: OmegaConf):
         )
 
     if algo.accelerator.is_main_process:
-        eval_log_dir = os.path.dirname(config.checkpoint)
-        with open(os.path.join(eval_log_dir, "eval_config.yaml"), "w") as f:
+        with open(os.path.join(log_dir, "eval_config.yaml"), "w") as f:
             OmegaConf.save(config, f)
 
-    if hasattr(config, "checkpoint") and config.checkpoint is not None:
+    if export_only:
         if algo.accelerator.is_main_process:
             logger.info(
-                f"Loading checkpoint for evaluation: {config.checkpoint}"
+                "Running export-only mode for "
+                f"{len(checkpoint_paths)} checkpoints in {log_dir}"
             )
-        algo.load(config.checkpoint)
-    else:
+        onnx_name_suffix = config.get("onnx_name_suffix", None)
+        use_kv_cache = config.get("use_kv_cache", True)
+        for i, checkpoint_path in enumerate(checkpoint_paths, start=1):
+            ckpt_path = str(checkpoint_path)
+            if algo.accelerator.is_main_process:
+                logger.info(
+                    f"[{i}/{len(checkpoint_paths)}] Loading checkpoint: "
+                    f"{ckpt_path}"
+                )
+            algo.load(ckpt_path)
+            if algo.accelerator.is_main_process:
+                onnx_path = export_policy_to_onnx(
+                    algo,
+                    ckpt_path,
+                    onnx_name_suffix=onnx_name_suffix,
+                    use_kv_cache=use_kv_cache,
+                )
+                logger.info(f"Successfully exported policy to: {onnx_path}")
+            algo.accelerator.wait_for_everyone()
         if algo.accelerator.is_main_process:
-            logger.warning("No checkpoint provided for evaluation!")
+            logger.info("Export-only mode completed successfully!")
+        return
+
+    if algo.accelerator.is_main_process:
+        logger.info(f"Loading checkpoint for evaluation: {config.checkpoint}")
+    algo.load(config.checkpoint)
 
     command_name = list(config.env.config.commands.keys())[0]
     if command_name == "ref_motion":
@@ -282,17 +263,73 @@ def main(config: OmegaConf):
         if algo.accelerator.is_main_process:
             onnx_name_suffix = config.get("onnx_name_suffix", None)
             onnx_path = export_policy_to_onnx(
-                algo, config.checkpoint, onnx_name_suffix
+                algo,
+                config.checkpoint,
+                onnx_name_suffix=onnx_name_suffix,
+                use_kv_cache=config.get("use_kv_cache", True),
             )
             logger.info(f"Successfully exported policy to: {onnx_path}")
         algo.accelerator.wait_for_everyone()
 
-    # Dump NPZs only; metrics will be computed by a separate script
-    result = algo.offline_evaluate_policy(config.get("dump_npzs", False))
+    calc_per_clip_metrics = bool(config.get("calc_per_clip_metrics", False))
+    generate_report = bool(config.get("generate_report", False))
+    dump_npzs = bool(config.get("dump_npzs", False)) or calc_per_clip_metrics
+    dof_mode = config.get("dof_mode", "29")
+    if (
+        calc_per_clip_metrics
+        and not bool(config.get("dump_npzs", False))
+        and algo.accelerator.is_main_process
+    ):
+        logger.info(
+            "calc_per_clip_metrics=true requires dumped NPZs; "
+            "enabling dump_npzs automatically."
+        )
+
+    result = algo.offline_evaluate_policy(dump_npzs)
+    algo.accelerator.wait_for_everyone()
+
     if algo.accelerator.is_main_process:
         logger.info("Evaluation completed successfully!")
-        if isinstance(result, dict) and "output_dir" in result:
-            logger.info(f"NPZs saved to: {result['output_dir']}")
+        output_dir = (
+            result.get("output_dir") if isinstance(result, dict) else None
+        )
+        if output_dir is not None:
+            logger.info(f"NPZs saved to: {output_dir}")
+
+        if calc_per_clip_metrics:
+            if output_dir is None:
+                logger.warning(
+                    "Skipping per-clip metric calculation because "
+                    "output_dir is unavailable."
+                )
+            else:
+                dataset_suffix = _infer_dataset_suffix(
+                    output_dir, config.checkpoint
+                )
+                run_evaluation(
+                    npz_dir=output_dir,
+                    dataset_suffix=dataset_suffix,
+                    failure_pos_err_thresh_m=0.25,
+                    dof_mode=dof_mode,
+                )
+                logger.info(
+                    f"Finished per-clip metric calculation for: {output_dir}"
+                )
+
+        if generate_report:
+            if output_dir is None:
+                logger.warning(
+                    "Skipping report generation because output_dir is unavailable."
+                )
+            else:
+                from holomotion.scripts.evaluation import (
+                    mean_process_5metrics,
+                )
+
+                report_path = mean_process_5metrics.generate_macro_mean_report_from_json_dir(
+                    output_dir
+                )
+                logger.info(f"Generated metrics report at: {report_path}")
 
 
 if __name__ == "__main__":

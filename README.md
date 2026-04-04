@@ -9,6 +9,7 @@
 [![License](https://img.shields.io/badge/License-Apache_2.0-green?logo=apache&logoColor=white)](./LICENSE)
 
 [![Safari](https://img.shields.io/badge/Website-006CFF?logo=safari&logoColor=fff)](https://horizonrobotics.github.io/robot_lab/holomotion/)
+[![HuggingFace](https://img.shields.io/badge/-HuggingFace-3B4252?style=flat&logo=huggingface&logoColor=)](https://huggingface.co/collections/HorizonRobotics/holomotion)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/HorizonRobotics/HoloMotion)
 [![WeChat](https://img.shields.io/badge/Wechat-7BB32E?logo=wechat&logoColor=white)](https://horizonrobotics.feishu.cn/docx/Xs3cdEI8bo1EZuxUfzjckTgKn2c)
 
@@ -20,6 +21,7 @@
 # HoloMotion: A Foundation Model for Whole-Body Humanoid Control
 
 ## NEWS
+- [2026.04.04] The v1.2 version of HoloMotion has been released, we provide pre-trained motion tracking and velocity tracking models for the community to deploy directly.
 
 - [2026.01.06] The v1.1 version of HoloMotion has been released, representing a major step forward toward a fully engineered, stable, and reproducible humanoid motion intelligence system.
 
@@ -27,6 +29,12 @@
 <!-- <p align="center">
   <img width="150" height="230" src="assets/media/wechat_group_20251125.jpg" hspace="10">
 </p> -->
+
+## Pre-trained Models
+- Motion Tracking Model: [Hugging Face](https://huggingface.co/HorizonRobotics/HoloMotion_v1.2/tree/main/holomotion_v1.2_motion_tracking_model)
+- Velocity Tracking Model: [Hugging Face](https://huggingface.co/HorizonRobotics/HoloMotion_v1.2/tree/main/holomotion_v1.2_velocity_tracking_model)
+
+Please read the doc for  [real-world deployment](docs/realworld_deployment.md) for more details on how to use the models. 
 
 ## Introduction
 
@@ -127,7 +135,7 @@ Send your resume by scanning the **WeChat** QR code below to get in touch with u
   title = {HoloMotion: A Foundation Model for Whole-Body Humanoid Control},
   year = {2026},
   month = January,
-  version = {1.1.0},
+  version = {1.2.0},
   url = {https://github.com/HorizonRobotics/HoloMotion},
   license = {Apache-2.0}
 }

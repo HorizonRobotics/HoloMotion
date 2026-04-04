@@ -1,6 +1,6 @@
 # Project HoloMotion
 #
-# Copyright (c) 2024-2025 Horizon Robotics. All Rights Reserved.
+# Copyright (c) 2024-2026 Horizon Robotics. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -63,7 +63,13 @@ class OffscreenRenderer:
         self.rgb_buffer = np.zeros((height, width, 3), dtype=np.uint8)
         self.viewport = mujoco.MjrRect(0, 0, width, height)
 
-    def render(self, data):
+    def render(
+        self,
+        data,
+        ref_body_positions: np.ndarray | None = None,
+        ref_marker_radius: float = 0.03,
+        ref_marker_rgba: np.ndarray | None = None,
+    ):
         mujoco.mjv_updateScene(
             self.model,
             data,
@@ -72,6 +78,12 @@ class OffscreenRenderer:
             self.cam,
             mujoco.mjtCatBit.mjCAT_ALL.value,
             self.scene,
+        )
+        _draw_body_spheres_to_scene(
+            scene=self.scene,
+            body_positions=ref_body_positions,
+            radius=ref_marker_radius,
+            rgba=ref_marker_rgba,
         )
         mujoco.mjr_render(self.viewport, self.scene, self.con)
         mujoco.mjr_readPixels(self.rgb_buffer, None, self.viewport, self.con)
@@ -106,6 +118,25 @@ def _get_key_prefix_order(cfg: DictConfig) -> List[str]:
     return order_list
 
 
+def _get_ref_key_prefix_order(cfg: DictConfig) -> List[str]:
+    """Determine the prefix order used to read reference overlay arrays."""
+    configured = cfg.get("ref_key_prefix_order", None)
+    if configured is not None:
+        order_list = (
+            [str(p) for p in configured]
+            if isinstance(configured, (list, tuple))
+            else [str(configured)]
+        )
+    else:
+        single = cfg.get("ref_key_prefix", None)
+        if single is not None:
+            order_list = [str(single)]
+        else:
+            order_list = ["ref_"]
+    print(f"Using ref_key_prefix_order: {order_list}")
+    return order_list
+
+
 def _pick_with_prefixes(
     arrays: Dict[str, np.ndarray],
     base_name: str,
@@ -128,6 +159,76 @@ def _pick_with_prefixes(
             if cand2 in arrays:
                 return arrays[cand2]
     return None
+
+
+def _resolve_visualization_arrays(
+    arrays: Dict[str, np.ndarray],
+    key_prefix_order: List[str],
+    draw_ref_body_spheres: bool = False,
+    ref_key_prefix_order: List[str] | None = None,
+) -> Dict[str, np.ndarray | None]:
+    """Resolve playback arrays and optional reference overlay arrays."""
+    dof_pos = _pick_with_prefixes(arrays, "dof_pos", key_prefix_order)
+    global_translation = _pick_with_prefixes(
+        arrays, "global_translation", key_prefix_order
+    )
+    global_rotation_quat = _pick_with_prefixes(
+        arrays, "global_rotation_quat", key_prefix_order
+    )
+
+    ref_body_positions = None
+    if draw_ref_body_spheres:
+        ref_prefixes = (
+            ref_key_prefix_order
+            if ref_key_prefix_order is not None
+            else ["ref_"]
+        )
+        ref_body_positions = _pick_with_prefixes(
+            arrays, "global_translation", ref_prefixes
+        )
+
+    return {
+        "dof_pos": dof_pos,
+        "global_translation": global_translation,
+        "global_rotation_quat": global_rotation_quat,
+        "ref_body_positions": ref_body_positions,
+    }
+
+
+def _draw_body_spheres_to_scene(
+    scene,
+    body_positions: np.ndarray | None,
+    radius: float,
+    rgba: np.ndarray | None,
+) -> None:
+    """Append sphere markers for body positions to the current MuJoCo scene."""
+    if body_positions is None:
+        return
+
+    sphere_rgba = (
+        np.array([0.8, 0.0, 0.0, 1.0], dtype=np.float32)
+        if rgba is None
+        else np.asarray(rgba, dtype=np.float32)
+    )
+    size = np.array([radius, 0.0, 0.0], dtype=np.float32)
+    mat = np.eye(3, dtype=np.float32).reshape(-1)
+
+    start = int(scene.ngeom)
+    idx = 0
+    for pos in body_positions:
+        geom_id = start + idx
+        if geom_id >= scene.maxgeom:
+            break
+        mujoco.mjv_initGeom(
+            scene.geoms[geom_id],
+            mujoco.mjtGeom.mjGEOM_SPHERE,
+            size,
+            pos.astype(np.float32),
+            mat,
+            sphere_rgba,
+        )
+        idx += 1
+    scene.ngeom = start + idx
 
 
 def _load_npz_as_motion(
@@ -246,15 +347,21 @@ def process_single_motion_remote_npz(
         out = cv2.VideoWriter(out_path, fourcc, actual_fps, (width, height))
 
         try:
-            # alias resolution via configurable prefix order
             prefix_order = _get_key_prefix_order(cfg)
-            dof_pos = _pick_with_prefixes(arrays, "dof_pos", prefix_order)
-            gpos = _pick_with_prefixes(
-                arrays, "global_translation", prefix_order
-            )  # (T, nb, 3)
-            grot = _pick_with_prefixes(
-                arrays, "global_rotation_quat", prefix_order
-            )  # (T, nb, 4) xyzw
+            draw_ref_body_spheres = bool(
+                getattr(cfg, "draw_ref_body_spheres", False)
+            )
+            ref_prefix_order = _get_ref_key_prefix_order(cfg)
+            resolved = _resolve_visualization_arrays(
+                arrays=arrays,
+                key_prefix_order=prefix_order,
+                draw_ref_body_spheres=draw_ref_body_spheres,
+                ref_key_prefix_order=ref_prefix_order,
+            )
+            dof_pos = resolved["dof_pos"]
+            gpos = resolved["global_translation"]
+            grot = resolved["global_rotation_quat"]
+            ref_body_positions = resolved["ref_body_positions"]
 
             if (
                 not isinstance(dof_pos, np.ndarray)
@@ -266,7 +373,7 @@ def process_single_motion_remote_npz(
                 )
 
             # Time dimension alignment
-            T = _time_length(dof_pos, gpos, grot)
+            T = _time_length(dof_pos, gpos, grot, ref_body_positions)
             if T == 0:
                 raise ValueError("No valid frames found.")
 
@@ -281,14 +388,24 @@ def process_single_motion_remote_npz(
                 mj_data.qpos[7:] = dof_pos[t]
 
                 mujoco.mj_forward(mj_model, mj_data)
-                safe_lookat = np.array(renderer.cam.lookat)  # 当前相机中心，先取出来
+                safe_lookat = np.array(
+                    renderer.cam.lookat
+                )  # 当前相机中心，先取出来
                 safe_lookat[0] = root_pos[0]
                 safe_lookat[1] = root_pos[1]
 
                 min_height = 1.0
                 safe_lookat[2] = max(root_pos[2], min_height)
                 renderer.cam.lookat[:] = safe_lookat
-                frame = renderer.render(mj_data)
+                frame_ref_body_positions = (
+                    ref_body_positions[t]
+                    if isinstance(ref_body_positions, np.ndarray)
+                    else None
+                )
+                frame = renderer.render(
+                    mj_data,
+                    ref_body_positions=frame_ref_body_positions,
+                )
                 # Convert RGB (MuJoCo) -> BGR (OpenCV) before writing
                 frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
                 out.write(frame_bgr)
@@ -328,13 +445,20 @@ class MotionRendererNPZ:
 
         try:
             prefix_order = _get_key_prefix_order(cfg)
-            dof_pos = _pick_with_prefixes(arrays, "dof_pos", prefix_order)
-            gpos = _pick_with_prefixes(
-                arrays, "global_translation", prefix_order
+            draw_ref_body_spheres = bool(
+                getattr(cfg, "draw_ref_body_spheres", False)
             )
-            grot = _pick_with_prefixes(
-                arrays, "global_rotation_quat", prefix_order
+            ref_prefix_order = _get_ref_key_prefix_order(cfg)
+            resolved = _resolve_visualization_arrays(
+                arrays=arrays,
+                key_prefix_order=prefix_order,
+                draw_ref_body_spheres=draw_ref_body_spheres,
+                ref_key_prefix_order=ref_prefix_order,
             )
+            dof_pos = resolved["dof_pos"]
+            gpos = resolved["global_translation"]
+            grot = resolved["global_rotation_quat"]
+            ref_body_positions = resolved["ref_body_positions"]
 
             if (
                 not isinstance(dof_pos, np.ndarray)
@@ -345,7 +469,7 @@ class MotionRendererNPZ:
                     "Missing required NPZ keys: dof_pos / global_translation / global_rotation_quat"
                 )
 
-            T = _time_length(dof_pos, gpos, grot)
+            T = _time_length(dof_pos, gpos, grot, ref_body_positions)
             if T == 0:
                 raise ValueError("No valid frames found.")
 
@@ -362,14 +486,24 @@ class MotionRendererNPZ:
                 mj_data.qpos[7:] = dof_pos[t]
 
                 mujoco.mj_forward(mj_model, mj_data)
-                safe_lookat = np.array(renderer.cam.lookat)  # 当前相机中心，先取出来
+                safe_lookat = np.array(
+                    renderer.cam.lookat
+                )  # 当前相机中心，先取出来
                 safe_lookat[0] = root_pos[0]
                 safe_lookat[1] = root_pos[1]
 
                 min_height = 1.0
                 safe_lookat[2] = max(root_pos[2], min_height)
                 renderer.cam.lookat[:] = safe_lookat
-                frame = renderer.render(mj_data)
+                frame_ref_body_positions = (
+                    ref_body_positions[t]
+                    if isinstance(ref_body_positions, np.ndarray)
+                    else None
+                )
+                frame = renderer.render(
+                    mj_data,
+                    ref_body_positions=frame_ref_body_positions,
+                )
                 frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
                 out.write(frame_bgr)
         finally:
@@ -382,9 +516,8 @@ class MotionRendererNPZ:
 @hydra.main(
     version_base=None,
     config_path="../../../config/motion_retargeting",
-    config_name="unitree_G1_29dof_retargeting"
+    config_name="unitree_G1_29dof_retargeting",
 )
-
 def main(cfg: DictConfig) -> None:
     """
     Required config fields:

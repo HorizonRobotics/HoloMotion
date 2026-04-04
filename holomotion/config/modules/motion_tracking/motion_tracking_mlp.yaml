@@ -1,0 +1,106 @@
+# @package _global_
+
+modules:
+  actor:
+    type: MLP
+
+    hidden_norm: none
+    layer_config:
+      hidden_dims:
+        - 2048
+        - 1024
+        - 512
+        - 256
+      activation: SiLU
+
+    obs_norm:
+      enabled: true
+      epsilon: 1.0e-8 # Reduced for better stability in DDP
+      update_method: ema # ema or cumulative
+      ema_momentum: 1.0e-4
+      update_at_train: true
+      update_at_eval: false
+      enable_clipping: true # Enable clipping for DDP stability
+      clip_range: 10.0 # Reduced clip range for better stability
+      sync_interval_steps: 4 # Periodically sync obs normalizers across ranks during rollout
+
+    # Observation schema for motion tracking, from the actor's perspective.
+    obs_schema:
+      flattened_obs:
+        seq_len: ${obs.context_length}
+        terms:
+          - unified/actor_ref_gravity_projection_cur
+          - unified/actor_ref_base_linvel_cur
+          - unified/actor_ref_base_angvel_cur
+          - unified/actor_ref_dof_pos_cur
+          - unified/actor_ref_root_height_cur
+          - unified/actor_projected_gravity
+          - unified/actor_rel_robot_root_ang_vel
+          - unified/actor_dof_pos
+          - unified/actor_dof_vel
+          - unified/actor_last_action
+      flattened_obs_fut:
+        seq_len: ${obs.n_fut_frames}
+        terms:
+          - unified/actor_ref_dof_pos_fut
+          - unified/actor_ref_root_height_fut
+          - unified/actor_ref_gravity_projection_fut
+          - unified/actor_ref_base_linvel_fut
+          - unified/actor_ref_base_angvel_fut
+
+    output_dim: robot_action_dim
+
+  critic:
+    type: MLP
+
+    obs_norm:
+      enabled: true
+      epsilon: 1.0e-8 # Reduced for better stability in DDP
+      update_method: ema # ema or cumulative
+      ema_momentum: 1.0e-4
+      update_at_train: true
+      update_at_eval: false
+      enable_clipping: true # Enable clipping for DDP stability
+      clip_range: 10.0 # Reduced clip range for better stability
+      sync_interval_steps: 4 # Periodically sync obs normalizers across ranks during rollout
+
+    hidden_norm: rmsnorm
+
+    layer_config:
+      hidden_dims:
+        - 2048
+        - 2048
+        - 2048
+        - 2048
+      activation: SiLU
+
+    obs_schema:
+      flattened_obs:
+        seq_len: 1
+        terms:
+          - unified/critic_ref_dof_pos_cur
+          - unified/critic_global_anchor_diff
+          - unified/critic_ref_motion_cur_heading_aligned_root_pos
+          - unified/critic_ref_motion_cur_heading_aligned_root_rot6d
+          - unified/critic_ref_motion_cur_heading_aligned_root_lin_vel
+          - unified/critic_ref_motion_cur_heading_aligned_root_ang_vel
+          - unified/critic_rel_robot_root_lin_vel
+          - unified/critic_rel_robot_root_ang_vel
+          - unified/critic_global_robot_bodylink_lin_vel_flat
+          - unified/critic_global_robot_bodylink_ang_vel_flat
+          - unified/critic_root_rel_robot_bodylink_pos_flat
+          - unified/critic_root_rel_robot_bodylink_rot_mat_flat
+          - unified/critic_dof_pos
+          - unified/critic_dof_vel
+          - unified/critic_last_action
+      flattened_obs_fut:
+        seq_len: ${obs.n_fut_frames}
+        terms:
+          - unified/critic_ref_dof_pos_fut
+          - unified/critic_ref_root_height_fut
+          - unified/critic_ref_motion_fut_heading_aligned_root_pos
+          - unified/critic_ref_motion_fut_heading_aligned_root_rot6d
+          - unified/critic_ref_motion_fut_heading_aligned_root_lin_vel
+          - unified/critic_ref_motion_fut_heading_aligned_root_ang_vel
+
+    output_dim: 1

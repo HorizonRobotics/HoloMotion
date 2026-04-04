@@ -1,0 +1,40 @@
+# @package _group_
+
+defaults:
+  - _self_
+
+enabled: false
+model_type: "holomotion"
+
+# Evaluation toggles
+headless: false
+record_video: false
+video_width: 1280
+video_height: 720
+video_fps: 30
+camera_tracking: true
+camera_height_offset: 0.3
+camera_distance: 4.0
+camera_azimuth: 150.0
+camera_elevation: -20.0
+
+# Input/output
+robot_xml_path: null
+motion_npz_dir: null
+motion_npz_path: null
+ckpt_onnx_path: null
+ckpt_onnx_root_dir: null
+ckpt_onnx_names: null
+
+# Offline evaluation pipeline
+dump_npzs: true
+calc_per_clip_metrics: false
+generate_report: false
+metric_calculation: "per_clip"
+dof_mode: "23"
+failure_pos_err_thresh_m: 0.25
+ray_actors_per_gpu: 16
+ray_multi_ckpt_mode: "split"
+
+# Runtime
+use_gpu: true

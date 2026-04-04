@@ -1,6 +1,6 @@
 device: "cuda"
 policy_freq: 50 # Hz
-control_freq: 200 # Hz
+control_freq: 500 # Hz
 lowstate_topic: "/lowstate"
 action_topic: "/humanoid/action"
 
@@ -10,7 +10,25 @@ velocity_tracking_model_folder: "velocity_tracking_model"
 motion_tracking_model_folder: "motion_tracking_model"  
 
 # motion data
-motion_clip_dir: "motion_data"  
+motion_clip_dir: "motion_data" 
+
+
+cpu_affinity_main: ""
+cpu_affinity_zmq_sub: ""
+
+# VR / ZMQ: the robot acts as a SUB socket and receives latest_obs from the sender.
+vr:
+  enable_teleop_reference: false
+  latest_obs_zmq_uri: "tcp://192.168.124.29:6001"
+  latest_obs_zmq_topic: "obs65"
+  latest_obs_zmq_mode: "connect"
+  latest_obs_zmq_conflate: true
+  zmq_jitter_delay_frames: 5
+  max_data_age: 0.6
+  require_vr_data_for_motion: false
+  timing_debug_enabled: false
+  timing_debug_log_interval_sec: 5.0
+  timing_debug_log_per_loop: false
 
 complete_dof_order:
   - left_hip_pitch_joint
@@ -147,7 +165,7 @@ default_joint_angles:
   right_wrist_pitch_joint: 0.0
   right_wrist_yaw_joint: 0.0
 
-# Joint limits 
+# Joint limits
 joint_limits:
   position:
     # Left leg joints
@@ -157,7 +175,7 @@ joint_limits:
     left_knee_joint: [-0.087267, 2.8798]
     left_ankle_pitch_joint: [-0.87267, 0.5236]
     left_ankle_roll_joint: [-0.2618, 0.2618]
-    
+
     # Right leg joints
     right_hip_pitch_joint: [-2.5307, 2.8798]
     right_hip_roll_joint: [-2.9671, 0.5236]
@@ -165,12 +183,12 @@ joint_limits:
     right_knee_joint: [-0.087267, 2.8798]
     right_ankle_pitch_joint: [-0.87267, 0.5236]
     right_ankle_roll_joint: [-0.2618, 0.2618]
-    
+
     # Waist joints
     waist_yaw_joint: [-2.618, 2.618]
     waist_roll_joint: [-0.52, 0.52]
     waist_pitch_joint: [-0.52, 0.52]
-    
+
     # Left arm joints
     left_shoulder_pitch_joint: [-3.0892, 2.6704]
     left_shoulder_roll_joint: [-1.5882, 2.2515]
@@ -179,7 +197,7 @@ joint_limits:
     left_wrist_roll_joint: [-1.972222054, 1.972222054]
     left_wrist_pitch_joint: [-1.614429558, 1.614429558]
     left_wrist_yaw_joint: [-1.614429558, 1.614429558]
-    
+
     # Right arm joints
     right_shoulder_pitch_joint: [-3.0892, 2.6704]
     right_shoulder_roll_joint: [-2.2515, 1.5882]
@@ -197,7 +215,7 @@ joint_limits:
     left_knee_joint: 20
     left_ankle_pitch_joint: 30
     left_ankle_roll_joint: 30
-    
+
     # Right leg joints
     right_hip_pitch_joint: 32
     right_hip_roll_joint: 20
@@ -205,12 +223,12 @@ joint_limits:
     right_knee_joint: 20
     right_ankle_pitch_joint: 30
     right_ankle_roll_joint: 30
-    
+
     # Waist joints
     waist_yaw_joint: 32
     waist_roll_joint: 30
     waist_pitch_joint: 30
-    
+
     # Left arm joints
     left_shoulder_pitch_joint: 37
     left_shoulder_roll_joint: 37
@@ -219,7 +237,7 @@ joint_limits:
     left_wrist_roll_joint: 37
     left_wrist_pitch_joint: 22
     left_wrist_yaw_joint: 22
-    
+
     # Right arm joints
     right_shoulder_pitch_joint: 37
     right_shoulder_roll_joint: 37
@@ -237,7 +255,7 @@ joint_limits:
     left_knee_joint: 139
     left_ankle_pitch_joint: 35
     left_ankle_roll_joint: 35
-    
+
     # Right leg joints
     right_hip_pitch_joint: 88
     right_hip_roll_joint: 139
@@ -245,12 +263,12 @@ joint_limits:
     right_knee_joint: 139
     right_ankle_pitch_joint: 35
     right_ankle_roll_joint: 35
-    
+
     # Waist joints
     waist_yaw_joint: 88
     waist_roll_joint: 35
     waist_pitch_joint: 35
-    
+
     # Left arm joints
     left_shoulder_pitch_joint: 25
     left_shoulder_roll_joint: 25
@@ -259,7 +277,7 @@ joint_limits:
     left_wrist_roll_joint: 25
     left_wrist_pitch_joint: 5
     left_wrist_yaw_joint: 5
-    
+
     # Right arm joints
     right_shoulder_pitch_joint: 25
     right_shoulder_roll_joint: 25
@@ -268,11 +286,11 @@ joint_limits:
     right_wrist_roll_joint: 25
     right_wrist_pitch_joint: 5
     right_wrist_yaw_joint: 5
-    
+
 limit_scales:
   position: 2.0 # Allows 50% more range of motion
-  velocity: 2.0 
-  effort: 2.0 
+  velocity: 2.0
+  effort: 2.0
 
 # move to default position
 # joint_names and default_position are auto-generated from complete_dof_order and default_joint_angles

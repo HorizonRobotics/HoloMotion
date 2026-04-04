@@ -1,6 +1,6 @@
 # Project HoloMotion
 #
-# Copyright (c) 2024-2025 Horizon Robotics. All Rights Reserved.
+# Copyright (c) 2024-2026 Horizon Robotics. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,6 +16,7 @@
 
 import copy
 import math
+import os
 from pathlib import Path
 
 import torch
@@ -81,7 +82,6 @@ def compile_config(
     config = copy.deepcopy(config)
     config = compile_config_hf_accelerate(config, accelerator)
     config = compile_config_directories(config, eval)
-    config = compile_config_obs(config)
     config = compile_config_devices(config)
     return config
 
@@ -106,10 +106,29 @@ def compile_config_hf_accelerate(
         process_idx = accelerator.process_index
         total_processes = accelerator.num_processes
     else:
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        is_main_process = True
-        process_idx = 0
-        total_processes = 1
+        # Best-effort distributed metadata when running under torchrun / Accelerate launch,
+        # even if an Accelerator instance is not provided yet.
+        process_idx = int(
+            os.environ.get(
+                "RANK", os.environ.get("ACCELERATE_PROCESS_INDEX", "0")
+            )
+        )
+        total_processes = int(
+            os.environ.get(
+                "WORLD_SIZE", os.environ.get("ACCELERATE_NUM_PROCESSES", "1")
+            )
+        )
+        local_rank = int(
+            os.environ.get(
+                "LOCAL_RANK",
+                os.environ.get("ACCELERATE_LOCAL_PROCESS_INDEX", "0"),
+            )
+        )
+        is_main_process = process_idx == 0
+        if torch.cuda.is_available():
+            device = torch.device("cuda", local_rank)
+        else:
+            device = torch.device("cpu")
 
     config.process_id = process_idx
     config.num_processes = total_processes
@@ -181,93 +200,13 @@ def compile_config_directories(config, eval: bool = False) -> None:
     experiment_save_dir = Path(config.experiment_dir)
     experiment_save_dir.mkdir(exist_ok=True, parents=True)
     config.experiment_save_dir = str(experiment_save_dir)
-    config.env.config.save_rendering_dir = str(
-        Path(config.experiment_dir) / "renderings_training"
-    )
+    if hasattr(config, "env"):
+        config.env.config.save_rendering_dir = str(
+            Path(config.experiment_dir) / "renderings_training"
+        )
     unresolved_conf = OmegaConf.to_container(config, resolve=False)
     if config.main_process:
         logger.info(f"Saving config file to {experiment_save_dir}")
         with open(experiment_save_dir / "config.yaml", "w") as file:
             OmegaConf.save(unresolved_conf, file)
-    return config
-
-
-def compile_config_obs(config) -> None:
-    """Build the final observation dimension dictionary for actor critic.
-
-    Args:
-        config: Configuration.
-
-    Returns:
-        Compiled configuration.
-
-    """
-    config = copy.deepcopy(config)
-
-    # Older configs provide obs_dims and expect algo_obs_dim_dict to be built here.
-    # Newer serialization-aware configs may omit obs_dims entirely and let the
-    # environment / serializers define observation dimensions at runtime.
-    if not hasattr(config.env.config.obs, "obs_dims"):
-        logger.info(
-            "config.env.config.obs.obs_dims not found; "
-            "skipping algo_obs_dim_dict pre-computation"
-        )
-        return config
-
-    obs_dim_dict = dict()
-    _obs_key_list = config.env.config.obs.obs_dict
-    _aux_obs_key_list = config.env.config.obs.obs_auxiliary
-
-    each_dict_obs_dims = {
-        k: v for d in config.env.config.obs.obs_dims for k, v in d.items()
-    }
-    config.env.config.obs.obs_dims = each_dict_obs_dims
-    logger.info(f"obs_dims: {each_dict_obs_dims}")
-    auxiliary_obs_dims = {}
-    for aux_obs_key, aux_config in _aux_obs_key_list.items():
-        auxiliary_obs_dims[aux_obs_key] = 0
-        for _key, _num in aux_config.items():
-            if _key not in config.env.config.obs.obs_dims.keys():
-                logger.warning(f"{_key} not in obs_dims")
-            assert _key in config.env.config.obs.obs_dims.keys()
-            auxiliary_obs_dims[aux_obs_key] += (
-                config.env.config.obs.obs_dims[_key] * _num
-            )
-    logger.info(f"auxiliary_obs_dims: {auxiliary_obs_dims}")
-    for obs_key, obs_config in _obs_key_list.items():
-        obs_dim_dict[obs_key] = 0
-        for key in obs_config:
-            if key.endswith("_raw"):
-                key = key[:-4]
-            if key in config.env.config.obs.obs_dims.keys():
-                obs_dim_dict[obs_key] += config.env.config.obs.obs_dims[key]
-                logger.info(
-                    f"{obs_key}: {key} has dim: "
-                    f"{config.env.config.obs.obs_dims[key]}"
-                )
-            else:
-                obs_dim_dict[obs_key] += auxiliary_obs_dims[key]
-                logger.info(
-                    f"{obs_key}: {key} has dim: {auxiliary_obs_dims[key]}"
-                )
-    # Attach to algo config only when the key already exists (older configs).
-    # This avoids struct errors for minimal eval configs that don't declare it.
-    if not hasattr(config, "algo") or not hasattr(config.algo, "config"):
-        logger.info(
-            "config.algo.config not found; skipping algo_obs_dim_dict pre-computation"
-        )
-        return config
-
-    algo_cfg = config.algo.config
-    algo_container = OmegaConf.to_container(algo_cfg, resolve=False)
-    if "algo_obs_dim_dict" not in algo_container:
-        logger.info(
-            "config.algo.config.algo_obs_dim_dict not present; "
-            "skipping algo_obs_dim_dict pre-computation"
-        )
-        return config
-
-    algo_cfg.algo_obs_dim_dict = obs_dim_dict
-    logger.info(f"algo_obs_dim_dict: {algo_cfg.algo_obs_dim_dict}")
-
     return config

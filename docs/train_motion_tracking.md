@@ -32,6 +32,7 @@ Use the demo config at `holomotion/config/training/motion_tracking/train_g1_29do
 - **`/env/rewards`**: Reward function definitions
 - **`/env/domain_randomization`**: Domain randomization settings (start with `NO_domain_rand`)
 - **`/env/terrain`**: Terrain configuration
+- **`/modules`**: The policy network modules definitions
 
 ```yaml
 # @package _global_
@@ -42,10 +43,11 @@ defaults:
   - /robot: unitree/G1/29dof/29dof_training_isaaclab
   - /env: motion_tracking
   - /env/terminations: termination_motion_tracking
-  - /env/observations: motion_tracking/obs_motion_tracking
+  - /env/observations: motion_tracking/obs_motion_tracking_tf-moe
   - /env/rewards: motion_tracking/rew_motion_tracking
-  - /env/domain_randomization: domain_rand_small
+  - /env/domain_randomization: domain_rand_medium
   - /env/terrain: isaaclab_plane
+  - /modules: motion_tracking/motion_tracking_tf-moe
 
 project_name: HoloMotion
 ```

@@ -1,0 +1,21 @@
+# @package _global_
+
+defaults:
+  - /training: train_base
+  - /algo: ppo
+  - /robot: unitree/G1/29dof/29dof_training_isaaclab
+  - /env: motion_tracking
+  - /env/terminations: termination_motion_tracking
+  - /env/observations: motion_tracking/obs_motion_tracking_mlp
+  - /env/rewards: motion_tracking/rew_motion_tracking
+  - /env/domain_randomization: domain_rand_medium
+  - /env/terrain: isaaclab_rough
+  - /modules: motion_tracking/motion_tracking_mlp
+
+project_name: HoloMotionMotrackV1.2
+
+# checkpoint: ???
+
+train_hdf5_roots:
+  - data/h5v2_datasets/AMASS_test
+

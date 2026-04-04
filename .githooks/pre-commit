@@ -1,0 +1,18 @@
+#!/bin/bash
+# Run ruff format on staged Python files before commit.
+# Use from holomotion repo root (standalone clone or submodule).
+# Requires: run git commit from a shell where conda is available (so train.env can set Train_CONDA_PREFIX).
+
+set -e
+cd "$(git rev-parse --show-toplevel)"
+
+mapfile -t staged_py < <(git diff --cached --name-only --diff-filter=ACM | grep '\.py$' || true)
+if [ ${#staged_py[@]} -eq 0 ]; then
+  exit 0
+fi
+
+# train.env sets Train_CONDA_PREFIX; conda must be on PATH when you run git commit
+source train.env
+"$Train_CONDA_PREFIX/bin/ruff" format --config pyproject.toml "${staged_py[@]}"
+git add "${staged_py[@]}"
+exit 0

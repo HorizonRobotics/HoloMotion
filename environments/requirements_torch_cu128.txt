@@ -1,6 +1,6 @@
 --extra-index-url https://download.pytorch.org/whl/cu128
 --extra-index-url https://pypi.nvidia.com
 
-torch==2.7.0
-torchvision==0.22.0
-torchaudio==2.7.0
+torch==2.10.0+cu128
+torchvision==0.25.0+cu128
+torchaudio==2.10.0+cu128

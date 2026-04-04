@@ -1,5 +1,9 @@
 # @package _global_
 
+defaults:
+  - _self_
+  - /mujoco_eval: sim2sim
+
 project_name: ???
 experiment_name: ???
 

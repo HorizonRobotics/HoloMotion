@@ -1,7 +1,8 @@
 #!/bin/bash
+
 # Project HoloMotion
 #
-# Copyright (c) 2024-2025 Horizon Robotics. All Rights Reserved.
+# Copyright (c) 2024-2026 Horizon Robotics. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -18,18 +19,27 @@
 source train.env
 export CUDA_VISIBLE_DEVICES="0"
 
+HEADLESS=true
 CONFIG_NAME="eval_isaaclab"
-CKPT_PATH="logs/HoloMotionMotionTracking/20260104_150135-train_g1_29dof_motion_tracking/model_3000.pt"
-eval_h5_dataset_path="data/hdf5_datasets/processed_datasets/h5_AMASS_test"
-num_envs=1
+
+CKPT_PATH="logs/HoloMotionMotrackV1.2/your_log_dir/model_xxx.pt"
+
+eval_h5_dataset_path="['data/h5v2_datasets/lafan1']"
+
+num_envs=4
+
 
 ${Train_CONDA_PREFIX}/bin/accelerate launch \
     holomotion/src/evaluation/eval_motion_tracking_single.py \
     --config-name=evaluation/${CONFIG_NAME} \
-    checkpoint=$CKPT_PATH \
-    headless=false \
-    project_name="HoloMotionMotionTracking" \
+    headless=${HEADLESS} \
     num_envs=${num_envs} \
     export_policy=true \
     dump_npzs=true \
-    motion_h5_path=${eval_h5_dataset_path}
+    calc_per_clip_metrics=true \
+    generate_report=true \
+    motion_h5_path=${eval_h5_dataset_path} \
+    +use_kv_cache=true \
+    export_only=false \
+    checkpoint=$CKPT_PATH \
+    project_name="HoloMotionMoTrack"

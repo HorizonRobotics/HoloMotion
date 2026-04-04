@@ -6,9 +6,12 @@ algo:
   config:
     # --- General Settings ---
     enable_online_eval: false
-    num_learning_iterations: 300000
+    num_learning_iterations: 10001
     log_interval: 5
     save_interval: 500
+    export_policy: true
+    onnx_name_suffix: null
+    use_kv_cache: true
     eval_interval: null
     load_optimizer: true
     headless: ${headless}
@@ -16,7 +19,7 @@ algo:
 
     # --- Accelerate Settings ---
     mixed_precision: null # "fp16", "bf16", or null. Use "bf16" for A100/H100, "fp16" for older GPUs
-    dynamo_backend: null # "inductor", "aot_eager", "cudagraphs", or null. Enables automatic model compilation during prepare()
+    dynamo_backend: "inductor" # "inductor", "aot_eager", "cudagraphs", or null. Enables automatic model compilation during prepare()
     # ---
 
     # --- PPO Related Settings ---
@@ -29,6 +32,8 @@ algo:
     lam: 0.95
     value_loss_coef: 1.0
     entropy_coef: 5.0e-3
+    anneal_entropy: false
+    zero_entropy_point: 1.0
     max_grad_norm: 1.0
     use_clipped_value_loss: true
     desired_kl: 0.01
@@ -39,46 +44,52 @@ algo:
     schedule: adaptive
     actor_learning_rate: 3.0e-4
     critic_learning_rate: 5.0e-4
+    adaptive_lr:
+      adapt_critic: false
+      lr_scaler: 1.2
+      kl_high_factor: 2.0
+      kl_low_factor: 0.5
+      min_learning_rate: 1.0e-6
+      max_learning_rate: 1.0
+
+    distributed_update:
+      mode: scalable # Options: "legacy", "scalable"
+      lr_scale:
+        mode: sqrt_world_size # Options: "none", "sqrt_world_size", "linear_world_size"
+        reference_world_size: 1
+        max_scale: null
+      kl_early_stop:
+        enabled: true
+        signal: window_mean # Shared windowed KL control signal
+        window_size: 3
+        factor: 1.8
+        min_updates: 1
 
     # Distributed training settings
     normalize_advantage_per_mini_batch: false # Use global advantage norm for DDP
     global_advantage_norm: true # Sync advantages across all ranks
-    # ---
-
-    # --- Observation Normalization Settings ---
-    obs_norm:
-      enabled: true
-      epsilon: 1.0e-8 # Reduced for better stability in DDP
-      update_at_train: true
-      update_at_eval: false
-      enable_clipping: true # Enable clipping for DDP stability
-      clip_range: 10.0 # Reduced clip range for better stability
-      sync_interval_steps: 8 # Periodically sync obs normalizers across ranks during rollout
-      actor:
-        enabled: true
-      critic:
-        enabled: true
-    # ---
 
     # --- Sampling Strategy ---
     sampling_strategy: uniform
-    # ---
+    curriculum:
+      p_a_ratio: 0.5
+      ema_alpha_signal: 0.2
+      ema_alpha_rel_improve: 0.2
+      relative_eps: 1.0e-6
+      dump_whole_window_scores_json: false
+      dump_whole_window_scores_every_swaps: 10
 
-    # --- Dagger Related Settings ---
-    teacher_actor_ckpt_path: null
-    dagger_only: false
-    dagger_init_coef: 1.0
-    dagger_anneal: true
-    dagger_anneal_degree: 1.0e-05
-    rl_init_coef: 1.0
-    rl_warmup: false
-    rl_warmup_degree: 1.0e-05
-    load_critic_when_dagger: false
-    # ---
-
-    algo_obs_dim_dict: ???
+    weighted_bin:
+      bin_regex_patterns: []
+      dump_sampled_keys: false
+      dump_sampled_keys_interval: 1000
 
     # --- Module Settings ---
     module_dict:
       actor: ${modules.actor}
       critic: ${modules.critic}
+
+    symmetry_loss:
+      enabled: false
+      coef: 0.1
+      dof_sign_by_name: ${robot.dof_sign_by_name}

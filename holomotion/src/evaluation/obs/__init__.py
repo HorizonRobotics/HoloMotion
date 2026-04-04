@@ -4,5 +4,3 @@ __all__ = [
     "PolicyObsBuilder",
     "get_gravity_orientation",
 ]
-
-

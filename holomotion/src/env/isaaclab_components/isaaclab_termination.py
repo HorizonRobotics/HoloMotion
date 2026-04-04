@@ -1,33 +1,68 @@
-from isaaclab.envs import ManagerBasedRLEnv
-from isaaclab.managers import TerminationTermCfg, SceneEntityCfg
-from isaaclab.utils import configclass
-import torch
-from isaaclab.assets import Articulation
-from holomotion.src.env.isaaclab_components.isaaclab_motion_tracking_command import (
-    RefMotionCommand,
-)
-import isaaclab.utils.math as isaaclab_math
+# Project HoloMotion
+#
+# Copyright (c) 2024-2026 Horizon Robotics. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#       http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+# implied. See the License for the specific language governing
+# permissions and limitations under the License.
+
+
+import inspect
+
 import isaaclab.envs.mdp as isaaclab_mdp
+import isaaclab.utils.math as isaaclab_math
+import torch
+from isaaclab.envs import ManagerBasedRLEnv
+from isaaclab.managers import TerminationTermCfg
+from isaaclab.utils import configclass
 
-from holomotion.src.env.isaaclab_components.isaaclab_utils import (
-    _get_body_indices,
-    resolve_holo_config,
+from holomotion.src.env.isaaclab_components import (
+    isaaclab_motion_tracking_command as motion_tracking_command,
+    isaaclab_utils,
 )
 
 
-def time_out(env: ManagerBasedRLEnv):
-    return isaaclab_mdp.terminations.time_out(env)
+def _list_supported_terminations() -> list[str]:
+    custom_terminations = {
+        name
+        for name, obj in globals().items()
+        if (
+            inspect.isfunction(obj)
+            and obj.__module__ == __name__
+            and not name.startswith("_")
+        )
+    }
+    native_terminations = {
+        name
+        for name in dir(isaaclab_mdp.terminations)
+        if (
+            not name.startswith("_")
+            and callable(getattr(isaaclab_mdp.terminations, name))
+        )
+    }
+    return sorted(custom_terminations | native_terminations)
 
 
-def bad_orientation(env: ManagerBasedRLEnv, limit_angle: float = 0.8):
-    return isaaclab_mdp.terminations.bad_orientation(
-        env, limit_angle=limit_angle
-    )
+def _resolve_termination_func(name: str):
+    func = globals().get(name)
+    if inspect.isfunction(func) and func.__module__ == __name__:
+        return func
 
+    func = getattr(isaaclab_mdp.terminations, name, None)
+    if callable(func):
+        return func
 
-def root_height_below_minimum(env: ManagerBasedRLEnv, minimum_height: float):
-    return isaaclab_mdp.terminations.root_height_below_minimum(
-        env, minimum_height=minimum_height
+    supported = _list_supported_terminations()
+    raise ValueError(
+        f"Unknown termination function: {name}. Supported: {supported}"
     )
 
 
@@ -39,13 +74,17 @@ def global_bodylink_pos_far(
     ref_prefix: str = "ref_",
 ) -> torch.Tensor:
     """Any body link position deviates more than threshold (world frame)."""
-    command: RefMotionCommand = env.command_manager.get_term(command_name)
-    ref_pos_w = command.get_ref_motion_bodylink_global_pos_cur(
+    command: motion_tracking_command.RefMotionCommand = (
+        env.command_manager.get_term(command_name)
+    )
+    ref_pos_w = command.get_ref_motion_bodylink_global_pos_immediate_next(
         prefix=ref_prefix
     )  # [B, Nb, 3]
     robot_pos_w = command.robot.data.body_pos_w  # [B, Nb, 3]
 
-    keybody_idxs = _get_body_indices(command.robot, keybody_names)
+    keybody_idxs = isaaclab_utils._get_body_indices(
+        command.robot, keybody_names
+    )
 
     if keybody_idxs is not None and len(keybody_idxs) > 0:
         idxs = torch.as_tensor(
@@ -67,8 +106,10 @@ def anchor_ref_z_far(
     ref_prefix: str = "ref_",
 ) -> torch.Tensor:
     """Anchor link z difference exceeds threshold (world frame)."""
-    command: RefMotionCommand = env.command_manager.get_term(command_name)
-    ref_z = command.get_ref_motion_anchor_bodylink_global_pos_cur(
+    command: motion_tracking_command.RefMotionCommand = (
+        env.command_manager.get_term(command_name)
+    )
+    ref_z = command.get_ref_motion_anchor_bodylink_global_pos_immediate_next(
         prefix=ref_prefix
     )[:, -1]
     robot_z = command.global_robot_anchor_pos_cur[:, -1]
@@ -82,17 +123,21 @@ def ref_gravity_projection_far(
     command_name: str = "ref_motion",
     ref_prefix: str = "ref_",
 ) -> torch.Tensor:
-    """Difference in projected gravity z-component between ref and robot exceeds threshold.
+    """Difference in projected gravity z-component exceeds threshold.
 
-    Project world gravity into the anchor body frames using inverse quaternion rotation
-    and compare z-components.
+    Project world gravity into the anchor body frames using inverse
+    quaternion rotation and compare z-components.
     """
-    command: RefMotionCommand = env.command_manager.get_term(command_name)
+    command: motion_tracking_command.RefMotionCommand = (
+        env.command_manager.get_term(command_name)
+    )
     g_w = env.scene[asset_name].data.GRAVITY_VEC_W  # [B, 3]
 
     # Reference anchor orientation (xyzw) from motion cache
-    ref_anchor_quat_xyzw = command.get_ref_motion_anchor_bodylink_global_rot_wxyz_cur(
-        prefix=ref_prefix
+    ref_anchor_quat_xyzw = (
+        command.get_ref_motion_anchor_bodylink_global_rot_wxyz_immediate_next(
+            prefix=ref_prefix
+        )
     )  # [B, 4]
 
     motion_projected_gravity_b = isaaclab_math.quat_apply_inverse(
@@ -121,6 +166,39 @@ def ref_gravity_projection_far(
     ).abs() > threshold
 
 
+def keybody_ref_pos_far(
+    env: ManagerBasedRLEnv,
+    threshold: float,
+    command_name: str = "ref_motion",
+    keybody_names: list[str] | None = None,
+    ref_prefix: str = "ref_",
+) -> torch.Tensor:
+    """Any key body link z difference exceeds threshold (world frame)."""
+    command: motion_tracking_command.RefMotionCommand = (
+        env.command_manager.get_term(command_name)
+    )
+    ref_pos_w = command.get_ref_motion_bodylink_global_pos_immediate_next(
+        prefix=ref_prefix
+    )  # [B, Nb, 3]
+    robot_pos_w = command.robot.data.body_pos_w  # [B, Nb, 3]
+
+    keybody_idxs = isaaclab_utils._get_body_indices(
+        command.robot, keybody_names
+    )
+
+    if keybody_idxs is not None and len(keybody_idxs) > 0:
+        idxs = torch.as_tensor(
+            keybody_idxs,
+            device=ref_pos_w.device,
+            dtype=torch.long,
+        )
+        ref_pos_w = ref_pos_w[:, idxs]
+        robot_pos_w = robot_pos_w[:, idxs]
+
+    error = torch.norm(ref_pos_w - robot_pos_w, dim=-1)  # [B, Nb]
+    return torch.any(error > threshold, dim=-1)  # [B]
+
+
 def keybody_ref_z_far(
     env: ManagerBasedRLEnv,
     threshold: float,
@@ -129,13 +207,17 @@ def keybody_ref_z_far(
     ref_prefix: str = "ref_",
 ) -> torch.Tensor:
     """Any key body link z difference exceeds threshold (world frame)."""
-    command: RefMotionCommand = env.command_manager.get_term(command_name)
-    ref_pos_w = command.get_ref_motion_bodylink_global_pos_cur(
+    command: motion_tracking_command.RefMotionCommand = (
+        env.command_manager.get_term(command_name)
+    )
+    ref_pos_w = command.get_ref_motion_bodylink_global_pos_immediate_next(
         prefix=ref_prefix
     )  # [B, Nb, 3]
     robot_pos_w = command.robot.data.body_pos_w  # [B, Nb, 3]
 
-    keybody_idxs = _get_body_indices(command.robot, keybody_names)
+    keybody_idxs = isaaclab_utils._get_body_indices(
+        command.robot, keybody_names
+    )
 
     if keybody_idxs is not None and len(keybody_idxs) > 0:
         idxs = torch.as_tensor(
@@ -150,6 +232,24 @@ def keybody_ref_z_far(
     return torch.any(error_z > threshold, dim=-1)  # [B]
 
 
+def wholebody_mpjpe_far(
+    env: ManagerBasedRLEnv,
+    threshold: float,
+    command_name: str = "ref_motion",
+    ref_prefix: str = "ref_",
+) -> torch.Tensor:
+    """Mean whole-body DOF position error exceeds threshold."""
+    command: motion_tracking_command.RefMotionCommand = (
+        env.command_manager.get_term(command_name)
+    )
+    ref_dof_pos = command.get_ref_motion_dof_pos_immediate_next(
+        prefix=ref_prefix
+    )
+    robot_dof_pos = command.robot.data.joint_pos
+    mean_dof_error = torch.mean(torch.abs(robot_dof_pos - ref_dof_pos), dim=-1)
+    return mean_dof_error > threshold
+
+
 def motion_end(
     env: ManagerBasedRLEnv,
     command_name: str = "ref_motion",
@@ -158,7 +258,9 @@ def motion_end(
 
     Returns a boolean mask of shape [num_envs].
     """
-    command: RefMotionCommand = env.command_manager.get_term(command_name)
+    command: motion_tracking_command.RefMotionCommand = (
+        env.command_manager.get_term(command_name)
+    )
     result = command.motion_end_mask.clone().bool()
     return result
 
@@ -173,30 +275,13 @@ def build_terminations_config(
 ) -> TerminationsCfg:
     terminations_cfg = TerminationsCfg()
 
-    # Explicit mapping from names to functions (Hydra-friendly signatures)
-    fn_map = {
-        "time_out": time_out,
-        "bad_orientation": bad_orientation,
-        "root_height_below_minimum": root_height_below_minimum,
-        "global_bodylink_pos_far": global_bodylink_pos_far,
-        "anchor_ref_z_far": anchor_ref_z_far,
-        "ref_gravity_projection_far": ref_gravity_projection_far,
-        "keybody_ref_z_far": keybody_ref_z_far,
-        "motion_end": motion_end,
-    }
-
     for termination_name, termination_cfg in termination_config_dict.items():
-        if termination_name not in fn_map:
-            raise ValueError(
-                f"Unknown termination function: {termination_name}. "
-                f"Supported: {list(fn_map.keys())}"
-            )
+        termination_cfg = isaaclab_utils.resolve_holo_config(termination_cfg)
+        func = _resolve_termination_func(termination_name)
+        params = isaaclab_utils.resolve_holo_config(
+            termination_cfg.get("params", {})
+        )
 
-        func = fn_map[termination_name]
-        params = termination_cfg.get("params", {})
-
-        # Verbosely construct the TerminationTermCfg; for standard terms like time_out,
-        # mark time_out=True for Manager-based auto handling.
         term_cfg = TerminationTermCfg(
             func=func,
             params=params,

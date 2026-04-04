@@ -1,6 +1,6 @@
 # Project HoloMotion
 #
-# Copyright (c) 2024-2025 Horizon Robotics. All Rights Reserved.
+# Copyright (c) 2024-2026 Horizon Robotics. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -38,16 +38,28 @@ from hmr4d.utils.video_io_utils import (
     get_writer,
     get_video_reader,
 )
-from hmr4d.utils.vis.cv2_utils import draw_bbx_xyxy_on_image_batch, draw_coco17_skeleton_batch
+from hmr4d.utils.vis.cv2_utils import (
+    draw_bbx_xyxy_on_image_batch,
+    draw_coco17_skeleton_batch,
+)
 
 from hmr4d.utils.preproc import Tracker, Extractor, VitPoseExtractor, SimpleVO
 
-from hmr4d.utils.geo.hmr_cam import get_bbx_xys_from_xyxy, estimate_K, convert_K_to_K4, create_camera_sensor
+from hmr4d.utils.geo.hmr_cam import (
+    get_bbx_xys_from_xyxy,
+    estimate_K,
+    convert_K_to_K4,
+    create_camera_sensor,
+)
 from hmr4d.utils.geo_transform import compute_cam_angvel
 from hmr4d.model.gvhmr.gvhmr_pl_demo import DemoPL
 from hmr4d.utils.net_utils import detach_to_cpu, to_cuda
 from hmr4d.utils.smplx_utils import make_smplx
-from hmr4d.utils.vis.renderer import Renderer, get_global_cameras_static, get_ground_params_from_points
+from hmr4d.utils.vis.renderer import (
+    Renderer,
+    get_global_cameras_static,
+    get_ground_params_from_points,
+)
 from tqdm import tqdm
 from hmr4d.utils.geo_transform import apply_T_on_points, compute_T_ayfz2ay
 from einops import einsum, rearrange
@@ -69,6 +81,7 @@ def get_video_fps(video_path: Path) -> float:
         raise RuntimeError(f"Failed to read FPS from video: {video_path}")
     return float(fps)
 
+
 def is_close_fps(a: float, b: float, tol: float = 0.02) -> bool:
     return abs(a - b) <= tol
 
@@ -76,37 +89,64 @@ def is_close_fps(a: float, b: float, tol: float = 0.02) -> bool:
 def transcode_to_30fps_cfr(src: Path, dst: Path, crf: int) -> None:
     dst.parent.mkdir(parents=True, exist_ok=True)
     cmd = [
-        "ffmpeg", "-y",
-        "-i", str(src),
-        "-vf", "fps=30",
-        "-vsync", "cfr",
-        "-c:v", "libx264",
-        "-crf", str(crf),
-        "-preset", "medium",
-        "-c:a", "copy",
+        "ffmpeg",
+        "-y",
+        "-i",
+        str(src),
+        "-vf",
+        "fps=30",
+        "-vsync",
+        "cfr",
+        "-c:v",
+        "libx264",
+        "-crf",
+        str(crf),
+        "-preset",
+        "medium",
+        "-c:a",
+        "copy",
         str(dst),
     ]
     subprocess.run(cmd, check=True)
-
 
 
 def parse_args_to_cfg(args=None):
     # Put all args to cfg
     if args is None:
         parser = argparse.ArgumentParser()
-        parser.add_argument("--video", type=str, default="inputs/demo/dance_3.mp4")
-        parser.add_argument("--output_root", type=str, default=None, help="by default to outputs/demo")
-        parser.add_argument("-s", "--static_cam", action="store_true", help="If true, skip DPVO")
-        parser.add_argument("--use_dpvo", action="store_true", help="If true, use DPVO. By default not using DPVO.")
+        parser.add_argument(
+            "--video", type=str, default="inputs/demo/dance_3.mp4"
+        )
+        parser.add_argument(
+            "--output_root",
+            type=str,
+            default=None,
+            help="by default to outputs/demo",
+        )
+        parser.add_argument(
+            "-s",
+            "--static_cam",
+            action="store_true",
+            help="If true, skip DPVO",
+        )
+        parser.add_argument(
+            "--use_dpvo",
+            action="store_true",
+            help="If true, use DPVO. By default not using DPVO.",
+        )
         parser.add_argument(
             "--f_mm",
             type=int,
             default=None,
             help="Focal length of fullframe camera in mm. Leave it as None to use default values."
-                 "For iPhone 15p, the [0.5x, 1x, 2x, 3x] lens have typical values [13, 24, 48, 77]."
-                 "If the camera zoom in a lot, you can try 135, 200 or even larger values.",
+            "For iPhone 15p, the [0.5x, 1x, 2x, 3x] lens have typical values [13, 24, 48, 77]."
+            "If the camera zoom in a lot, you can try 135, 200 or even larger values.",
         )
-        parser.add_argument("--verbose", action="store_true", help="If true, draw intermediate results")
+        parser.add_argument(
+            "--verbose",
+            action="store_true",
+            help="If true, draw intermediate results",
+        )
         args = parser.parse_args()
 
     # Input
@@ -116,7 +156,9 @@ def parse_args_to_cfg(args=None):
     Log.info(f"[Input]: {video_path}")
     Log.info(f"(L, W, H) = ({length}, {width}, {height})")
     # Cfg
-    with initialize_config_module(version_base="1.3", config_module=f"hmr4d.configs"):
+    with initialize_config_module(
+        version_base="1.3", config_module=f"hmr4d.configs"
+    ):
         overrides = [
             f"video_name='{video_path.stem}'",
             f"static_cam={args.static_cam}",
@@ -143,7 +185,9 @@ def parse_args_to_cfg(args=None):
     src_len = get_video_lwh(video_path)[0]
     dst_path = Path(cfg.video_path)
 
-    need_regen = (not dst_path.exists()) or (get_video_lwh(dst_path)[0] != src_len)
+    need_regen = (not dst_path.exists()) or (
+        get_video_lwh(dst_path)[0] != src_len
+    )
 
     src_fps = get_video_fps(video_path)
     Log.info(f"[Input FPS]: {src_fps:.4f}")
@@ -173,7 +217,9 @@ def run_preprocess(cfg):
     if not Path(paths.bbx).exists():
         tracker = Tracker()
         bbx_xyxy = tracker.get_one_track(video_path).float()  # (L, 4)
-        bbx_xys = get_bbx_xys_from_xyxy(bbx_xyxy, base_enlarge=1.2).float()  # (L, 3) apply aspect ratio and enlarge
+        bbx_xys = get_bbx_xys_from_xyxy(
+            bbx_xyxy, base_enlarge=1.2
+        ).float()  # (L, 3) apply aspect ratio and enlarge
         torch.save({"bbx_xyxy": bbx_xyxy, "bbx_xys": bbx_xys}, paths.bbx)
         del tracker
     else:
@@ -212,7 +258,13 @@ def run_preprocess(cfg):
     if not static_cam:  # use slam to get cam rotation
         if not Path(paths.slam).exists():
             if not cfg.use_dpvo:
-                simple_vo = SimpleVO(cfg.video_path, scale=0.5, step=8, method="sift", f_mm=cfg.f_mm)
+                simple_vo = SimpleVO(
+                    cfg.video_path,
+                    scale=0.5,
+                    step=8,
+                    method="sift",
+                    f_mm=cfg.f_mm,
+                )
                 vo_results = simple_vo.compute()  # (L, 4, 4), numpy
                 torch.save(vo_results, paths.slam)
             else:  # DPVO
@@ -221,7 +273,14 @@ def run_preprocess(cfg):
                 length, width, height = get_video_lwh(cfg.video_path)
                 K_fullimg = estimate_K(width, height)
                 intrinsics = convert_K_to_K4(K_fullimg)
-                slam = SLAMModel(video_path, width, height, intrinsics, buffer=4000, resize=0.5)
+                slam = SLAMModel(
+                    video_path,
+                    width,
+                    height,
+                    intrinsics,
+                    buffer=4000,
+                    resize=0.5,
+                )
                 bar = tqdm(total=length, desc="DPVO")
                 while True:
                     ret = slam.track()
@@ -250,7 +309,9 @@ def load_data_dict(cfg):
         else:  # SimpleVO
             R_w2c = torch.from_numpy(traj[:, :3, :3])
     if cfg.f_mm is not None:
-        K_fullimg = create_camera_sensor(width, height, cfg.f_mm)[2].repeat(length, 1, 1)
+        K_fullimg = create_camera_sensor(width, height, cfg.f_mm)[2].repeat(
+            length, 1, 1
+        )
     else:
         K_fullimg = estimate_K(width, height).repeat(length, 1, 1)
 
@@ -264,25 +325,39 @@ def load_data_dict(cfg):
     }
     return data
 
+
 def save_npz(pred, save_path):
     out_dir = Path(save_path).parent
     out_dir.mkdir(parents=True, exist_ok=True)
-    trans = pred['transl'].detach().cpu()
-    body_pose = torch.cat((pred['global_orient'].detach().cpu(), pred['body_pose'].detach().cpu()), dim=1)
+    trans = pred["transl"].detach().cpu()
+    body_pose = torch.cat(
+        (
+            pred["global_orient"].detach().cpu(),
+            pred["body_pose"].detach().cpu(),
+        ),
+        dim=1,
+    )
 
-    transform1 = sRot.from_euler('xyz', np.array([np.pi / 2, 0, np.pi]), degrees=False)
-    new_root = (transform1 * sRot.from_rotvec(body_pose[:, :3].numpy())).as_rotvec()
+    transform1 = sRot.from_euler(
+        "xyz", np.array([np.pi / 2, 0, np.pi]), degrees=False
+    )
+    new_root = (
+        transform1 * sRot.from_rotvec(body_pose[:, :3].numpy())
+    ).as_rotvec()
     body_pose[:, :3] = torch.from_numpy(new_root)
     trans = trans @ torch.tensor(transform1.as_matrix().T, dtype=torch.float32)
 
-    out_path = out_dir / 'smpl.npz'
+    out_path = out_dir / "smpl.npz"
     Log.info(f"npz_path {out_path}")
-    np.savez(str(out_path),
-             betas=pred['betas'][0].detach().cpu().numpy(),
-             gender='neutral',
-             poses=body_pose.numpy(),
-             trans=trans.numpy(),
-             mocap_framerate=30.0)
+    np.savez(
+        str(out_path),
+        betas=pred["betas"][0].detach().cpu().numpy(),
+        gender="neutral",
+        poses=body_pose.numpy(),
+        trans=trans.numpy(),
+        mocap_framerate=30.0,
+    )
+
 
 def render_incam(cfg):
     incam_video_path = Path(cfg.paths.incam_video)
@@ -292,12 +367,16 @@ def render_incam(cfg):
 
     pred = torch.load(cfg.paths.hmr4d_results)
     smplx = make_smplx("supermotion").cuda()
-    smplx2smpl = torch.load("hmr4d/utils/body_model/smplx2smpl_sparse.pt").cuda()
+    smplx2smpl = torch.load(
+        "hmr4d/utils/body_model/smplx2smpl_sparse.pt"
+    ).cuda()
     faces_smpl = make_smplx("smpl").faces
 
     # smpl
     smplx_out = smplx(**to_cuda(pred["smpl_params_incam"]))
-    pred_c_verts = torch.stack([torch.matmul(smplx2smpl, v_) for v_ in smplx_out.vertices])
+    pred_c_verts = torch.stack(
+        [torch.matmul(smplx2smpl, v_) for v_ in smplx_out.vertices]
+    )
     # -- rendering code -- #
     video_path = cfg.video_path
     length, width, height = get_video_lwh(video_path)
@@ -311,8 +390,14 @@ def render_incam(cfg):
     # -- render mesh -- #
     verts_incam = pred_c_verts
     writer = get_writer(incam_video_path, fps=30, crf=CRF)
-    for i, img_raw in tqdm(enumerate(reader), total=get_video_lwh(video_path)[0], desc=f"Rendering Incam"):
-        img = renderer.render_mesh(verts_incam[i].cuda(), img_raw, [0.8, 0.8, 0.8])
+    for i, img_raw in tqdm(
+        enumerate(reader),
+        total=get_video_lwh(video_path)[0],
+        desc=f"Rendering Incam",
+    ):
+        img = renderer.render_mesh(
+            verts_incam[i].cuda(), img_raw, [0.8, 0.8, 0.8]
+        )
 
         # # bbx
         # bbx_xys_ = bbx_xys_render[i].cpu().numpy()
@@ -331,21 +416,30 @@ def render_global(cfg):
     pred = torch.load(cfg.paths.hmr4d_results)
     save_npz(pred["smpl_params_global"], save_path=global_video_path)
     if global_video_path.exists():
-        Log.info(f"[Render Global] Video already exists at {global_video_path}")
+        Log.info(
+            f"[Render Global] Video already exists at {global_video_path}"
+        )
         return
 
     debug_cam = False
     smplx = make_smplx("supermotion").cuda()
-    smplx2smpl = torch.load("hmr4d/utils/body_model/smplx2smpl_sparse.pt").cuda()
+    smplx2smpl = torch.load(
+        "hmr4d/utils/body_model/smplx2smpl_sparse.pt"
+    ).cuda()
     faces_smpl = make_smplx("smpl").faces
-    J_regressor = torch.load("hmr4d/utils/body_model/smpl_neutral_J_regressor.pt").cuda()
+    J_regressor = torch.load(
+        "hmr4d/utils/body_model/smpl_neutral_J_regressor.pt"
+    ).cuda()
 
     # smpl
     smplx_out = smplx(**to_cuda(pred["smpl_params_global"]))
 
     # npz already saved above
 
-    pred_ay_verts = torch.stack([torch.matmul(smplx2smpl, v_) for v_ in smplx_out.vertices])
+    pred_ay_verts = torch.stack(
+        [torch.matmul(smplx2smpl, v_) for v_ in smplx_out.vertices]
+    )
+
     def move_to_start_point_face_z(verts):
         "XZ to origin, Start from the ground, Face-Z"
         # position
@@ -354,12 +448,17 @@ def render_global(cfg):
         offset[1] = verts[:, :, [1]].min()
         verts = verts - offset
         # face direction
-        T_ay2ayfz = compute_T_ayfz2ay(einsum(J_regressor, verts[[0]], "j v, l v i -> l j i"), inverse=True)
+        T_ay2ayfz = compute_T_ayfz2ay(
+            einsum(J_regressor, verts[[0]], "j v, l v i -> l j i"),
+            inverse=True,
+        )
         verts = apply_T_on_points(verts, T_ay2ayfz)
         return verts
 
     verts_glob = move_to_start_point_face_z(pred_ay_verts)
-    joints_glob = einsum(J_regressor, verts_glob, "j v, l v i -> l j i")  # (L, J, 3)
+    joints_glob = einsum(
+        J_regressor, verts_glob, "j v, l v i -> l j i"
+    )  # (L, J, 3)
     global_R, global_T, global_lights = get_global_cameras_static(
         verts_glob.cpu(),
         beta=2.0,
@@ -377,7 +476,9 @@ def render_global(cfg):
     # renderer = Renderer(width, height, device="cuda", faces=faces_smpl, K=K, bin_size=0)
 
     # -- render mesh -- #
-    scale, cx, cz = get_ground_params_from_points(joints_glob[:, 0], verts_glob)
+    scale, cx, cz = get_ground_params_from_points(
+        joints_glob[:, 0], verts_glob
+    )
     renderer.set_ground(scale * 1.5, cx, cz)
     color = torch.ones(3).float().cuda() * 0.8
 
@@ -385,7 +486,9 @@ def render_global(cfg):
     writer = get_writer(global_video_path, fps=30, crf=CRF)
     for i in tqdm(range(render_length), desc=f"Rendering Global"):
         cameras = renderer.create_camera(global_R[i], global_T[i])
-        img = renderer.render_with_ground(verts_glob[[i]], color[None], cameras, global_lights)
+        img = renderer.render_with_ground(
+            verts_glob[[i]], color[None], cameras, global_lights
+        )
         writer.write_frame(img)
     writer.close()
 
@@ -405,7 +508,9 @@ if __name__ == "__main__":
     # Batch mode
     if top_args.folder is not None:
         folder = Path(top_args.folder)
-        mp4_paths = sorted(list(folder.glob("*.mp4")) + list(folder.glob("*.MP4")))
+        mp4_paths = sorted(
+            list(folder.glob("*.mp4")) + list(folder.glob("*.MP4"))
+        )
         Log.info(f"Found {len(mp4_paths)} .mp4 files in {folder}")
         for mp4_path in tqdm(mp4_paths):
             per_args = argparse.Namespace(
@@ -425,20 +530,27 @@ if __name__ == "__main__":
                 data = load_data_dict(cfg)
                 if not Path(paths.hmr4d_results).exists():
                     Log.info("[HMR4D] Predicting")
-                    model: DemoPL = hydra.utils.instantiate(cfg.model, _recursive_=False)
+                    model: DemoPL = hydra.utils.instantiate(
+                        cfg.model, _recursive_=False
+                    )
                     model.load_pretrained_model(cfg.ckpt_path)
                     model = model.eval().cuda()
                     tic = Log.sync_time()
                     pred = model.predict(data, static_cam=cfg.static_cam)
                     pred = detach_to_cpu(pred)
                     data_time = data["length"] / 30
-                    Log.info(f"[HMR4D] Elapsed: {Log.sync_time() - tic:.2f}s for data-length={data_time:.1f}s")
+                    Log.info(
+                        f"[HMR4D] Elapsed: {Log.sync_time() - tic:.2f}s for data-length={data_time:.1f}s"
+                    )
                     torch.save(pred, paths.hmr4d_results)
                 render_incam(cfg)
                 render_global(cfg)
                 if not Path(paths.incam_global_horiz_video).exists():
                     Log.info("[Merge Videos]")
-                    merge_videos_horizontal([paths.incam_video, paths.global_video], paths.incam_global_horiz_video)
+                    merge_videos_horizontal(
+                        [paths.incam_video, paths.global_video],
+                        paths.incam_global_horiz_video,
+                    )
             except Exception as e:
                 Log.error(f"Failed on {mp4_path}: {e}")
         raise SystemExit(0)
@@ -475,7 +587,9 @@ if __name__ == "__main__":
         pred = model.predict(data, static_cam=cfg.static_cam)
         pred = detach_to_cpu(pred)
         data_time = data["length"] / 30
-        Log.info(f"[HMR4D] Elapsed: {Log.sync_time() - tic:.2f}s for data-length={data_time:.1f}s")
+        Log.info(
+            f"[HMR4D] Elapsed: {Log.sync_time() - tic:.2f}s for data-length={data_time:.1f}s"
+        )
         torch.save(pred, paths.hmr4d_results)
 
     # ===== Render ===== #
@@ -483,4 +597,7 @@ if __name__ == "__main__":
     render_global(cfg)
     if not Path(paths.incam_global_horiz_video).exists():
         Log.info("[Merge Videos]")
-        merge_videos_horizontal([paths.incam_video, paths.global_video], paths.incam_global_horiz_video)
+        merge_videos_horizontal(
+            [paths.incam_video, paths.global_video],
+            paths.incam_global_horiz_video,
+        )

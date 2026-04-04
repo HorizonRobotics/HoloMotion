@@ -5,7 +5,10 @@ import os
 package_name = "humanoid_control"
 
 data_files = [
-    ("share/ament_index/resource_index/packages", ["resource/" + package_name]),
+    (
+        "share/ament_index/resource_index/packages",
+        ["resource/" + package_name],
+    ),
     ("share/" + package_name, ["package.xml"]),
 ]
 # Add files from config, launch and model directories
@@ -30,7 +33,6 @@ setup(
     tests_require=["pytest"],
     entry_points={
         "console_scripts": [
-            
             "policy_node_performance = humanoid_policy.policy_node_performance:main",
         ],
     },

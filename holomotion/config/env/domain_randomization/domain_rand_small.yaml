@@ -1,7 +1,96 @@
 # @package _global_
 
-
 domain_rand:
+  action_delay:
+    enabled: false
+    min_delay: 0
+    max_delay: 0
+
+  erfi:
+    enabled: false
+    rfi_probability: 0.5
+    rfi_lim: 0.1
+    randomize_rfi_lim: true
+    rfi_lim_range: [0.5, 1.5]
+    rao_lim: 0.1
+
+  obs_noise:
+    actor_ref_gravity_projection_cur:
+      n_min: -0.1
+      n_max: 0.1
+    actor_ref_gravity_projection_fut:
+      n_min: -0.1
+      n_max: 0.1
+    actor_ref_base_linvel_cur:
+      n_min: -0.1
+      n_max: 0.1
+      n_min_z: -0.05
+      n_max_z: 0.05
+    actor_ref_base_linvel_fut:
+      n_min: -0.1
+      n_max: 0.1
+      n_min_z: -0.05
+      n_max_z: 0.05
+    actor_ref_base_angvel_cur:
+      n_min: -0.1
+      n_max: 0.1
+      n_min_z: -0.1
+      n_max_z: 0.1
+    actor_ref_base_angvel_fut:
+      n_min: -0.1
+      n_max: 0.1
+      n_min_z: -0.1
+      n_max_z: 0.1
+    actor_ref_dof_pos_cur:
+      n_min: -0.05
+      n_max: 0.05
+    actor_ref_dof_pos_fut:
+      n_min: -0.05
+      n_max: 0.05
+    actor_ref_root_height_cur:
+      n_min: -0.1
+      n_max: 0.1
+    actor_ref_root_height_fut:
+      n_min: -0.1
+      n_max: 0.1
+    actor_ref_keybody_rel_pos_cur:
+      n_min: -0.1
+      n_max: 0.1
+    actor_ref_keybody_rel_pos_fut:
+      n_min: -0.1
+      n_max: 0.1
+
+    actor_projected_gravity:
+      n_min: -0.1
+      n_max: 0.1
+    actor_rel_robot_root_ang_vel:
+      n_min: -0.2
+      n_max: 0.2
+    actor_dof_pos:
+      n_min: -0.01
+      n_max: 0.01
+    actor_dof_vel:
+      n_min: -0.5
+      n_max: 0.5
+
+  motion_init_perturb:
+    root_pose_perturb_range:
+      x: [-0.05, 0.05]
+      y: [-0.05, 0.05]
+      z: [-0.01, 0.01]
+      roll: [-0.1, 0.1]
+      pitch: [-0.1, 0.1]
+      yaw: [-0.2, 0.2]
+    root_vel_perturb_range:
+      x: [-0.3, 0.3]
+      y: [-0.3, 0.3]
+      z: [-0.1, 0.1]
+      roll: [-0.3, 0.3]
+      pitch: [-0.3, 0.3]
+      yaw: [-0.4, 0.4]
+    dof_pos_perturb_range: [-0.1, 0.1]
+    dof_vel_perturb_range: [0.0, 0.0]
+
   default_dof_pos_bias:
     mode: startup
     params:
@@ -18,6 +107,14 @@ domain_rand:
         x: [-0.025, 0.025]
         y: [-0.05, 0.05]
         z: [-0.05, 0.05]
+
+  randomize_mass:
+    mode: startup
+    params:
+      body_names:
+        - "pelvis"
+        - "torso_link"
+      mass_range: [-1.0, 2.0]
 
   rigid_body_material:
     mode: startup
@@ -39,3 +136,13 @@ domain_rand:
         roll: [-0.52, 0.52]
         pitch: [-0.52, 0.52]
         yaw: [-0.78, 0.78]
+
+  randomize_actuator_gains:
+    mode: startup
+    params:
+      asset_name: robot
+      body_names: ".*"
+      stiffness_distribution_params: [0.9, 1.1]
+      damping_distribution_params: [0.9, 1.1]
+      operation: scale
+      distribution: uniform
