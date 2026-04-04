@@ -134,7 +134,7 @@ Send your resume by scanning the **WeChat** QR code below to get in touch with u
   author = {Maiyue Chen, Kaihui Wang, Bo Zhang, Yi Ren, Zihao Zhu, Xihan Ma, Qijun Huang, Zhiyuan Yang, Yucheng Wang, Zhizhong Su},
   title = {HoloMotion: A Foundation Model for Whole-Body Humanoid Control},
   year = {2026},
-  month = January,
+  month = April,
   version = {1.2.0},
   url = {https://github.com/HorizonRobotics/HoloMotion},
   license = {Apache-2.0}
