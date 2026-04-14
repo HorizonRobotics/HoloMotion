@@ -371,13 +371,13 @@ sudo docker info | grep -i runtime
 Pull the image from dockerhub with:
 
 ```bash
-docker pull horizonrobotics/holomotion:orin_foxy_jp5.1_docker_humble_deploy_20260105
+docker pull horizonrobotics/holomotion:orin_foxy_jp5.1_docker_humble_deploy_zmq_20260319
 ```
 
 Or if you have the image locally, tag it appropriately:
 
 ```bash
-docker tag <your_image_name> holomotion:orin_foxy_jp5.1_docker_humble_deploy_20260105
+docker tag <your_image_name> holomotion:orin_foxy_jp5.1_docker_humble_deploy_zmq_20260319
 ```
 
 ### Step 3: Configure Launch File Network Interface:
