@@ -13,23 +13,6 @@ motion_tracking_model_folder: "motion_tracking_model"
 motion_clip_dir: "motion_data" 
 
 
-cpu_affinity_main: ""
-cpu_affinity_zmq_sub: ""
-
-# VR / ZMQ: the robot acts as a SUB socket and receives latest_obs from the sender.
-vr:
-  enable_teleop_reference: false
-  latest_obs_zmq_uri: "tcp://192.168.124.29:6001"
-  latest_obs_zmq_topic: "obs65"
-  latest_obs_zmq_mode: "connect"
-  latest_obs_zmq_conflate: true
-  zmq_jitter_delay_frames: 5
-  max_data_age: 0.6
-  require_vr_data_for_motion: false
-  timing_debug_enabled: false
-  timing_debug_log_interval_sec: 5.0
-  timing_debug_log_per_loop: false
-
 complete_dof_order:
   - left_hip_pitch_joint
   - left_hip_roll_joint

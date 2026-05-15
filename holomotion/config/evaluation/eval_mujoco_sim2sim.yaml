@@ -30,6 +30,8 @@ metric_calculation: "per_clip" # "per_clip" (Macro) or "per_frame" (Micro)
 dof_mode: "23" # "29" for full DoF, "23" for reduced DoF
 failure_pos_err_thresh_m: 0.25
 ray_actors_per_gpu: 16 # persistent Ray actors per GPU for batch eval
+ray_auto_reduce_actors_per_gpu: true # back off actors/GPU on ONNXRuntime startup OOM
+ray_actor_startup_probe_timeout_s: 300
 ray_multi_ckpt_mode: "split" # "split" or "per_checkpoint" for multi-ONNX eval
 ckpt_onnx_root_dir: null # optional ONNX root directory for multi-checkpoint eval
 ckpt_onnx_names: null # optional list of ONNX file names to evaluate

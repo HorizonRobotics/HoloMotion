@@ -26,6 +26,7 @@ obs:
             func: ref_gravity_projection_fut
             params:
               ref_prefix: ${obs.actor_obs_prefix}
+              num_frames: ${obs.n_fut_frames}
             noise:
               type: AdditiveUniformNoiseCfg
               params:
@@ -51,6 +52,7 @@ obs:
             func: ref_base_linvel_fut
             params:
               ref_prefix: ${obs.actor_obs_prefix}
+              num_frames: ${obs.n_fut_frames}
             noise:
               type: AdditiveUniformNoiseCfg
               params:
@@ -77,6 +79,7 @@ obs:
             func: ref_base_angvel_fut
             params:
               ref_prefix: ${obs.actor_obs_prefix}
+              num_frames: ${obs.n_fut_frames}
             noise:
               type: AdditiveUniformNoiseCfg
               params:
@@ -101,6 +104,7 @@ obs:
             func: ref_dof_pos_fut
             params:
               ref_prefix: ${obs.actor_obs_prefix}
+              num_frames: ${obs.n_fut_frames}
             noise:
               type: AdditiveUniformNoiseCfg
               params:
@@ -126,6 +130,7 @@ obs:
             func: ref_root_height_fut
             params:
               ref_prefix: ${obs.actor_obs_prefix}
+              num_frames: ${obs.n_fut_frames}
             noise:
               type: AdditiveUniformNoiseCfg
               params:
@@ -157,6 +162,7 @@ obs:
             func: ref_keybody_rel_pos_fut
             params:
               ref_prefix: ${obs.actor_obs_prefix}
+              num_frames: ${obs.n_fut_frames}
               keybody_names:
                 - "left_knee_link"
                 - "right_knee_link"
@@ -226,11 +232,13 @@ obs:
             func: ref_dof_pos_fut
             params:
               ref_prefix: ${obs.critic_obs_prefix}
+              num_frames: ${obs.n_fut_frames}
 
         - critic_ref_root_height_fut:
             func: ref_root_height_fut
             params:
               ref_prefix: ${obs.critic_obs_prefix}
+              num_frames: ${obs.n_fut_frames}
 
         - critic_ref_root_height_cur:
             func: ref_root_height_cur
@@ -251,6 +259,7 @@ obs:
             func: ref_motion_fut_heading_aligned_root_pos
             params:
               ref_prefix: ${obs.critic_obs_prefix}
+              num_frames: ${obs.n_fut_frames}
 
         - critic_ref_motion_cur_heading_aligned_root_rot6d:
             func: ref_motion_cur_heading_aligned_root_rot6d
@@ -261,6 +270,7 @@ obs:
             func: ref_motion_fut_heading_aligned_root_rot6d
             params:
               ref_prefix: ${obs.critic_obs_prefix}
+              num_frames: ${obs.n_fut_frames}
 
         - critic_ref_motion_cur_heading_aligned_root_lin_vel:
             func: ref_motion_cur_heading_aligned_root_lin_vel
@@ -271,6 +281,7 @@ obs:
             func: ref_motion_fut_heading_aligned_root_lin_vel
             params:
               ref_prefix: ${obs.critic_obs_prefix}
+              num_frames: ${obs.n_fut_frames}
 
         - critic_ref_motion_cur_heading_aligned_root_ang_vel:
             func: ref_motion_cur_heading_aligned_root_ang_vel
@@ -281,6 +292,7 @@ obs:
             func: ref_motion_fut_heading_aligned_root_ang_vel
             params:
               ref_prefix: ${obs.critic_obs_prefix}
+              num_frames: ${obs.n_fut_frames}
 
         - critic_rel_robot_root_lin_vel:
             func: rel_robot_root_lin_vel

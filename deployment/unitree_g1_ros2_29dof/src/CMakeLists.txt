@@ -91,6 +91,11 @@ install(
   DESTINATION share/${PROJECT_NAME}
 )
 
+install(
+  DIRECTORY ../launch_profiles/
+  DESTINATION share/${PROJECT_NAME}/launch_profiles
+)
+
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
   ament_lint_auto_find_test_dependencies()

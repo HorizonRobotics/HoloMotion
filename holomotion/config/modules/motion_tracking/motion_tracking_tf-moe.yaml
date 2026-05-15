@@ -7,7 +7,7 @@ modules:
     use_checkpointing: false # use gradient checkpointing to save GRAM significantly
 
     # MoE-specific hyperparameters
-    num_fine_experts: 16
+    num_fine_experts: 1024
     num_shared_experts: 1
     top_k: 2
     moe_loss_coef: 0.0
@@ -25,8 +25,9 @@ modules:
     n_kv_heads: 4
     use_gated_attn: true
 
-    n_layers: 3
-    ff_mult: 2.0
+    n_layers: 1
+    dense_layer_at_first: false
+    ff_mult: 0.5
     ff_mult_dense: 4
     attn_dropout: 0.0
     mlp_dropout: 0.0

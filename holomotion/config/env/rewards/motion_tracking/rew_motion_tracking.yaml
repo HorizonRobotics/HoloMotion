@@ -9,13 +9,13 @@ rewards:
     params: {}
 
   root_pos_xy_tracking_exp:
-    weight: 1.0
+    weight: 0.0
     params:
       std: 0.2
       ref_prefix: ${rewards._config.reward_prefix}
 
   root_rot_tracking_exp:
-    weight: 0.5
+    weight: 0.0
     params:
       std: 0.4
       ref_prefix: ${rewards._config.reward_prefix}
@@ -28,11 +28,49 @@ rewards:
       ref_prefix: ${rewards._config.reward_prefix}
 
   root_rel_keybodylink_rot_tracking_l2_exp:
-    weight: 2.0
+    weight: 1.0
     params:
       keybody_names: ${robot.key_bodies}
       std: 0.4
       ref_prefix: ${rewards._config.reward_prefix}
+
+  root_lin_vel_tracking_rel_ratio_exp:
+    weight: 1.0
+    params:
+      std: 1.0
+      eps: 0.1
+      ref_prefix: ${rewards._config.reward_prefix}
+
+  root_ang_vel_tracking_rel_ratio_exp:
+    weight: 1.0
+    params:
+      std: 1.0
+      eps: 0.1
+      ref_prefix: ${rewards._config.reward_prefix}
+
+  local_reward_point_body_pos_tracking_exp:
+    weight: 2.0
+    params:
+      std: 0.1
+      ref_prefix: ${rewards._config.reward_prefix}
+      reward_point_body:
+        - torso_link
+        - left_wrist_yaw_link
+        - right_wrist_yaw_link
+        - left_ankle_roll_link
+        - right_ankle_roll_link
+      reward_point_body_offset:
+        - [0.0, 0.0, 0.5]
+        - [0.0, 0.0, 0.0]
+        - [0.0, 0.0, 0.0]
+        - [0.0, 0.0, 0.0]
+        - [0.0, 0.0, 0.0]
+      point_weights:
+        - 1.0
+        - 1.0
+        - 1.0
+        - 1.0
+        - 1.0
 
   global_keybodylink_lin_vel_tracking_l2_exp:
     weight: 1.0

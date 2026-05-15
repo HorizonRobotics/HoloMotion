@@ -1,0 +1,48 @@
+runtime:
+  conda_setup: "/root/miniconda3/etc/profile.d/conda.sh"
+  python_executable: "${Deploy_CONDA_PREFIX}/bin/python"
+  ros_setup: "/opt/ros/humble/setup.sh"
+  unitree_setup: "/root/unitree_ros2/setup.sh"
+  deploy_env: "../../deploy.env"
+  build_before_launch: true
+  cyclonedds_home: "/root/cyclonedds/install"
+  extra_ld_library_paths:
+    - "/host_gpu"
+    - "/cuda_base"
+    - "/usr/lib/aarch64-linux-gnu/tegra"
+    - "/usr/lib/aarch64-linux-gnu"
+    - "/usr/local/cuda/lib64"
+    - "/lib/aarch64-linux-gnu"
+
+robot:
+  config_file: "config/g1_29dof_holomotion.yaml"
+  network_interface: "eth0"
+
+recording:
+  enabled: false
+  storage: "mcap"
+  bag_dir: "./bag_record"
+  topics:
+    - "/lowcmd"
+    - "/lowstate"
+    - "/humanoid/action"
+
+policy:
+  # For VR teleoperation, change enable_teleop_reference to true.
+  # When enabled, motion mode always waits for live VR data.
+  # Runtime/deployment policy fields are owned by this launch profile.
+  latest_obs_zmq_uri: "tcp://192.168.124.29:6001"
+  latest_obs_zmq_topic: "obs65"
+  latest_obs_zmq_mode: "connect"
+  latest_obs_zmq_conflate: true
+  zmq_jitter_delay_frames: 0
+  max_data_age: 0.6
+  enable_teleop_reference: false
+  # inference_backend: onnx keeps the current ONNX Runtime CUDA path.
+  # Change to tensorrt to use the strict TensorRTExecutionProvider path.
+  inference_backend: "tensorrt"
+  timing_debug_enabled: false
+  timing_debug_log_interval_sec: 5.0
+  timing_debug_log_per_loop: false
+  cpu_affinity_main: ""
+  cpu_affinity_zmq_sub: ""

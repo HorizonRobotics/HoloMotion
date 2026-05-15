@@ -1,12 +1,6 @@
 <div align="center">
 
-<img src="assets/media/holomotion_logo_text.png" alt="HoloMotion Logo" width="500"/>
-
----
-
-[![Python](https://img.shields.io/badge/Python3.11-3776AB?logo=python&logoColor=fff)](#)
-[![Ubuntu](https://img.shields.io/badge/Ubuntu22.04-E95420?logo=ubuntu&logoColor=white)](#)
-[![License](https://img.shields.io/badge/License-Apache_2.0-green?logo=apache&logoColor=white)](./LICENSE)
+<img src="assets/media/holomotion_logo_text.png" alt="HoloMotion Logo" width="600"/>
 
 [![Safari](https://img.shields.io/badge/Website-006CFF?logo=safari&logoColor=fff)](https://horizonrobotics.github.io/robot_lab/holomotion/)
 [![HuggingFace](https://img.shields.io/badge/-HuggingFace-3B4252?style=flat&logo=huggingface&logoColor=)](https://huggingface.co/collections/HorizonRobotics/holomotion)
@@ -18,107 +12,58 @@
 
 </div>
 
-# HoloMotion: A Foundation Model for Whole-Body Humanoid Control
+# News
+- [2026.05.15] HoloMotion v1.3 scales from 60M to 0.4B parameters and 80 to 2000+ hours of motion data, while improving policy inference from ~100 to ~300 FPS.
+- [2026.04.04] HoloMotion v1.2 provides pre-trained motion tracking and velocity tracking models for the community to deploy directly.
 
-## NEWS
-- [2026.04.04] The v1.2 version of HoloMotion has been released, we provide pre-trained motion tracking and velocity tracking models for the community to deploy directly.
-
-- [2026.01.06] The v1.1 version of HoloMotion has been released, representing a major step forward toward a fully engineered, stable, and reproducible humanoid motion intelligence system.
-
-- [2025.11.05] The v1.0 version of HoloMotion has been released, and the WeChat user group is now open! Please scan the [QR Code](https://horizonrobotics.feishu.cn/docx/Xs3cdEI8bo1EZuxUfzjckTgKn2c) to join.
 <!-- <p align="center">
   <img width="150" height="230" src="assets/media/wechat_group_20251125.jpg" hspace="10">
 </p> -->
 
-## Pre-trained Models
-- Motion Tracking Model: [Hugging Face](https://huggingface.co/HorizonRobotics/HoloMotion_v1.2/tree/main/holomotion_v1.2_motion_tracking_model)
-- Velocity Tracking Model: [Hugging Face](https://huggingface.co/HorizonRobotics/HoloMotion_v1.2/tree/main/holomotion_v1.2_velocity_tracking_model)
+# Why HoloMotion?
 
-Please read the doc for  [real-world deployment](docs/realworld_deployment.md) for more details on how to use the models. 
+HoloMotion scales humanoid whole-body control through a reference-conditioned MoE Transformer, large-scale motion data, and an optimized training-to-deployment pipeline, delivering stronger motion tracking with real-time inference efficiency.
 
-## Introduction
+<p align="center">
+  <img src="assets/media/holomotion_overview.png" alt="HoloMotion overview" width="100%">
+</p>
 
-HoloMotion is a foundation model for humanoid robotics, designed to fullfill robust, real-time, and generalizable whole-body control.
 
-Our framework provides an end-to-end solution, encompassing the entire workflow from data curation and motion retargeting to distributed model training, evaluation, and seamless deployment on physical hardware via ROS2. HoloMotion's modular architecture allows for flexible adaptation and extension, enabling researchers and developers to build and benchmark agents that can imitate, generalize, and master complex whole-body motions.
+## Scales Toward 4-Any Humanoid Control
 
-For those at the forefront of creating the next generation of humanoid robots, HoloMotion serves as a powerful, extensible, and open-source foundation for achieving whole-body control.
+The roadmap of HoloMotion advances through four generalization targets, from motion imitation to command following, terrain adaptation, and embodiment transfer.
 
----
+<p align="center">
+  <img src="assets/media/holomotion_roadmap.png" alt="HoloMotion 4-Any roadmap" width="100%">
+</p>
 
-### 🛠️ Roadmap: Progress Toward Any Humanoid Control
+| Version  | Target Capability | Status      | Description                                                                                                                         |
+| -------- | ----------------- | ----------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| **v1.x** | Any Pose          | ✅ Done        | Achieve robust tracking and imitation of diverse, whole-body human motions, forming the core of the imitation learning capability.  |
+| **v2.x** | Any Command       | 🔜 Next        | Enable language- and task-conditioned motion generation, allowing for goal-directed and interactive behaviors.                      |
+| **v3.x** | Any Terrain       | ⏳ Not started | Master adaptation to uneven, dynamic, and complex terrains, enhancing real-world operational robustness.                            |
+| **v4.x** | Any Embodiment    | ⏳ Not started | Generalize control policies across humanoids with varying morphologies and kinematics, achieving true embodiment-level abstraction. |
 
-We envision HoloMotion as a general-purpose foundation for humanoid motion and control. Its development is structured around four core generalization goals: Any Pose, Any Command, Any Terrain, and Any Embodiment. Each goal corresponds to a major version milestone.
 
-| Version  | Target Capability | Description                                                                                                                         |
-| -------- | ----------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| **v1.0** | 🔄 Any Pose       | Achieve robust tracking and imitation of diverse, whole-body human motions, forming the core of the imitation learning capability.  |
-| **v2.0** | ⏳ Any Command    | Enable language- and task-conditioned motion generation, allowing for goal-directed and interactive behaviors.                      |
-| **v3.0** | ⏳ Any Terrain    | Master adaptation to uneven, dynamic, and complex terrains, enhancing real-world operational robustness.                            |
-| **v4.0** | ⏳ Any Embodiment | Generalize control policies across humanoids with varying morphologies and kinematics, achieving true embodiment-level abstraction. |
+## Closes the Loop From Motion Data to Real Robots
 
-> Each stage builds on the previous one, moving from motion imitation to instruction following, terrain adaptation, and embodiment-level generalization.
+HoloMotion provides a clear, modular framework for bridging motion data, policy learning, simulation evaluation, and real-robot deployment.
 
-## Pipeline Overview
+<p align="center">
+  <img src="assets/media/holomotion_pipeline.png" alt="HoloMotion pipeline" width="100%">
+</p>
 
-```mermaid
-flowchart LR
-    A["🔧 1. Environment Setup<br/>Dependencies & conda"]
+## Serves Different Users Without Requiring Everyone to Train
 
-    subgraph dataFrame ["DATA"]
-        B["📊 2. Dataset Preparation<br/>Download & curate"]
-        C["🔄 3. Motion Retargeting<br/>Human to robot motion"]
-        B --> C
-    end
+Whether you want to replay motions, stream live teleoperation, or train a custom policy, HoloMotion provides a direct path into the workflow:
 
-    subgraph modelFrame ["TRAIN & EVAL"]
-        D["🧠 4. Model Training<br/>Train with HoloMotion"]
-        E["📈 5. Evaluation<br/>Test & export"]
-        D --> E
-    end
+| User Goal | Start Here | What You Need |
+| --------- | ---------- | ------------- |
+| **Offline motion tracking**<br/>Replay local motion clips for demos such as dance or scripted performances. | [Real-world deployment: Offline Motion](docs/realworld_deployment.md#offline-motion) | A pretrained policy and retargeted `.npz` motion clips. No model training is required. |
+| **Online motion tracking**<br/>Follow live VR or teleoperation motion streams. | [Real-world deployment: Online Motion](docs/realworld_deployment.md#online-motion) | A pretrained policy, robot deployment setup, and a live motion source. No model training is required. |
+| **Train your own model**<br/>Build a custom policy from your own motion data. | [Environment setup](docs/environment_setup.md) → [Data curation](docs/smpl_data_curation.md) → [Retargeting](docs/motion_retargeting.md) → [Training](docs/train_motion_tracking.md) → [Evaluation](docs/evaluate_motion_tracking.md) | Training environment, curated motion data, retargeted HDF5 datasets, and GPU resources. |
 
-    F["🚀 6. Deployment<br/>Deploy to robots"]
-
-    A --> dataFrame
-    dataFrame --> modelFrame
-    modelFrame --> F
-
-    classDef subgraphStyle fill:#f9f9f9,stroke:#333,stroke-width:2px,stroke-dasharray:5 5,rx:10,ry:10,font-size:16px,font-weight:bold
-    classDef nodeStyle fill:#e1f5fe,stroke:#0277bd,stroke-width:2px,rx:10,ry:10
-
-    class dataFrame,modelFrame subgraphStyle
-    class A,B,C,D,E,F nodeStyle
-```
-
-## Quick Start
-
-### 🔧 1. Environment Setup [[Doc](docs/environment_setup.md)]
-
-Set up your development and deployment environments using Conda. This initial step ensures all dependencies are correctly configured for both training and real-world execution.
-
-If you only intend to use our pretrained models, you can skip the training environment setup and proceed directly to configure the deployment environment. See the [real-world deployment documentation](docs/realworld_deployment.md) for details.
-
-### 📊 2. Dataset Preparation [[Doc](docs/smpl_data_curation.md)]
-
-Acquire and process large-scale motion datasets. Our tools help you curate high-quality data by converting it to the AMASS-compatible smpl format and filtering out anomalies using kinematic metrics.
-
-### 🔄 3. Motion Retargeting [[Doc](docs/motion_retargeting.md)]
-
-Translate human motion data into robot-specific kinematic data. Our pipeline leverages [GMR](https://github.com/YanjieZe/GMR) to map human movements onto your robot's morphology, producing optimized HDF5 datasets ready for high-speed, distributed training.
-
-### 🧠 4. Model Training [[Doc](docs/train_motion_tracking.md)]
-
-Train your foundation model using our reinforcement learning framework. HoloMotion supports versatile training tasks, including motion tracking and velocity tracking.
-
-### 📈 5. Evaluation [[Doc](docs/evaluate_motion_tracking.md)]
-
-Evaluate your trained policies in IsaacLab. Visualize performance, and export trained models in ONNX format for seamless deployment.
-
-### 🚀 6. Real-world Deployment [[Doc](docs/realworld_deployment.md)]
-
-Our ROS2 package facilitates the deployment of the exported ONNX models, enabling real-time control on hardware like the Unitree G1.
-
-## Join Us
+# Join Us
 
 We are hiring full-time engineers, new graduates, and interns who are excited about humanoid robots, motion control, and embodied intelligence.
 Send your resume by scanning the **WeChat** QR code below to get in touch with us.
@@ -127,33 +72,31 @@ Send your resume by scanning the **WeChat** QR code below to get in touch with u
   <img width="420" height="150" src="assets/media/qr_codes.png" hspace="10">
 </p>
 
-## Citation
+# Citation
 
 ```
 @software{HoloMotion,
   author = {Maiyue Chen, Kaihui Wang, Bo Zhang, Yi Ren, Zihao Zhu, Xihan Ma, Qijun Huang, Zhiyuan Yang, Yucheng Wang, Zhizhong Su},
   title = {HoloMotion: A Foundation Model for Whole-Body Humanoid Control},
   year = {2026},
-  month = April,
-  version = {1.2.0},
+  month = May,
+  version = {1.3.0},
   url = {https://github.com/HorizonRobotics/HoloMotion},
   license = {Apache-2.0}
 }
 ```
 
-## License
-
-This project is released under the **[Apache 2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)** license.
-
-## Acknowledgements
+# Acknowledgements
 
 This project is built upon and inspired by several outstanding open source projects:
 
 - [GMR](https://github.com/YanjieZe/GMR)
-- [BeyondMimic](https://github.com/HybridRobotics/whole_body_tracking/tree/dcecabd8c24c68f59d143fdf8e3a670f420c972d)
+- [BeyondMimic](https://github.com/HybridRobotics/whole_body_tracking)
 - [ASAP](https://github.com/LeCAR-Lab/ASAP)
 - [Humanoidverse](https://github.com/LeCAR-Lab/HumanoidVerse)
 - [PHC](https://github.com/ZhengyiLuo/PHC?tab=readme-ov-file)
 - [ProtoMotion](https://github.com/NVlabs/ProtoMotions/tree/main/protomotions)
+- [GVHMR](https://github.com/zju3dv/GVHMR)
+- [SONIC](https://github.com/NVlabs/GR00T-WholeBodyControl)
 - [Mink](https://github.com/kevinzakka/mink)
 - [PBHC](https://github.com/TeleHuman/PBHC)

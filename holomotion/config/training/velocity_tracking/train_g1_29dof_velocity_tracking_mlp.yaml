@@ -16,9 +16,6 @@ project_name: HoloMotionVelocityTrackingG1
 
 # checkpoint: ???
 
-train_hdf5_roots:
-  - /horizon-bucket/robot_lab/users/maiyue01.chen/h5_datasets/h5_unitree_walk_20160119
-
 env:
   config:
     commands:

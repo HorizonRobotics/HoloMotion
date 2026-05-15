@@ -21,9 +21,9 @@ terminations:
         - left_wrist_yaw_link
         - right_wrist_yaw_link
 
-  # keybody_ref_pos_far:
-  #   params:
-  #     threshold: 0.5
-  #     ref_prefix: ${rewards._config.reward_prefix}
-  #     keybody_names:
-  #       - pelvis
+  keybody_ref_pos_far:
+    params:
+      threshold: 0.25
+      ref_prefix: ${rewards._config.reward_prefix}
+      keybody_names:
+        - pelvis

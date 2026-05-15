@@ -1,7 +1,12 @@
 #!/bin/bash
 
-docker kill holomotion_orin_deploy
-docker rm holomotion_orin_deploy
+set -euo pipefail
+
+IMAGE_NAME="${HOLOMOTION_DEPLOY_IMAGE:-horizonrobotics/holomotion:orin_foxy_jp5.1_humble_deploy_zmq_full_20260509}"
+CONTAINER_NAME="${HOLOMOTION_CONTAINER_NAME:-holomotion_orin_deploy}"
+
+docker kill "$CONTAINER_NAME" >/dev/null 2>&1 || true
+docker rm "$CONTAINER_NAME" >/dev/null 2>&1 || true
 echo "Old holomotion_orin_deploy container removed !"
 
 # Initialize variable as empty
@@ -23,21 +28,15 @@ if [ ! -d "$holomotion_repo_path" ]; then
 fi
 
 echo "Mounting path: $holomotion_repo_path"
+echo "Using image: $IMAGE_NAME"
 
 sudo docker run -it \
-  --name holomotion_orin_deploy \
+  --name "$CONTAINER_NAME" \
   --runtime nvidia \
   --gpus all \
   --privileged \
   --network host \
   -e "ACCEPT_EULA=Y" \
   -v "$holomotion_repo_path:/home/unitree/holomotion" \
-  -v "/usr/local/cuda-11.4/targets/aarch64-linux/lib:/cuda_base:ro" \
-  -v "/usr/lib/aarch64-linux-gnu/libcudnn.so.8.6.0:/host_gpu/libcudnn.so.8.6.0:ro" \
-  -v "/usr/lib/aarch64-linux-gnu/libcudnn_ops_infer.so.8.6.0:/host_gpu/libcudnn_ops_infer.so.8.6.0:ro" \
-  -v "/usr/lib/aarch64-linux-gnu/libcudnn_cnn_infer.so.8.6.0:/host_gpu/libcudnn_cnn_infer.so.8.6.0:ro" \
-  horizonrobotics/holomotion:orin_foxy_jp5.1_humble_deploy_zmq_20260319 \
-  bash -c "ln -sf /host_gpu/libcudnn.so.8.6.0 /host_gpu/libcudnn.so.8 && \
-           ln -sf /host_gpu/libcudnn_ops_infer.so.8.6.0 /host_gpu/libcudnn_ops_infer.so.8 && \
-           ln -sf /host_gpu/libcudnn_cnn_infer.so.8.6.0 /host_gpu/libcudnn_cnn_infer.so.8 && \
-           source /root/miniconda3/bin/activate && conda activate holomotion_deploy && exec bash"
+  "$IMAGE_NAME" \
+  bash -c "source /root/miniconda3/bin/activate && conda activate holomotion_deploy && exec bash"

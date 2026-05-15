@@ -126,13 +126,12 @@ Make sure the robot, the workstation and the PICO headset are on the same Wi-Fi 
 
 Before starting the robot-side policy, update the robot config file:
 
-`HoloMotion/deployment/unitree_g1_ros2_29dof/src/config/g1_29dof_holomotion.yaml`
+`HoloMotion/deployment/unitree_g1_ros2_29dof/launch_profiles/orin_docker.yaml`
 
 Recommended settings:
 
 - `enable_teleop_reference: true`
-- `require_vr_data_for_motion: true`
-- `latest_obs_zmq_uri: "tcp://<workstation-ip>:6001"`
+- `latest_obs_zmq_uri: "tcp://<workstation-ip>:6001""`
 
 Replace `<workstation-ip>` with the actual IP address of the workstation that runs `holomotion_teleop_node.py`.
 
@@ -183,7 +182,6 @@ Before enabling motion on the robot:
 - confirm `holomotion_teleop_node.py` is publishing ZMQ data
 - confirm the robot-side policy is using the correct workstation IP in `latest_obs_zmq_uri`
 - confirm the robot-side config keeps `enable_teleop_reference: true`
-- confirm the robot-side config keeps `require_vr_data_for_motion: true`
 - confirm the team has already validated the offline `.npz` motion-performance pipeline before attempting live teleoperation
 
 Once the ZMQ stream is stable, enable the robot policy and switch into motion mode.

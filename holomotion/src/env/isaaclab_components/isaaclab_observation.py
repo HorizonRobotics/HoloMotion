@@ -200,9 +200,9 @@ class ObservationFunctions:
         if num_frames is None:
             return tensor
         num_frames = int(num_frames)
-        if num_frames <= 0:
+        if num_frames < 0:
             raise ValueError(
-                f"{obs_name} num_frames must be positive, got {num_frames}."
+                f"{obs_name} num_frames must be non-negative, got {num_frames}."
             )
         if tensor.ndim < 2:
             raise ValueError(
@@ -1135,11 +1135,17 @@ class ObservationFunctions:
         env: ManagerBasedRLEnv,
         ref_motion_command_name: str = "ref_motion",
         ref_prefix: str = "ref_",
+        num_frames: int | None = None,
     ) -> torch.Tensor:  # [num_envs, T, 3]
         """Future reference heading-aligned root position."""
         command = env.command_manager.get_term(ref_motion_command_name)
-        return command.get_ref_motion_fut_heading_aligned_root_pos(
+        root_pos = command.get_ref_motion_fut_heading_aligned_root_pos(
             prefix=ref_prefix
+        )
+        return ObservationFunctions._slice_future_frames(
+            root_pos,
+            num_frames=num_frames,
+            obs_name="ref_motion_fut_heading_aligned_root_pos",
         )
 
     @staticmethod
@@ -1159,11 +1165,17 @@ class ObservationFunctions:
         env: ManagerBasedRLEnv,
         ref_motion_command_name: str = "ref_motion",
         ref_prefix: str = "ref_",
+        num_frames: int | None = None,
     ) -> torch.Tensor:  # [num_envs, T, 6]
         """Future reference heading-aligned root rotation (rot6d)."""
         command = env.command_manager.get_term(ref_motion_command_name)
-        return command.get_ref_motion_fut_heading_aligned_root_rot6d(
+        root_rot6d = command.get_ref_motion_fut_heading_aligned_root_rot6d(
             prefix=ref_prefix
+        )
+        return ObservationFunctions._slice_future_frames(
+            root_rot6d,
+            num_frames=num_frames,
+            obs_name="ref_motion_fut_heading_aligned_root_rot6d",
         )
 
     @staticmethod
@@ -1183,11 +1195,17 @@ class ObservationFunctions:
         env: ManagerBasedRLEnv,
         ref_motion_command_name: str = "ref_motion",
         ref_prefix: str = "ref_",
+        num_frames: int | None = None,
     ) -> torch.Tensor:  # [num_envs, T, 3]
         """Future reference heading-aligned root linear velocity."""
         command = env.command_manager.get_term(ref_motion_command_name)
-        return command.get_ref_motion_fut_heading_aligned_root_lin_vel(
+        root_lin_vel = command.get_ref_motion_fut_heading_aligned_root_lin_vel(
             prefix=ref_prefix
+        )
+        return ObservationFunctions._slice_future_frames(
+            root_lin_vel,
+            num_frames=num_frames,
+            obs_name="ref_motion_fut_heading_aligned_root_lin_vel",
         )
 
     @staticmethod
@@ -1207,11 +1225,17 @@ class ObservationFunctions:
         env: ManagerBasedRLEnv,
         ref_motion_command_name: str = "ref_motion",
         ref_prefix: str = "ref_",
+        num_frames: int | None = None,
     ) -> torch.Tensor:  # [num_envs, T, 3]
         """Future reference heading-aligned root angular velocity."""
         command = env.command_manager.get_term(ref_motion_command_name)
-        return command.get_ref_motion_fut_heading_aligned_root_ang_vel(
+        root_ang_vel = command.get_ref_motion_fut_heading_aligned_root_ang_vel(
             prefix=ref_prefix
+        )
+        return ObservationFunctions._slice_future_frames(
+            root_ang_vel,
+            num_frames=num_frames,
+            obs_name="ref_motion_fut_heading_aligned_root_ang_vel",
         )
 
     @staticmethod
@@ -1387,7 +1411,7 @@ class ObservationFunctions:
         )
         kb_rel_pos_fut = ref_keybody_rel_pos_fut[:, :, keybody_idxs, :]
         bs, t, _, _ = kb_rel_pos_fut.shape
-        return kb_rel_pos_fut.reshape(bs, t, -1)
+        return kb_rel_pos_fut.reshape(bs, t, len(keybody_idxs) * 3)
 
     @staticmethod
     def _get_obs_ref_base_angvel_fut(

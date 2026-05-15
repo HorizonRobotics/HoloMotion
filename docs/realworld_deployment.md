@@ -1,351 +1,36 @@
-# HoloMotion Deployment Guide
+# HoloMotion Real-World Deployment Guide
 
-This guide describes how to set up the deployment environment and run the trained policy on a physical Unitree G1 robot.
+This guide describes the Docker-only workflow for deploying HoloMotion on a physical Unitree G1 robot with 29 DOF.
 
-## Robot Configuration for 29 DOF
-The 29 DOF configuration includes:
+Laptop / local deployment is no longer supported in this release. All robot-side code should run inside the Orin Docker container on the robot.
 
-- 12 leg joints (6 per leg)
-- 3 waist joints (yaw, roll, pitch)
-- 14 arm joints (7 per arm)
+## Quick Reference
 
----
+- Robot platform: Unitree G1 onboard NVIDIA Jetson Orin
+- Docker container: `holomotion_orin_deploy`
+- Docker image: `horizonrobotics/holomotion:orin_foxy_jp5.1_humble_deploy_zmq_full_20260509`
+- Container repo path: `/home/unitree/holomotion`
+- Deployment path: `/home/unitree/holomotion/deployment/unitree_g1_ros2_29dof`
+- Launch profile: `deployment/unitree_g1_ros2_29dof/launch_profiles/orin_docker.yaml`
+- Robot config: `deployment/unitree_g1_ros2_29dof/src/config/g1_29dof_holomotion.yaml`
 
-## Deployment Options
+The 29 DOF robot configuration contains 12 leg joints, 3 waist joints, and 14 arm joints.
 
-This guide provides two deployment methods:
+For safety, remove the dexterous hands before running the policy.
 
-| Deployment Method                               | Target Platform   |
-| ----------------------------------------------- | ----------------- |
-| [Laptop Deployment](#laptop-deployment)         | Laptop/Desktop PC |
-| [PC2 Docker Deployment](#pc2-docker-deployment) | G1 Robot's PC2    |
+## First-Time Robot Setup
 
-Choose the appropriate method based on your setup:
+Do this once on the robot before the first deployment.
 
-- **For laptop/desktop deployment**: Follow the [Laptop Deployment](#laptop-deployment) section
-- **For PC2 on robot hardware**: Follow the [PC2 Docker Deployment](#pc2-docker-deployment) section
+### Configure Docker Runtime
 
-### ⚠️ Important Safety Notice
-
-> **For safety reasons, it is strongly recommended to remove the dexterous hands before running the policy.**
-
----
-
-## Laptop Deployment
-
-### Quick Environment Setup
-
-#### Prerequisites
-
-Ensure the following are installed before proceeding:
-
-- Anaconda or Miniconda
-- ROS 2 Humble installed at `/opt/ros/humble`
-- MCAP for efficient ROS 2 data recording
-- Unitree ROS 2 SDK installed at `~/unitree_ros2/`
-
-#### One-Click Deployment
+Docker must be installed with NVIDIA Container Runtime support. Confirm the NVIDIA runtime is available:
 
 ```bash
-cd <your_holomotion_repo_path>/deployment
-chmod +x deploy_environment.sh
-./deploy_environment.sh
+sudo docker info | grep -i runtime
 ```
 
-This script will:
-
-- Create a new conda environment (with CUDA support if available)
-- Install Python packages from `requirements/requirements_deploy.txt`
-- Install Unitree SDK Python bindings
-- Build the ROS 2 workspace under `unitree_g1_ros2_29dof/`
-
----
-
-### Deploy on Physical G1 Robot (Laptop)
-
-### Setup Overview
-
-The deployment process consists of two types of steps:
-
-| **One-Time Setup** (per computer) | **Every Run** (each time you use the robot) |
-| --------------------------------- | ------------------------------------------- |
-| Step 1: Network Configuration     | Step 3: Power On & Initialize Robot         |
-| Step 2: Launch Script Setup       | Step 4: Launch Policy Controller            |
-
-> **Note**: Once you complete Steps 1-2, you only need to do Steps 3-4 for each robot session!
-
-### Step 1: Connect and Configure Network
-
-#### Prerequisites for Network Setup:
-
-1. **Power on the robot** and wait for it to fully boot
-2. **Use an Ethernet cable** to connect your PC to the robot's LAN port
-3. **Ensure both devices are powered on** during configuration
-
-#### Network Configuration:
-
-Configure your PC's network interface with the following static IP settings:
-
-- **Static IP**: `192.168.123.222`
-- **Netmask**: `255.255.255.0`
-- **Gateway**: (leave empty)
-
-#### Automatic Configuration Script:
-
-You can use the following script to configure it automatically (use command `nmcli con show` to check your actual connection name):
-
-<details>
-<summary>Click to view set_static_ip.sh</summary>
-
-```bash
-#!/bin/bash
-
-# Replace with your actual connection name (use `nmcli con show` to check)
-CON_NAME="Wired connection 1"
-IP_ADDRESS="192.168.123.222"
-NETMASK="24"
-GATEWAY=""
-
-nmcli con modify "$CON_NAME" ipv4.addresses "$IP_ADDRESS/$NETMASK"
-nmcli con modify "$CON_NAME" ipv4.method manual
-
-if [ -n "$GATEWAY" ]; then
-  nmcli con modify "$CON_NAME" ipv4.gateway "$GATEWAY"
-fi
-
-nmcli con modify "$CON_NAME" ipv4.dns ""
-nmcli con down "$CON_NAME" && nmcli con up "$CON_NAME"
-```
-
-</details>
-
----
-
-### Step 2: Prepare Launch Script
-
-#### Configure Network Interface:
-
-1. **Check your network interface name** (while connected to the robot):
-
-   ```bash
-   ifconfig
-   ```
-
-   Look for the interface connected to the robot (e.g., `enxf8e43ba00afd`, `eth0`, `enp0s31f6`)
-
-2. **Update the launch configuration**:
-   ```bash
-   # Edit the launch file
-   nano <your_holomotion_repo_path>/deployment/unitree_g1_ros2_29dof/src/launch/holomotion_29dof_launch.py
-   ```
-   Find and update the `network_interface` parameter with your actual interface name.
-
-
----
-
-### Step 3: Power On and Initialize the Robot
-
-> **Do this every time** you want to run the robot.
-
-#### Robot Initialization Sequence for 29 DOF:
-
-1. **Power on the robot** - Start the robot in the **hanging position**
-2. **Wait for zero torque mode** - The robot will automatically enter zero torque mode (joints feel loose)
-3. **Connect your computer** - Use the same Ethernet cable to connect to the robot's LAN port
-4. **Enter debugging mode** - On the remote controller, press `L2 + R2` simultaneously. Note: the new deployment automatically enters this mode on startup, so manual entry is usually not required.
-
----
-
-### Step 4: Launch the Policy Controller
-
-#### Preflight Checklist
-
-Before running, ensure the following are ready.
-
-- Model folders configured in `g1_29dof_holomotion.yaml` exist
-  - `motion_tracking_model_folder`: under `src/models/`
-  - `velocity_tracking_model_folder`: under `src/models/`
-- Motion data directory exists and contains .npz files (retargeted results)
-  - `motion_clip_dir`: under `src/motion_data/`
-- Config file path used by launch is correct
-
-#### Motion Reference Source
-
-Motion tracking supports two reference sources:
-
-- **Offline motion mode**: the robot executes the selected `.npz` motion clip from `motion_clip_dir`.
-- **Online teleoperation mode**: the robot uses live `latest_obs` data streamed from the teleoperation workstation / VR pipeline. See [Holomotion teleop setup](../deployment/holomotion_teleop/holomotion_teleop_setup.md) for Pico / XRoboToolkit, ZMQ publishing, and launch order on the workstation.
-
-The mode is selected by YAML settings in `g1_29dof_holomotion.yaml`:
-
-- **Offline motion mode**
-  - `vr.enable_teleop_reference: false`
-  - `vr.require_vr_data_for_motion: false`
-  - Result: even if ZMQ data is still arriving, the robot ignores it and motion tracking uses offline `.npz` clips only.
-- **Online teleoperation mode**
-  - `vr.enable_teleop_reference: true`
-  - `vr.require_vr_data_for_motion: true`
-  - `vr.latest_obs_zmq_uri: "tcp://<workstation-ip>:6001"`
-  - Result: motion mode waits for live teleoperation data before entering and uses the incoming `latest_obs` stream as the motion reference.
-
-If you want teleoperation to be available but not mandatory, you can also use:
-
-- `vr.enable_teleop_reference: true`
-- `vr.require_vr_data_for_motion: false`
-
-In that configuration, motion mode can still start without waiting for VR readiness, but live teleoperation data may be used when available at mode entry.
-
-#### One-click start
-
-```bash
-cd <your_holomotion_repo_path>/deployment/unitree_g1_ros2_29dof
-bash launch_holomotion_29dof.sh
-```
-
-> **Success indicator**: On startup, the robot joints should remain in zero torque state and feel free to move.
-
-#### Motion Control Modes
-
-The 29 DOF robot operates in two main modes:
-
-| Mode    | How to Enter                                                          | Controls                                                                                                                     | Switch             |
-| ------- | --------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- | ------------------ |
-| Velocity tracking | 1) Press Start to stand up, then press A<br/>2) From motion tracking: press Y | Left stick: move (vx, vy)<br/>Right stick: rotate (yaw)<br/>D-Pad: select motion clip (Left=first, Right=last, Up=prev, Down=next) | B: enter motion tracking   |
-| Motion tracking | Press B                                                               | Executes selected motion clip or online teleoperation automatically                                                                                        | Y: back to velocity tracking |
-
-#### Control Flow
-
-Here is the robot control flowchart for 29 DOF:
-
-```mermaid
-flowchart TD
-    subgraph prepPhase ["Setup Phase"]
-        direction TB
-        A[Set Robot<br/>to Hanging Position] --> B[Power On and<br/>Zero Torque Mode]
-        B --> C[L2+R2: Enter Debug Mode]
-        C --> D[Launch Program]
-    end
-
-    %% Main flow
-    prepPhase --> E[Start: Stand Up]
-    E --> F[Lower Robot to Ground]
-    F --> G[A: Enter Velocity tracking Mode]
-
-    %% Velocity tracking mode controls
-    G --> H[Velocity tracking Mode]
-    H --> H1[Left Stick: Move]
-    H --> H2[Right Stick: Rotate]
-    H --> H3[D-Pad: Select Motion Clip]
-    H --> H4[B: Enter Motion tracking Mode]
-
-    %% Motion tracking mode
-    H4 --> I[Motion tracking Mode]
-    I --> I1[Execute Motion Clip or Teleoperation]
-    I --> I2[Y: Back to Velocity tracking]
-
-    %% Mode switching
-    I2 --> H
-
-    %% Emergency stop
-    D --> N[Select: Emergency Stop]
-    E --> N
-    F --> N
-    G --> N
-    H --> N
-    I --> N
-    N --> O[Close Program]
-
-    classDef startEnd fill:#e1f5fe,stroke:#01579b,stroke-width:2px
-    classDef control fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
-    classDef velocityTracking fill:#e8f5e8,stroke:#1b5e20,stroke-width:2px
-    classDef motionTracking fill:#fff3e0,stroke:#e65100,stroke-width:2px
-    classDef emergency fill:#ffebee,stroke:#b71c1c,stroke-width:2px,stroke-dasharray: 5 5
-    classDef preparationFrame fill:#f9f9f9,stroke:#666,stroke-width:2px,stroke-dasharray: 5 5
-
-    class A,O startEnd
-    class B,C,D,E,F,G control
-    class H,H1,H2,H3,H4 velocityTracking
-    class I,I1,I2 motionTracking
-    class N emergency
-    class prepPhase preparationFrame
-```
-
-#### Configuration Files (used by Step 4)
-
-**System Configuration**
-
-- File: `HoloMotion/deployment/unitree_g1_ros2_29dof/src/config/g1_29dof_holomotion.yaml`
-- Key parameters:
-  - `motion_tracking_model_folder`: motion tracking model folder under `models/`
-  - `velocity_tracking_model_folder`: velocity tracking model folder under `models/`
-  - `motion_clip_dir`: motion clip data folder under `src/`
-  - `vr.enable_teleop_reference`: enable or disable live teleoperation reference
-  - `vr.require_vr_data_for_motion`: whether motion mode must wait for live teleoperation data
-  - `vr.latest_obs_zmq_uri`: teleoperation ZMQ endpoint used in online mode
-
-**Pre-trained Models**
-
-We provide a pre-trained velocity tracking model that you can download and use:
-
-- **Motion Tracking Model**: Download from [Hugging Face](https://huggingface.co/HorizonRobotics/HoloMotion_v1.2/tree/main/holomotion_v1.2_motion_tracking_model)
-- **Velocity Tracking Model**: Download from [Hugging Face](https://huggingface.co/HorizonRobotics/HoloMotion_v1.2/tree/main/holomotion_v1.2_velocity_tracking_model)
-
-To use this model:
-
-1. Download the `holomotion_v1.2_velocity_tracking_model` folder from the Hugging Face repository
-2. Place the downloaded folder under `models/` (e.g., `models/holomotion_v1.2_velocity_tracking_model/`)
-4. Update `velocity_tracking_model_folder` in the `g1_29dof_holomotion.yaml` to point to this folder
-
-**Adding New Motion Tracking Models**
-
-1. Create a new folder under `models/` based on the following example model folder structure (e.g., `models/your_model_dir_name/`)
-2. Update `motion_tracking_model_folder` in the `g1_29dof_holomotion.yaml`
-3. Ensure the motion clip data files are in the `motion_clip_dir`
-
-Example model folder structure (motion model):
-
-```bash
-HoloMotion/deployment/unitree_g1_ros2_29dof/src/models/your_model_dir_name
-├── config.yaml
-├── exported
-    └── your_model_name.onnx
-```
-
----
-
-### Safety Notice
-
-This deployment is intended for demonstration only. It is not a production-grade control system. Do not interfere with the robot during operation. If unexpected behavior occurs, exit control immediately via the controller or keyboard to ensure safety.
-
-To stop the control process, press `Select` or use `Ctrl+C` in the terminal.
-
----
-
-## PC2 Docker Deployment
-
-### Setup Overview
-
-The deployment process consists of two types of steps:
-
-| **One-Time Setup** (per PC2) | **Every Run** (each time you use the robot) |
-| ----------------------------- | -------------------------------------------- |
-| Step 1: Configure Docker      | Step 4: Start Docker Container              |
-| Step 2: Load Docker Image     | Step 5: Power On & Initialize Robot         |
-| Step 3: Configure Launch File Network Interface     | Step 6: Launch Policy Controller            |
-
-> **Note**: Once you complete Steps 1-3, you only need to do Steps 4-6 for each robot session!
-
-### System Requirements
-
-- **Platform**: NVIDIA Jetson Orin
-- **JetPack**: 5.1
-- **Ubuntu**: 20.04
-- **ROS 2**: Foxy
-- **Docker**: Installed with NVIDIA Container Runtime support
-
-### Step 1: Configure Docker for NVIDIA Runtime
-
-Modify `/etc/docker/daemon.json`:
+If the NVIDIA runtime is missing, configure `/etc/docker/daemon.json`:
 
 ```json
 {
@@ -359,127 +44,317 @@ Modify `/etc/docker/daemon.json`:
 }
 ```
 
-Restart Docker and verify:
+Restart Docker:
 
 ```bash
 sudo systemctl restart docker
-sudo docker info | grep -i runtime
 ```
 
-### Step 2: Load Docker Image
-
-Pull the image from dockerhub with:
-
-```bash
-docker pull horizonrobotics/holomotion:orin_foxy_jp5.1_docker_humble_deploy_zmq_20260319
-```
-
-Or if you have the image locally, tag it appropriately:
-
-```bash
-docker tag <your_image_name> holomotion:orin_foxy_jp5.1_docker_humble_deploy_zmq_20260319
-```
-
-### Step 3: Configure Launch File Network Interface:
-
-
-1. **Check your network interface name on the robot**:
-
-   ```bash
-   ifconfig
-   ```
-
-   Look for the interface with IP `192.168.123.164`. The interface is typically `eth0`.
-
-2. **Update the launch configuration** if your interface is not `eth0`:
-
-   ```bash
-   nano <your_holomotion_repo_path>/deployment/unitree_g1_ros2_29dof/src/launch/holomotion_29dof_launch.py
-   ```
-
-   Find line 103 and update the `network_interface` parameter:
-   ```python
-   network_interface = "eth0"  # Change to your actual interface name
-   ```
-
-### Step 4: Start Docker Container
-
-> **Important**: Before running Docker commands, ensure your user is added to the docker group. If you encounter permission errors, add your user to the docker group:
+If Docker permission fails, add the current user to the Docker group and re-login:
 
 ```bash
 sudo usermod -aG docker $USER
-```
-
-After adding your user to the docker group, you need to log out and log back in (or restart your session) for the changes to take effect. Verify with:
-
-```bash
 groups
 ```
 
-You should see `docker` in the list of groups.
+### Prepare Docker Image
 
-> **Important**: You need to run this step **every time** you want to use the robot. The script will automatically remove any existing container and start a fresh one.
+Pull the official image:
+
+```bash
+docker pull horizonrobotics/holomotion:orin_foxy_jp5.1_humble_deploy_zmq_full_20260509
+```
+
+
+### Check Network Interface
+
+On the robot, check the network interface used by Unitree ROS 2:
+
+```bash
+ifconfig
+```
+
+The interface is usually `eth0`. If it is different, update `robot.network_interface` in `deployment/unitree_g1_ros2_29dof/launch_profiles/orin_docker.yaml`.
+
+Do not edit the ROS launch file for network configuration.
+
+## Before Running
+
+### Required Robot-Side Files
+
+Check the model and motion data paths in:
+
+`deployment/unitree_g1_ros2_29dof/src/config/g1_29dof_holomotion.yaml`
+
+```yaml
+velocity_tracking_model_folder: "velocity_tracking_model"
+motion_tracking_model_folder: "<your_motion_model_folder>"
+motion_clip_dir: "motion_data"
+```
+
+Expected model folder structure:
+
+```bash
+deployment/unitree_g1_ros2_29dof/src/models/<your_model_folder>
+├── config.yaml
+└── exported
+    └── <model>.onnx
+```
+
+### Pre-trained Models
+
+We provide pre-trained models that you can download and use:
+
+- Motion Tracking Model: [Hugging Face](https://huggingface.co/HorizonRobotics/HoloMotion_models/tree/main/HoloMotion_motion_tracking_model)
+- Velocity Tracking Model: [Hugging Face](https://huggingface.co/HorizonRobotics/HoloMotion_models/tree/main/HoloMotion_velocity_tracking_model)
+
+To use these models:
+
+1. Download the `HoloMotion_motion_tracking_model` and `HoloMotion_velocity_tracking_model` folders from the Hugging Face repository.
+2. Place the downloaded folders under `deployment/unitree_g1_ros2_29dof/src/models/`, for example:
+
+```bash
+deployment/unitree_g1_ros2_29dof/src/models/
+├── HoloMotion_motion_tracking_model/
+└── HoloMotion_velocity_tracking_model/
+```
+
+3. Update `motion_tracking_model_folder` and `velocity_tracking_model_folder` in `g1_29dof_holomotion.yaml` to point to these folders.
+
+Expected offline motion data:
+
+```bash
+deployment/unitree_g1_ros2_29dof/src/motion_data/
+└── <retargeted_motion>.npz
+```
+
+### Launch Profile
+
+Edit:
+
+`deployment/unitree_g1_ros2_29dof/launch_profiles/orin_docker.yaml`
+
+Common settings:
+
+```yaml
+robot:
+  network_interface: "eth0"
+
+policy:
+  inference_backend: "tensorrt"
+  enable_teleop_reference: false
+  latest_obs_zmq_uri: "tcp://<workstation-ip>:6001"
+  latest_obs_zmq_topic: "obs65"
+  latest_obs_zmq_mode: "connect"
+  latest_obs_zmq_conflate: true
+  zmq_jitter_delay_frames: 0
+  max_data_age: 0.6
+  timing_debug_enabled: false
+```
+
+## Start Docker
+
+Run this on the robot before each deployment session:
 
 ```bash
 cd <your_holomotion_repo_path>/deployment/unitree_g1_ros2_29dof
 bash start_container.sh
 ```
 
-**When prompted, enter the holomotion repository path:**
+When prompted, enter the full local repository path, for example:
 
-- The script will ask: `Please enter the holomotion local repository path:`
-- Enter the full path to your holomotion repository, for example:
-  - `/home/unitree/HoloMotion` (if the repository is at this location)
-  - Or the actual path where your holomotion repository is located
+```bash
+/home/unitree/HoloMotion
+```
 
+The script starts a fresh `holomotion_orin_deploy` container and mounts the repository to `/home/unitree/holomotion`.
 
-### Step 5: Power On and Initialize Robot
+Inside the container:
 
-> **Do this every time** before launching the policy controller.
+```bash
+cd /home/unitree/holomotion/deployment/unitree_g1_ros2_29dof
+```
 
-1. Put the robot in hanging position
-2. Wait for zero torque mode
-3. Press `L2 + R2` on remote controller for debug mode 
+## Robot Preparation
 
-### Step 6: Launch Policy Controller
+Do this before launching the policy controller:
 
-> **Do this every time** you want to run the robot (after Steps 4 and 5).
+1. Put the robot in a hanging position.
+2. Power on the robot and wait for zero torque mode.
+3. Confirm the robot network is ready.
+4. Enter debug mode with `L2 + R2` if needed. New deployments may enter this mode automatically.
+5. Keep the operator ready to press `Select` for emergency stop.
 
-**Preflight Checklist**
+## Offline Motion
 
-Before running, ensure the following are ready.
+Use this mode when motion tracking should execute local `.npz` clips.
 
-- Model folders configured in `g1_29dof_holomotion.yaml` exist
-  - `motion_tracking_model_folder`: under `src/models/`
-  - `velocity_tracking_model_folder`: under `src/models/`
-- Motion data directory exists and contains .npz files (retargeted results)
-  - `motion_clip_dir`: under `src/motion_data/`
-- Config file path used by launch is correct
-- Motion reference source is configured as intended (see [Motion Reference Source](#motion-reference-source))
+### Configure
 
-**Pre-trained Models**
+Set:
 
-You can download and use the pre-trained velocity tracking model. Refer to the [Pre-trained Models](#configuration-files-used-by-step-4) section above for general instructions. 
+```yaml
+policy:
+  enable_teleop_reference: false
+```
 
-> **Note**: The model folder should be placed in your local repository before starting the Docker container, as the repository is mounted into the container.
+Check:
 
-**One-click start in the docker**
+- `motion_tracking_model_folder` points to the intended motion model.
+- `velocity_tracking_model_folder` points to the intended walking model.
+- `motion_clip_dir` contains retargeted `.npz` files.
+- `inference_backend` is `tensorrt`.
+
+### Launch
+
+Inside Docker:
 
 ```bash
 cd /home/unitree/holomotion/deployment/unitree_g1_ros2_29dof
 bash launch_holomotion_29dof_docker.sh
 ```
 
-> **Note**: The control flow is the same as described in the [Control Flow](#control-flow) section above.
+### Controller Sequence
 
+1. Press `Start` to move to the default pose.
+2. Lower the robot to the ground when the default pose is stable.
+3. Press `A` to enter velocity tracking.
+4. Select a motion clip with the D-pad:
+   - `Left`: first clip
+   - `Right`: last clip
+   - `Up`: previous clip
+   - `Down`: next clip
+5. Press `B` to enter motion tracking and execute the selected clip.
+6. After the offline clip finishes, the controller automatically returns to velocity tracking.
 
----
+You can still press `Y` during motion tracking to return to velocity tracking before the clip finishes.
 
-### Safety Notice
+## Teleoperation
 
-This deployment is intended for demonstration only. It is not a production-grade control system. Do not interfere with the robot during operation. If unexpected behavior occurs, exit control immediately via the controller or keyboard to ensure safety.
+Use this mode when motion tracking should follow live VR / teleoperation data.
 
-To stop the control process:
+Robot-side data flow:
 
-- Press `Select` on the remote controller, or
-- Use `Ctrl+C` in the terminal (inside Docker container)
+```text
+PICO / XRoboToolkit -> workstation teleop node -> ZMQ latest_obs -> robot policy node
+```
+
+For workstation setup, see:
+
+`deployment/holomotion_teleop/holomotion_teleop_setup.md`
+
+### Configure
+
+Set:
+
+```yaml
+policy:
+  enable_teleop_reference: true
+  latest_obs_zmq_uri: "tcp://<workstation-ip>:6001"
+  latest_obs_zmq_topic: "obs65"
+  latest_obs_zmq_mode: "connect"
+  latest_obs_zmq_conflate: true
+  zmq_jitter_delay_frames: 0
+  max_data_age: 0.6
+```
+
+Replace `<workstation-ip>` with the workstation IP that publishes `latest_obs`.
+
+Check:
+
+- XRoboToolkit PC Service is running on the workstation.
+- PICO headset, controllers, and ankle trackers are connected and streaming.
+- `holomotion_teleop_node.py` is publishing `latest_obs`.
+- Robot-side `latest_obs_zmq_uri` points to the workstation IP.
+- Offline motion has already been validated before live teleoperation.
+
+### Launch Order
+
+1. Start the Docker container on the robot.
+2. Launch the robot policy stack inside Docker:
+
+```bash
+cd /home/unitree/holomotion/deployment/unitree_g1_ros2_29dof
+bash launch_holomotion_29dof_docker.sh
+```
+
+3. Press `Start` to move the robot to the default pose.
+4. Start XRoboToolkit on the PICO headset and confirm tracking is active.
+5. Start the teleoperation node on the workstation:
+
+```bash
+conda activate holomotion_teleop
+cd /path/to/holomotion_teleop
+python holomotion_teleop_node.py \
+  --robot-zmq-uri tcp://*:6001 \
+  --robot-zmq-mode bind \
+  --hz 50
+```
+
+6. Wait for robot-side logs showing ZMQ data is ready.
+7. Press `A` to enter velocity tracking.
+8. Press `B` to enter teleoperation motion tracking.
+9. Press `Y` to return to velocity tracking.
+
+### ZMQ Notes
+
+- `latest_obs_zmq_conflate: true` keeps the newest ZMQ packet and avoids backlog.
+- `zmq_jitter_delay_frames: 0` uses the newest frame and gives the lowest latency.
+- `zmq_jitter_delay_frames: 1` adds about one policy frame of delay, usually about 20 ms at 50 Hz, and can be more stable if the stream jitters.
+- `max_data_age` controls stale data detection. If live data is too old, motion mode switches back to velocity mode for safety.
+
+## Controller Reference
+
+| State / Mode | Operation |
+| --- | --- |
+| Zero torque | Startup state. Joints should be loose. |
+| Move to default | Press `Start`. |
+| Velocity tracking | Press `A` after the robot reaches default pose. |
+| Motion tracking | Press `B` from velocity tracking. Uses offline `.npz` or live teleop depending on `enable_teleop_reference`. Offline `.npz` clips automatically return to velocity tracking after completion. |
+| Return to velocity | Press `Y` from motion tracking. |
+| Select motion clip | In velocity tracking, use D-pad: `Left` first, `Right` last, `Up` previous, `Down` next. |
+| Emergency stop | Press `Select`. |
+
+## Logs
+
+Useful logs:
+
+- `[Timing-Agg]`: policy loop timing summary.
+- `onnx_ms`: ONNX Runtime / TensorRT inference time.
+- `policy_total_ms`: total policy step time.
+- `[VR-STATUS]`: whether live ZMQ `latest_obs` is being received.
+
+If `enable_teleop_reference=false`, `[VR-STATUS] No new ZMQ latest_obs` can be ignored.
+
+## Recording
+
+Use `--record` to enable rosbag recording:
+
+```bash
+bash launch_holomotion_29dof_docker.sh --record
+```
+
+Default topics:
+
+- `/lowcmd`
+- `/lowstate`
+- `/humanoid/action`
+
+## Stop
+
+To stop control:
+
+- Press `Select` on the remote controller for emergency stop, or
+- Press `Ctrl+C` in the Docker terminal.
+
+After stopping, confirm the robot is safe before restarting the controller.
+
+## Safety
+
+This deployment is for real-robot demonstration and evaluation. It is not a production-grade control system.
+
+- Keep the robot in a hanging position during startup.
+- Keep an operator near the remote controller.
+- Do not stand close to the robot during motion tracking.
+- Validate offline motion before live teleoperation.
+- Stop immediately if the robot behaves unexpectedly.

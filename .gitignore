@@ -5,6 +5,7 @@ data/
 outputs/
 .archive/
 tmp/
+logs_smoke/
 
 # ignore deployment bag_record, install, log
 deployment/unitree_g1_ros2/bag_record/

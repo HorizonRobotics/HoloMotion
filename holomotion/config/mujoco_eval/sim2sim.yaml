@@ -34,6 +34,8 @@ metric_calculation: "per_clip"
 dof_mode: "23"
 failure_pos_err_thresh_m: 0.25
 ray_actors_per_gpu: 16
+ray_auto_reduce_actors_per_gpu: true
+ray_actor_startup_probe_timeout_s: 300
 ray_multi_ckpt_mode: "split"
 
 # Runtime

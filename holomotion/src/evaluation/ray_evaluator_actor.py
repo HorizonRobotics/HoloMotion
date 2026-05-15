@@ -45,6 +45,9 @@ class RayEvaluatorActor:
         if model_type == "gmt":
             self.evaluator.gmt_proprio_buf.clear()
 
+    def ready(self):
+        return "ready"
+
     def run_clip(self, file_path):
         from holomotion.src.evaluation.eval_mujoco_sim2sim import (
             _build_onnx_io_dump_dir,

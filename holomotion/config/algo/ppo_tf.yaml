@@ -57,7 +57,7 @@ algo:
 
     dead_expert_margin_to_topk:
       enabled: true
-      weight: 10.0
+      weight: 0.1
 
     aux_router_command_recon:
       enabled: false

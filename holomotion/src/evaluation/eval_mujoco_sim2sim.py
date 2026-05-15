@@ -3893,6 +3893,33 @@ def _allocate_actor_counts(num_checkpoints: int, total_actors: int):
     return [base + (1 if i < rem else 0) for i in range(num_checkpoints)]
 
 
+def _ray_actors_per_gpu_backoff_candidates(requested: int) -> list[int]:
+    if requested <= 0:
+        raise ValueError("requested actors_per_gpu must be > 0")
+    candidates = []
+    value = int(requested)
+    while value > 1:
+        candidates.append(value)
+        value = max(1, value // 2)
+    candidates.append(1)
+    return candidates
+
+
+def _is_ray_eval_startup_oom_error(exc: BaseException) -> bool:
+    message = f"{type(exc).__name__}: {exc}"
+    oom_markers = (
+        "BFCArena::AllocateRawInternal",
+        "Failed to allocate memory",
+        "CUDA out of memory",
+        "OutOfMemoryError",
+        "onnxruntime",
+        "ONNXRuntimeError",
+        "InferenceSession",
+        "ActorDiedError",
+    )
+    return any(marker in message for marker in oom_markers)
+
+
 def _infer_step_from_ckpt_name(ckpt_name: str):
     match = re.search(r"model_(\d+)", ckpt_name)
     if match:
@@ -4257,84 +4284,167 @@ def run_mujoco_sim2sim_eval(override_config: OmegaConf):
                     "ray_evaluator_module",
                     "holomotion.src.evaluation.eval_mujoco_sim2sim",
                 )
-                if not ray.is_initialized():
-                    ray.init()
                 from holomotion.src.evaluation.ray_evaluator_actor import (
                     RayEvaluatorActor,
                 )
 
-                if num_available_gpus > 0:
-                    base_actor_count = num_available_gpus * ray_actors_per_gpu
-                    gpus_per_actor = 1.0 / ray_actors_per_gpu
-                    remote_actor = ray.remote(num_gpus=gpus_per_actor)(
-                        RayEvaluatorActor
-                    )
-                else:
-                    base_actor_count = max(1, ray_actors_per_gpu)
-                    gpus_per_actor = 0.0
-                    remote_actor = ray.remote(num_gpus=0)(RayEvaluatorActor)
+                auto_reduce_actors = _coerce_config_bool(
+                    config.get("ray_auto_reduce_actors_per_gpu", True),
+                    default=True,
+                )
+                startup_probe_timeout_s = float(
+                    config.get("ray_actor_startup_probe_timeout_s", 300.0)
+                )
+                actor_attempts = (
+                    _ray_actors_per_gpu_backoff_candidates(ray_actors_per_gpu)
+                    if auto_reduce_actors
+                    else [ray_actors_per_gpu]
+                )
+                last_error = None
 
-                if ray_multi_ckpt_mode == "per_checkpoint":
-                    actor_counts = [
-                        base_actor_count for _ in range(len(eval_targets))
-                    ]
-                else:
-                    actor_counts = _allocate_actor_counts(
-                        len(eval_targets), base_actor_count
-                    )
-                    if min(actor_counts) <= 0:
-                        raise ValueError(
-                            "Not enough actor budget to assign at least one actor "
-                            "per checkpoint in split mode. Reduce checkpoint count, "
-                            "increase ray_actors_per_gpu, or switch to "
-                            "ray_multi_ckpt_mode=per_checkpoint."
+                for attempt_idx, attempt_actors_per_gpu in enumerate(
+                    actor_attempts
+                ):
+                    if attempt_idx > 0 and ray.is_initialized():
+                        ray.shutdown()
+                    if not ray.is_initialized():
+                        ray.init()
+
+                    if num_available_gpus > 0:
+                        base_actor_count = (
+                            num_available_gpus * attempt_actors_per_gpu
+                        )
+                        gpus_per_actor = 1.0 / attempt_actors_per_gpu
+                        remote_actor = ray.remote(num_gpus=gpus_per_actor)(
+                            RayEvaluatorActor
+                        )
+                    else:
+                        base_actor_count = max(1, attempt_actors_per_gpu)
+                        gpus_per_actor = 0.0
+                        remote_actor = ray.remote(num_gpus=0)(
+                            RayEvaluatorActor
                         )
 
-                total_actor_count = sum(actor_counts)
-                logger.info(
-                    f"Ray: {total_actor_count} persistent actors "
-                    f"({ray_actors_per_gpu} per GPU, {gpus_per_actor} GPU each)"
-                )
-                logger.info(
-                    "Checkpoint actor allocation: "
-                    + ", ".join(
-                        [
-                            f"{target['ckpt_path'].name}={actor_counts[idx]}"
-                            for idx, target in enumerate(eval_targets)
+                    if ray_multi_ckpt_mode == "per_checkpoint":
+                        actor_counts = [
+                            base_actor_count for _ in range(len(eval_targets))
                         ]
-                    )
-                )
-
-                refs = []
-                for target_idx, target in enumerate(eval_targets):
-                    target_config_dict = dict(base_config_dict)
-                    target_config_dict["ckpt_onnx_path"] = str(
-                        target["ckpt_path"]
-                    )
-                    num_actors = actor_counts[target_idx]
-                    target_actors = [
-                        remote_actor.remote(
-                            target_config_dict, target["output_dir"]
+                    else:
+                        actor_counts = _allocate_actor_counts(
+                            len(eval_targets), base_actor_count
                         )
-                        for _ in range(num_actors)
-                    ]
-                    for file_idx, file_path in enumerate(files):
-                        actor = target_actors[file_idx % len(target_actors)]
-                        refs.append(actor.run_clip.remote(file_path))
-                pbar = tqdm(
-                    total=total_jobs,
-                    desc="Batch Processing (all checkpoints)",
-                    unit="job",
-                    dynamic_ncols=True,
-                )
-                while refs:
-                    done, refs = ray.wait(refs, num_returns=1)
-                    for ref in done:
-                        status = ray.get(ref)
-                        if status == "success":
-                            success_count += 1
-                        pbar.update(1)
-                pbar.close()
+                        if min(actor_counts) <= 0:
+                            raise ValueError(
+                                "Not enough actor budget to assign at least one actor "
+                                "per checkpoint in split mode. Reduce checkpoint count, "
+                                "increase ray_actors_per_gpu, or switch to "
+                                "ray_multi_ckpt_mode=per_checkpoint."
+                            )
+
+                    total_actor_count = sum(actor_counts)
+                    logger.info(
+                        f"Ray: {total_actor_count} persistent actors "
+                        f"({attempt_actors_per_gpu} per GPU, "
+                        f"{gpus_per_actor} GPU each)"
+                    )
+                    if attempt_actors_per_gpu != ray_actors_per_gpu:
+                        logger.warning(
+                            "Ray eval reduced actors_per_gpu from "
+                            f"{ray_actors_per_gpu} to "
+                            f"{attempt_actors_per_gpu} after startup OOM."
+                        )
+                    logger.info(
+                        "Checkpoint actor allocation: "
+                        + ", ".join(
+                            [
+                                f"{target['ckpt_path'].name}={actor_counts[idx]}"
+                                for idx, target in enumerate(eval_targets)
+                            ]
+                        )
+                    )
+
+                    all_actors = []
+                    pbar = None
+                    try:
+                        target_actors_by_checkpoint = []
+                        for target_idx, target in enumerate(eval_targets):
+                            target_config_dict = dict(base_config_dict)
+                            target_config_dict["ckpt_onnx_path"] = str(
+                                target["ckpt_path"]
+                            )
+                            target_actors = [
+                                remote_actor.remote(
+                                    target_config_dict, target["output_dir"]
+                                )
+                                for _ in range(actor_counts[target_idx])
+                            ]
+                            target_actors_by_checkpoint.append(target_actors)
+                            all_actors.extend(target_actors)
+
+                        # Force ONNXRuntime sessions to initialize before
+                        # scheduling thousands of clip jobs. Large policies may
+                        # require a lower actor count per GPU.
+                        ray.get(
+                            [actor.ready.remote() for actor in all_actors],
+                            timeout=startup_probe_timeout_s,
+                        )
+
+                        refs = []
+                        for target_idx, _target in enumerate(eval_targets):
+                            target_actors = target_actors_by_checkpoint[
+                                target_idx
+                            ]
+                            for file_idx, file_path in enumerate(files):
+                                actor = target_actors[
+                                    file_idx % len(target_actors)
+                                ]
+                                refs.append(actor.run_clip.remote(file_path))
+                        local_success_count = 0
+                        pbar = tqdm(
+                            total=total_jobs,
+                            desc="Batch Processing (all checkpoints)",
+                            unit="job",
+                            dynamic_ncols=True,
+                        )
+                        while refs:
+                            done, refs = ray.wait(refs, num_returns=1)
+                            for ref in done:
+                                status = ray.get(ref)
+                                if status == "success":
+                                    local_success_count += 1
+                                pbar.update(1)
+                        success_count = local_success_count
+                        if ray.is_initialized():
+                            logger.info(
+                                "Ray batch evaluation completed; shutting down "
+                                "persistent evaluator actors before metrics "
+                                "post-processing."
+                            )
+                            ray.shutdown()
+                        break
+                    except Exception as exc:
+                        last_error = exc
+                        if ray.is_initialized():
+                            ray.shutdown()
+                        can_retry = (
+                            auto_reduce_actors
+                            and attempt_idx < len(actor_attempts) - 1
+                            and _is_ray_eval_startup_oom_error(exc)
+                        )
+                        if not can_retry:
+                            raise
+                        next_actors_per_gpu = actor_attempts[attempt_idx + 1]
+                        logger.warning(
+                            "Ray eval actor startup failed, reducing "
+                            f"actors_per_gpu {attempt_actors_per_gpu} -> "
+                            f"{next_actors_per_gpu}. Error: {exc}"
+                        )
+                    finally:
+                        if pbar is not None:
+                            pbar.close()
+                else:
+                    if last_error is not None:
+                        raise last_error
             logger.info(
                 f"Batch processing done. Success: {success_count}/{total_jobs}"
             )

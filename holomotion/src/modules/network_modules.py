@@ -589,6 +589,9 @@ class GroupedMoETransformerPolicy(nn.Module):
 
         self.d_model = int(module_config_dict.get("d_model", 256))
         self.n_layers = int(module_config_dict.get("n_layers", 4))
+        self.dense_layer_at_first = bool(
+            module_config_dict.get("dense_layer_at_first", True)
+        )
         self.dense_layer_at_last = bool(
             module_config_dict.get("dense_layer_at_last", False)
         )
@@ -681,11 +684,13 @@ class GroupedMoETransformerPolicy(nn.Module):
             self.state_obs_embed = None
             self.future_obs_embed = None
             self.future_pos_embed = None
-        # Stack of TransformerBlocks: first layer is always dense; the last
-        # layer is also dense when dense_layer_at_last=True.
+        # Stack of TransformerBlocks: the first/last layer can be configured
+        # as dense, otherwise the layer uses the standard sparse MoE block.
         self.layers = nn.ModuleList()
         for i in range(self.n_layers):
-            use_dense_layer = i == 0 or (
+            use_dense_layer = (
+                self.dense_layer_at_first and i == 0
+            ) or (
                 self.dense_layer_at_last and i == self.n_layers - 1
             )
             if use_dense_layer:

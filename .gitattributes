@@ -16,3 +16,7 @@ assets/videos/*.mp4 filter=lfs diff=lfs merge=lfs -text
 *.gif filter=lfs diff=lfs merge=lfs -text
 *.svg filter=lfs diff=lfs merge=lfs -text
 *.png filter=lfs diff=lfs merge=lfs -text
+assets/media/holomotion_overview.png -filter -diff -merge -text
+assets/media/holomotion_roadmap.png -filter -diff -merge -text
+assets/media/holomotion_pipeline.png -filter -diff -merge -text
+assets/media/holomotion_logo_text.png -filter -diff -merge -text

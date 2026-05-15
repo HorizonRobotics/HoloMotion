@@ -19,6 +19,16 @@ for dir_name in ["config", "launch", "models"]:
             list_entry = (install_dir, [os.path.join(root, f) for f in files])
             data_files.append(list_entry)
 
+launch_profiles_dir = os.path.join("..", "launch_profiles")
+if os.path.exists(launch_profiles_dir):
+    for root, dirs, files in os.walk(launch_profiles_dir):
+        rel_root = os.path.relpath(root, launch_profiles_dir)
+        install_dir = os.path.join("share", package_name, "launch_profiles")
+        if rel_root != ".":
+            install_dir = os.path.join(install_dir, rel_root)
+        list_entry = (install_dir, [os.path.join(root, f) for f in files])
+        data_files.append(list_entry)
+
 setup(
     name=package_name,
     version="0.0.1",

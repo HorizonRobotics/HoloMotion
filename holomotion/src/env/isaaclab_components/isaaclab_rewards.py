@@ -129,6 +129,63 @@ def _select_effort_limit_vector(
     return selected_effort_limits
 
 
+def _body_local_offsets_tensor(
+    offsets: list[list[float]] | tuple[tuple[float, float, float], ...],
+    *,
+    num_bodies: int,
+    device: torch.device,
+    dtype: torch.dtype,
+) -> torch.Tensor:
+    offset_tensor = torch.as_tensor(offsets, device=device, dtype=dtype)
+    if offset_tensor.shape != (num_bodies, 3):
+        raise ValueError(
+            "reward_point_body_offset must have shape "
+            f"({num_bodies}, 3), got {tuple(offset_tensor.shape)}."
+        )
+    return offset_tensor
+
+
+def _body_error_weights_tensor(
+    weights: list[float] | tuple[float, ...] | None,
+    *,
+    num_bodies: int,
+    device: torch.device,
+    dtype: torch.dtype,
+) -> torch.Tensor | None:
+    if weights is None:
+        return None
+    weight_tensor = torch.as_tensor(weights, device=device, dtype=dtype)
+    if weight_tensor.shape != (num_bodies,):
+        raise ValueError(
+            "point_weights must have shape "
+            f"({num_bodies},), got {tuple(weight_tensor.shape)}."
+        )
+    if torch.any(weight_tensor < 0):
+        raise ValueError("point_weights must be non-negative.")
+    if torch.sum(weight_tensor) <= 0:
+        raise ValueError("point_weights must contain a positive weight.")
+    return weight_tensor
+
+
+def _apply_body_local_offsets(
+    body_pos_w: torch.Tensor,
+    body_quat_w: torch.Tensor,
+    offsets: torch.Tensor,
+) -> torch.Tensor:
+    return body_pos_w + isaaclab_math.quat_apply(
+        body_quat_w, offsets[None, :, :].expand_as(body_pos_w)
+    )
+
+
+def _weighted_body_error_mean(
+    error: torch.Tensor,
+    weights: torch.Tensor | None,
+) -> torch.Tensor:
+    if weights is None:
+        return error.mean(-1)
+    return torch.sum(error * weights[None, :], dim=-1) / torch.sum(weights)
+
+
 def key_dof_position_tracking_exp(
     env: ManagerBasedRLEnv,
     std: float,
@@ -361,6 +418,97 @@ def root_rel_keybodylink_pos_tracking_l2_exp(
     return torch.exp(-error.mean(-1) / std**2)
 
 
+def local_reward_point_body_pos_tracking_exp(
+    env: ManagerBasedRLEnv,
+    std: float,
+    reward_point_body: list[str],
+    reward_point_body_offset: list[list[float]],
+    command_name: str = "ref_motion",
+    ref_prefix: str = "ref_",
+    point_weights: list[float] | None = None,
+) -> torch.Tensor:
+    """Track body-local reward points in each entity's root frame.
+
+    `reward_point_body_offset` is expressed in each named body's local frame
+    and is rotated by the corresponding body orientation for both reference
+    and robot states.
+    """
+    command: RefMotionCommand = env.command_manager.get_term(command_name)
+    body_idxs = _get_body_indices(command.robot, reward_point_body)
+    num_bodies = len(body_idxs)
+    if len(reward_point_body_offset) != num_bodies:
+        raise ValueError(
+            "reward_point_body and reward_point_body_offset must have the "
+            f"same length, got {num_bodies} and "
+            f"{len(reward_point_body_offset)}."
+        )
+
+    robot_body_pos_w = command.robot.data.body_pos_w[:, body_idxs]
+    robot_body_quat_w = command.robot.data.body_quat_w[:, body_idxs]
+    device = robot_body_pos_w.device
+    dtype = robot_body_pos_w.dtype
+    offsets = _body_local_offsets_tensor(
+        reward_point_body_offset,
+        num_bodies=num_bodies,
+        device=device,
+        dtype=dtype,
+    )
+    weights = _body_error_weights_tensor(
+        point_weights,
+        num_bodies=num_bodies,
+        device=device,
+        dtype=dtype,
+    )
+
+    ref_body_pos_w = (
+        command.get_ref_motion_bodylink_global_pos_immediate_next(
+            prefix=ref_prefix
+        )[:, body_idxs]
+    )
+    ref_body_quat_w = (
+        command.get_ref_motion_bodylink_global_rot_wxyz_immediate_next(
+            prefix=ref_prefix
+        )[:, body_idxs]
+    )
+
+    ref_point_w = _apply_body_local_offsets(
+        ref_body_pos_w, ref_body_quat_w, offsets
+    )
+    robot_point_w = _apply_body_local_offsets(
+        robot_body_pos_w, robot_body_quat_w, offsets
+    )
+
+    ref_root_pos_w = command.get_ref_motion_root_global_pos_immediate_next(
+        prefix=ref_prefix
+    )
+    ref_root_quat_w = (
+        command.get_ref_motion_root_global_rot_quat_wxyz_immediate_next(
+            prefix=ref_prefix
+        )
+    )
+    robot_root_pos_w = command.robot.data.root_pos_w
+    robot_root_quat_w = command.robot.data.root_quat_w
+
+    ref_root_quat_inv = isaaclab_math.quat_inv(ref_root_quat_w)[
+        :, None, :
+    ].expand(-1, num_bodies, -1)
+    robot_root_quat_inv = isaaclab_math.quat_inv(robot_root_quat_w)[
+        :, None, :
+    ].expand(-1, num_bodies, -1)
+    ref_point_root_local = isaaclab_math.quat_apply(
+        ref_root_quat_inv, ref_point_w - ref_root_pos_w[:, None, :]
+    )
+    robot_point_root_local = isaaclab_math.quat_apply(
+        robot_root_quat_inv, robot_point_w - robot_root_pos_w[:, None, :]
+    )
+
+    error = torch.sum(
+        torch.square(robot_point_root_local - ref_point_root_local),
+        dim=-1,
+    )
+    return torch.exp(-_weighted_body_error_mean(error, weights) / std**2)
+
+
 def motion_relative_body_orientation_error_exp(
     env: ManagerBasedRLEnv,
     std: float,
@@ -530,6 +678,17 @@ def root_pos_rel_z_tracking_exp(
     return torch.exp(-error / std**2)
 
 
+def _vector_relative_error_ratio(
+    pred: torch.Tensor,
+    target: torch.Tensor,
+    eps: float,
+) -> torch.Tensor:
+    """Relative vector error ratio ||pred - target|| / (||target|| + eps)."""
+    diff_norm = torch.linalg.vector_norm(pred - target, dim=-1)
+    target_norm = torch.linalg.vector_norm(target, dim=-1)
+    return diff_norm / (target_norm + eps)
+
+
 def root_lin_vel_tracking_l2_exp(
     env: ManagerBasedRLEnv,
     std: float,
@@ -572,6 +731,46 @@ def root_lin_vel_tracking_l2_exp(
     return torch.exp(-error / std**2)
 
 
+def root_lin_vel_tracking_rel_ratio_exp(
+    env: ManagerBasedRLEnv,
+    std: float,
+    eps: float,
+    command_name: str = "ref_motion",
+    ref_prefix: str = "ref_",
+) -> torch.Tensor:
+    """Track root linear velocity using relative error ratio in each root frame."""
+    command: RefMotionCommand = env.command_manager.get_term(command_name)
+
+    robot_root_lin_vel_w = isaaclab_mdp.root_lin_vel_w(env)
+    robot_root_quat_w = isaaclab_mdp.root_quat_w(env)
+    ref_root_lin_vel_w = (
+        command.get_ref_motion_root_global_lin_vel_immediate_next(
+            prefix=ref_prefix
+        )
+    )
+    ref_root_quat_w = (
+        command.get_ref_motion_root_global_rot_quat_wxyz_immediate_next(
+            prefix=ref_prefix
+        )
+    )
+
+    robot_root_lin_vel = isaaclab_math.quat_apply(
+        isaaclab_math.quat_inv(robot_root_quat_w),
+        robot_root_lin_vel_w,
+    )
+    ref_root_lin_vel = isaaclab_math.quat_apply(
+        isaaclab_math.quat_inv(ref_root_quat_w),
+        ref_root_lin_vel_w,
+    )
+
+    error_ratio = _vector_relative_error_ratio(
+        robot_root_lin_vel,
+        ref_root_lin_vel,
+        eps=eps,
+    )
+    return torch.exp(-torch.square(error_ratio) / std**2)
+
+
 def root_ang_vel_tracking_l2_exp(
     env: ManagerBasedRLEnv,
     std: float,
@@ -612,6 +811,46 @@ def root_ang_vel_tracking_l2_exp(
         torch.square(ref_root_ang_vel - robot_root_ang_vel), dim=-1
     )
     return torch.exp(-error / std**2)
+
+
+def root_ang_vel_tracking_rel_ratio_exp(
+    env: ManagerBasedRLEnv,
+    std: float,
+    eps: float,
+    command_name: str = "ref_motion",
+    ref_prefix: str = "ref_",
+) -> torch.Tensor:
+    """Track root angular velocity using relative error ratio in each root frame."""
+    command: RefMotionCommand = env.command_manager.get_term(command_name)
+
+    robot_root_ang_vel_w = isaaclab_mdp.root_ang_vel_w(env)
+    robot_root_quat_w = isaaclab_mdp.root_quat_w(env)
+    ref_root_ang_vel_w = (
+        command.get_ref_motion_root_global_ang_vel_immediate_next(
+            prefix=ref_prefix
+        )
+    )
+    ref_root_quat_w = (
+        command.get_ref_motion_root_global_rot_quat_wxyz_immediate_next(
+            prefix=ref_prefix
+        )
+    )
+
+    robot_root_ang_vel = isaaclab_math.quat_apply(
+        isaaclab_math.quat_inv(robot_root_quat_w),
+        robot_root_ang_vel_w,
+    )
+    ref_root_ang_vel = isaaclab_math.quat_apply(
+        isaaclab_math.quat_inv(ref_root_quat_w),
+        ref_root_ang_vel_w,
+    )
+
+    error_ratio = _vector_relative_error_ratio(
+        robot_root_ang_vel,
+        ref_root_ang_vel,
+        eps=eps,
+    )
+    return torch.exp(-torch.square(error_ratio) / std**2)
 
 
 def root_rel_keybodylink_pos_tracking_l2_exp_bydmmc_style(

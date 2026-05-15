@@ -2626,8 +2626,20 @@ class MotionClipBatchCache:
         if self._stage_on_swap_only:
             if self._next_batch is None:
                 self._next_batch = self._fetch_next_batch()
+            old_current = self._current_batch
+            self._current_batch = None
+            del old_current
             # Stage the prefetched CPU batch to GPU only at swap time.
-            staged = self._stage_batch_blocking(self._next_batch)
+            try:
+                staged = self._stage_batch_blocking(self._next_batch)
+            except torch.cuda.OutOfMemoryError:
+                if (
+                    self._stage_device is None
+                    or self._stage_device.type != "cuda"
+                ):
+                    raise
+                torch.cuda.empty_cache()
+                staged = self._stage_batch_blocking(self._next_batch)
             self._current_batch = staged
             self._next_batch = self._fetch_next_batch()
             self._swap_index += 1
