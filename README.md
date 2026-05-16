@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="assets/media/holomotion_logo_text.png" alt="HoloMotion Logo" width="600"/>
+<img src="assets/media/holomotion_logo_text.jpg" alt="HoloMotion Logo" width="600"/>
 
 [![Safari](https://img.shields.io/badge/Website-006CFF?logo=safari&logoColor=fff)](https://horizonrobotics.github.io/robot_lab/holomotion/)
 [![HuggingFace](https://img.shields.io/badge/-HuggingFace-3B4252?style=flat&logo=huggingface&logoColor=)](https://huggingface.co/collections/HorizonRobotics/holomotion)
@@ -16,16 +16,13 @@
 - [2026.05.15] HoloMotion v1.3 scales from 60M to 0.4B parameters and 80 to 2000+ hours of motion data, while improving policy inference from ~100 to ~300 FPS.
 - [2026.04.04] HoloMotion v1.2 provides pre-trained motion tracking and velocity tracking models for the community to deploy directly.
 
-<!-- <p align="center">
-  <img width="150" height="230" src="assets/media/wechat_group_20251125.jpg" hspace="10">
-</p> -->
 
 # Why HoloMotion?
 
 HoloMotion scales humanoid whole-body control through a reference-conditioned MoE Transformer, large-scale motion data, and an optimized training-to-deployment pipeline, delivering stronger motion tracking with real-time inference efficiency.
 
 <p align="center">
-  <img src="assets/media/holomotion_overview.png" alt="HoloMotion overview" width="100%">
+  <img src="assets/media/holomotion_overview.jpg" alt="HoloMotion overview" width="100%">
 </p>
 
 
@@ -34,7 +31,7 @@ HoloMotion scales humanoid whole-body control through a reference-conditioned Mo
 The roadmap of HoloMotion advances through four generalization targets, from motion imitation to command following, terrain adaptation, and embodiment transfer.
 
 <p align="center">
-  <img src="assets/media/holomotion_roadmap.png" alt="HoloMotion 4-Any roadmap" width="100%">
+  <img src="assets/media/holomotion_roadmap.jpg" alt="HoloMotion 4-Any roadmap" width="100%">
 </p>
 
 | Version  | Target Capability | Status      | Description                                                                                                                         |
@@ -50,7 +47,7 @@ The roadmap of HoloMotion advances through four generalization targets, from mot
 HoloMotion provides a clear, modular framework for bridging motion data, policy learning, simulation evaluation, and real-robot deployment.
 
 <p align="center">
-  <img src="assets/media/holomotion_pipeline.png" alt="HoloMotion pipeline" width="100%">
+  <img src="assets/media/holomotion_pipeline.jpg" alt="HoloMotion pipeline" width="100%">
 </p>
 
 ## Serves Different Users Without Requiring Everyone to Train
@@ -69,7 +66,7 @@ We are hiring full-time engineers, new graduates, and interns who are excited ab
 Send your resume by scanning the **WeChat** QR code below to get in touch with us.
 
 <p align="center">
-  <img width="420" height="150" src="assets/media/qr_codes.png" hspace="10">
+  <img width="420" height="150" src="assets/media/qr_codes.jpg" hspace="10">
 </p>
 
 # Citation
