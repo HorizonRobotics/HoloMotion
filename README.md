@@ -6,9 +6,8 @@
 [![HuggingFace](https://img.shields.io/badge/-HuggingFace-3B4252?style=flat&logo=huggingface&logoColor=)](https://huggingface.co/collections/HorizonRobotics/holomotion)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/HorizonRobotics/HoloMotion)
 [![WeChat](https://img.shields.io/badge/Wechat-7BB32E?logo=wechat&logoColor=white)](https://horizonrobotics.feishu.cn/docx/Xs3cdEI8bo1EZuxUfzjckTgKn2c)
+[![arXiv](https://img.shields.io/badge/arXiv-2605.15336-red?logo=arxiv&logoColor=white)](https://arxiv.org/abs/2605.15336)
 
-<!-- [![arXiv](https://img.shields.io/badge/arXiv-2025.00000-red?logo=arxiv&logoColor=white)](https://arxiv.org/abs/2025.00000) -->
-<!-- [![arXiv](https://img.shields.io/badge/arXiv-2025.00000-red?logo=arxiv&logoColor=white)](https://arxiv.org/abs/2025.00000) -->
 
 </div>
 
@@ -72,14 +71,14 @@ Send your resume by scanning the **WeChat** QR code below to get in touch with u
 # Citation
 
 ```
-@software{HoloMotion,
-  author = {Maiyue Chen, Kaihui Wang, Bo Zhang, Yi Ren, Zihao Zhu, Xihan Ma, Qijun Huang, Zhiyuan Yang, Yucheng Wang, Zhizhong Su},
-  title = {HoloMotion: A Foundation Model for Whole-Body Humanoid Control},
+@misc{chen2026holomotion1,
+  title = {HoloMotion-1 Technical Report},
+  author = {Maiyue Chen and Kaihui Wang and Bo Zhang and Xihan Ma and Zhiyuan Yang and Yi Ren and Qijun Huang and Zihao Zhu and Yucheng Wang and Zhizhong Su},
   year = {2026},
-  month = May,
-  version = {1.3.0},
-  url = {https://github.com/HorizonRobotics/HoloMotion},
-  license = {Apache-2.0}
+  eprint = {2605.15336},
+  archivePrefix = {arXiv},
+  primaryClass = {cs.RO},
+  url = {https://arxiv.org/abs/2605.15336}
 }
 ```
 
