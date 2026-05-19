@@ -36,9 +36,9 @@ The roadmap of HoloMotion advances through four generalization targets, from mot
 | Version  | Target Capability | Status      | Description                                                                                                                         |
 | -------- | ----------------- | ----------- | ----------------------------------------------------------------------------------------------------------------------------------- |
 | **v1.x** | Any Pose          | ✅ Done        | Achieve robust tracking and imitation of diverse, whole-body human motions, forming the core of the imitation learning capability.  |
-| **v2.x** | Any Command       | 🔜 Next        | Enable language- and task-conditioned motion generation, allowing for goal-directed and interactive behaviors.                      |
-| **v3.x** | Any Terrain       | ⏳ Not started | Master adaptation to uneven, dynamic, and complex terrains, enhancing real-world operational robustness.                            |
-| **v4.x** | Any Embodiment    | ⏳ Not started | Generalize control policies across humanoids with varying morphologies and kinematics, achieving true embodiment-level abstraction. |
+| **v2.x** | Any Command       | 🚀 Next        | Enable language- and task-conditioned motion generation, allowing for goal-directed and interactive behaviors.                      |
+| **v3.x** | Any Terrain       | 🧭 Planned    | Master adaptation to uneven, dynamic, and complex terrains, enhancing real-world operational robustness.                            |
+| **v4.x** | Any Embodiment    | 🧭 Planned    | Generalize control policies across humanoids with varying morphologies and kinematics, achieving true embodiment-level abstraction. |
 
 
 ## Closes the Loop From Motion Data to Real Robots
@@ -94,5 +94,6 @@ This project is built upon and inspired by several outstanding open source proje
 - [ProtoMotion](https://github.com/NVlabs/ProtoMotions/tree/main/protomotions)
 - [GVHMR](https://github.com/zju3dv/GVHMR)
 - [SONIC](https://github.com/NVlabs/GR00T-WholeBodyControl)
+- [MotionMillion](https://github.com/VankouF/MotionMillion-Codes)
 - [Mink](https://github.com/kevinzakka/mink)
 - [PBHC](https://github.com/TeleHuman/PBHC)
