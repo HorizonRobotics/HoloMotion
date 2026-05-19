@@ -50,6 +50,8 @@ __pycache__/
 *.egg-info
 
 .agents/
+.codex
+.codex/
 .cursor/
 .cursorignore
 .vscode/

@@ -145,7 +145,7 @@ ignore-names = [
     "maxDiff",
     # project
     "PROJECT_ROOT",  # project test environment fixture
-    "ROBO_ORCHARD_TEST_WORKSPACE",  # project test fixture
+    "HOLOMOTION_TEST_WORKSPACE",  # project test fixture
     "F",  # import torch.nn.functional as F
 ]
 

@@ -37,7 +37,7 @@ setup(
     install_requires=["setuptools"],
     zip_safe=True,
     maintainer="Horizon Robotics",
-    maintainer_email="maiyue01.chen@horizon.auto",
+    maintainer_email="",
     description="Humanoid locomotion control package from Horizon Robotics",
     license="Apache License 2.0",
     tests_require=["pytest"],
