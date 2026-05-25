@@ -173,7 +173,24 @@ python holomotion_teleop_node.py \
 - `--timing-log-every`: print average stage timing every N ticks
 - `--save-obs-path`: save emitted 65D observations on exit as `.npy` or `.npz`
 
-#### 5. Runtime Check
+#### 5. Visualize obs65 in MuJoCo (Optional)
+
+Use `holomotion_teleop_mjviewer.py` in this same folder to verify the live `obs65` stream and inspect the retargeted pose before enabling the robot. It is a ZMQ SUB client, so it does not interfere with the robot policy and multiple subscribers can connect in parallel.
+
+```bash
+conda activate holomotion_teleop
+cd /path/to/holomotion/deployment/holomotion_teleop
+python holomotion_teleop_mjviewer.py --uri tcp://<publisher-ip>:6001
+```
+
+Set `--uri` to the IP of the machine running `holomotion_teleop_node.py`:
+
+- Same workstation: `tcp://127.0.0.1:6001` (script default).
+- Separate viewing machine: `tcp://<workstation-ip>:6001`. Make sure port `6001` is reachable from that machine.
+
+Useful flags: `--dry-run` for a connectivity check without opening MuJoCo, `--no-follow-camera` for a fixed view.
+
+#### 6. Runtime Check
 
 Before enabling motion on the robot:
 

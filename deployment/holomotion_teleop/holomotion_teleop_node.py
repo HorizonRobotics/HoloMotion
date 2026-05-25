@@ -517,6 +517,7 @@ class VRNodeXRTPicoGMRZmqOut:
         self.save_obs_path = save_obs_path
         self.mirror_pose = MIRROR_POSE
         self.mirror_axis = MIRROR_AXIS
+        self.height_offset = None
         self.tick_count = 0
         self.frame_index = 0
         self.timing_sums_ms = defaultdict(float)
@@ -565,7 +566,10 @@ class VRNodeXRTPicoGMRZmqOut:
             trans = trans.unsqueeze(0)
 
         verts, joints = self.smpl_parser.get_joints_verts(pose, self.betas, trans)
-        # joints[..., 2] -= verts[0, :, 2].min().item()
+        if self.height_offset is None:
+            self.height_offset = float(verts[0, :, 2].min().item())
+            self.info(f"[SMPL] fixed height_offset={self.height_offset:.6f}")
+        joints[..., 2] -= self.height_offset
 
         pose = pose.squeeze(0)
         trans = trans.squeeze(0)
