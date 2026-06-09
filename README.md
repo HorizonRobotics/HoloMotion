@@ -18,6 +18,8 @@
 
 # Why HoloMotion?
 
+## Larger, Faster and Stronger
+
 HoloMotion scales humanoid whole-body control through a reference-conditioned MoE Transformer, large-scale motion data, and an optimized training-to-deployment pipeline, delivering stronger motion tracking with real-time inference efficiency.
 
 <p align="center">
@@ -41,7 +43,7 @@ The roadmap of HoloMotion advances through four generalization targets, from mot
 | **v4.x** | Any Embodiment    | 🧭 Planned    | Generalize control policies across humanoids with varying morphologies and kinematics, achieving true embodiment-level abstraction. |
 
 
-## Closes the Loop From Motion Data to Real Robots
+## Closes the Loop From Data to Robots
 
 HoloMotion provides a clear, modular framework for bridging motion data, policy learning, simulation evaluation, and real-robot deployment.
 
@@ -49,7 +51,7 @@ HoloMotion provides a clear, modular framework for bridging motion data, policy 
   <img src="assets/media/holomotion_pipeline.jpg" alt="HoloMotion pipeline" width="100%">
 </p>
 
-## Serves Different Users Without Requiring Everyone to Train
+## No Per-User Training Required
 
 Whether you want to replay motions, stream live teleoperation, or train a custom policy, HoloMotion provides a direct path into the workflow:
 
@@ -86,14 +88,14 @@ Send your resume by scanning the **WeChat** QR code below to get in touch with u
 
 This project is built upon and inspired by several outstanding open source projects:
 
-- [GMR](https://github.com/YanjieZe/GMR)
-- [BeyondMimic](https://github.com/HybridRobotics/whole_body_tracking)
 - [ASAP](https://github.com/LeCAR-Lab/ASAP)
+- [BeyondMimic](https://github.com/HybridRobotics/whole_body_tracking)
+- [GMR](https://github.com/YanjieZe/GMR)
+- [GVHMR](https://github.com/zju3dv/GVHMR)
 - [Humanoidverse](https://github.com/LeCAR-Lab/HumanoidVerse)
+- [Mink](https://github.com/kevinzakka/mink)
+- [MotionMillion](https://github.com/VankouF/MotionMillion-Codes)
+- [PBHC](https://github.com/TeleHuman/PBHC)
 - [PHC](https://github.com/ZhengyiLuo/PHC?tab=readme-ov-file)
 - [ProtoMotion](https://github.com/NVlabs/ProtoMotions/tree/main/protomotions)
-- [GVHMR](https://github.com/zju3dv/GVHMR)
 - [SONIC](https://github.com/NVlabs/GR00T-WholeBodyControl)
-- [MotionMillion](https://github.com/VankouF/MotionMillion-Codes)
-- [Mink](https://github.com/kevinzakka/mink)
-- [PBHC](https://github.com/TeleHuman/PBHC)
