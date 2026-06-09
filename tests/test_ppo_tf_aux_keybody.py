@@ -468,7 +468,7 @@ def test_grouped_moe_block_tracks_least_utilized_expert_stats():
     assert block.last_dead_expert_ratio.item() == pytest.approx(0.0)
 
 
-def test_grouped_moe_block_tracks_dead_expert_margin_to_topk_loss():
+def test_grouped_moe_block_tracks_inactive_expert_margin_to_topk_loss():
     block = GroupedMoEBlock(
         d_model=4,
         n_heads=2,
@@ -483,7 +483,8 @@ def test_grouped_moe_block_tracks_dead_expert_margin_to_topk_loss():
         mlp_dropout=0.0,
         use_dynamic_bias=False,
         routing_score_fn="softmax",
-        dead_expert_margin_to_topk_enabled=True,
+        inactive_expert_margin_to_topk_enabled=True,
+        inactive_expert_margin_to_topk_ratio_floor=0.5,
     )
 
     topk_idx = torch.tensor([[[0], [0]]], dtype=torch.long)
@@ -505,14 +506,14 @@ def test_grouped_moe_block_tracks_dead_expert_margin_to_topk_loss():
 
     torch.testing.assert_close(loss, expected)
     torch.testing.assert_close(
-        block.last_dead_expert_margin_to_topk_loss, expected
+        block.last_inactive_expert_margin_to_topk_loss, expected
     )
     torch.testing.assert_close(
-        block.last_dead_expert_margin_to_topk_loss_value,
+        block.last_inactive_expert_margin_to_topk_loss_value,
         expected.detach(),
     )
     torch.testing.assert_close(
-        block.last_dead_expert_margin_to_topk_target,
+        block.last_inactive_expert_margin_to_topk_target,
         choice_scores.gather(-1, topk_idx)[..., -1:].mean(),
     )
     torch.testing.assert_close(
@@ -870,7 +871,7 @@ def test_setup_configs_rejects_unknown_router_switch_penalty_metric():
             algo._setup_configs()
 
 
-def test_setup_configs_reads_dead_expert_margin_to_topk_only():
+def test_setup_configs_reads_inactive_expert_margin_to_topk_only():
     algo = PPOTF.__new__(PPOTF)
     algo.command_name = "ref_motion"
 
@@ -878,12 +879,19 @@ def test_setup_configs_reads_dead_expert_margin_to_topk_only():
         "aux_state_pred": {"enabled": False},
         "aux_router_command_recon": {"enabled": False},
         "aux_router_switch_penalty": {"enabled": False},
-        "dead_expert_margin_to_topk": {"enabled": True, "weight": 0.7},
+        "inactive_expert_margin_to_topk": {
+            "enabled": True,
+            "weight": 0.7,
+            "ratio_floor": 0.2,
+        },
     }
     with mock.patch.object(PPO, "_setup_configs", return_value=None):
         algo._setup_configs()
-    assert algo.use_dead_expert_margin_to_topk is True
-    assert algo.dead_expert_margin_to_topk_weight == pytest.approx(0.7)
+    assert algo.use_inactive_expert_margin_to_topk is True
+    assert algo.inactive_expert_margin_to_topk_weight == pytest.approx(0.7)
+    assert algo.inactive_expert_margin_to_topk_ratio_floor == pytest.approx(
+        0.2
+    )
 
     algo = PPOTF.__new__(PPOTF)
     algo.command_name = "ref_motion"
@@ -894,8 +902,11 @@ def test_setup_configs_reads_dead_expert_margin_to_topk_only():
     }
     with mock.patch.object(PPO, "_setup_configs", return_value=None):
         algo._setup_configs()
-    assert algo.use_dead_expert_margin_to_topk is False
-    assert algo.dead_expert_margin_to_topk_weight == pytest.approx(0.0)
+    assert algo.use_inactive_expert_margin_to_topk is False
+    assert algo.inactive_expert_margin_to_topk_weight == pytest.approx(0.0)
+    assert algo.inactive_expert_margin_to_topk_ratio_floor == pytest.approx(
+        0.0
+    )
 
 
 def test_setup_configs_reads_selected_expert_margin_to_unselected():
@@ -977,7 +988,7 @@ def test_setup_configs_reads_router_expert_orthogonal():
         "aux_state_pred": {"enabled": False},
         "aux_router_command_recon": {"enabled": False},
         "aux_router_switch_penalty": {"enabled": False},
-        "dead_expert_margin_to_topk": {"enabled": True, "weight": 0.7},
+        "inactive_expert_margin_to_topk": {"enabled": True, "weight": 0.7},
         "router_expert_orthogonal": {
             "enabled": True,
             "weight": 0.9,
@@ -993,7 +1004,7 @@ def test_setup_configs_reads_router_expert_orthogonal():
     assert algo.router_expert_orthogonal_eps == pytest.approx(1.0e-6)
 
 
-def test_setup_configs_rejects_router_expert_orthogonal_without_dead_margin():
+def test_setup_configs_rejects_router_expert_orthogonal_without_inactive_margin():
     algo = PPOTF.__new__(PPOTF)
     algo.command_name = "ref_motion"
     algo.config = {
@@ -1007,7 +1018,7 @@ def test_setup_configs_rejects_router_expert_orthogonal_without_dead_margin():
     }
 
     with mock.patch.object(PPO, "_setup_configs", return_value=None):
-        with pytest.raises(ValueError, match="requires.*dead_expert"):
+        with pytest.raises(ValueError, match="requires.*inactive_expert"):
             algo._setup_configs()
 
 

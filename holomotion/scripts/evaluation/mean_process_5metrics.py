@@ -33,9 +33,20 @@ METRICS = [
     "mpjpe_l",
     "whole_body_joints_dist",
     "root_vel_error",
+    "root_ang_vel_error",
+    "p95_root_ang_vel_error",
     "root_r_error",
     "root_p_error",
     "root_y_error",
+    "p95_root_y_error",
+    "root_quat_error",
+    "p95_root_quat_error",
+    "root_yaw_drift_error",
+    "ref_root_yaw_range",
+    "turning_motion_rate",
+    "turning_root_y_error",
+    "turning_p95_root_y_error",
+    "turning_root_yaw_drift_error",
     "root_height_error",
     "mean_dof_vel",
     "mean_dof_acc",
@@ -54,9 +65,20 @@ COLUMN_MAPPING = {
     "mpjpe_l": "Local Bodylink Pos Err",
     "whole_body_joints_dist": "Dof Position Err",
     "root_vel_error": "Root Vel Err",
+    "root_ang_vel_error": "Root Ang Vel Err",
+    "p95_root_ang_vel_error": "P95 Root Ang Vel Err",
     "root_r_error": "Root Roll Err",
     "root_p_error": "Root Pitch Err",
     "root_y_error": "Root Yaw Err",
+    "p95_root_y_error": "P95 Root Yaw Err",
+    "root_quat_error": "Root Quat Err",
+    "p95_root_quat_error": "P95 Root Quat Err",
+    "root_yaw_drift_error": "Root Yaw Drift Err",
+    "ref_root_yaw_range": "Ref Root Yaw Range",
+    "turning_motion_rate": "Turning Clip Rate",
+    "turning_root_y_error": "Turning Root Yaw Err",
+    "turning_p95_root_y_error": "Turning P95 Root Yaw Err",
+    "turning_root_yaw_drift_error": "Turning Root Yaw Drift Err",
     "root_height_error": "Root Height Err",
     "mean_dof_vel": "Mean Dof Vel",
     "mean_dof_acc": "Mean Dof Acc",
@@ -127,6 +149,19 @@ def process_data(folder_path):
                 val = entry.get(metric, None)
                 if val is not None:
                     record[metric] = val
+
+            is_turning_clip = (
+                float(entry.get("turning_motion_rate", 0.0)) >= 0.5
+            )
+            if is_turning_clip:
+                for source_metric, turning_metric in (
+                    ("root_y_error", "turning_root_y_error"),
+                    ("p95_root_y_error", "turning_p95_root_y_error"),
+                    ("root_yaw_drift_error", "turning_root_yaw_drift_error"),
+                ):
+                    val = entry.get(source_metric, None)
+                    if val is not None:
+                        record[turning_metric] = val
 
             all_records.append(record)
 

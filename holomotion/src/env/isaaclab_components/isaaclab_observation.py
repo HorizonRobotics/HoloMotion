@@ -1179,6 +1179,52 @@ class ObservationFunctions:
         )
 
     @staticmethod
+    def _get_obs_ref_future_yaw_delta_sin_cos(
+        env: ManagerBasedRLEnv,
+        ref_motion_command_name: str = "ref_motion",
+        ref_prefix: str = "ref_",
+        num_frames: int | None = None,
+    ) -> torch.Tensor:  # [num_envs, T, 2]
+        """Future reference yaw deltas as sin/cos pairs."""
+        command = env.command_manager.get_term(ref_motion_command_name)
+        yaw_delta = command.get_ref_motion_future_yaw_delta_sin_cos(
+            prefix=ref_prefix
+        )
+        return ObservationFunctions._slice_future_frames(
+            yaw_delta,
+            num_frames=num_frames,
+            obs_name="ref_future_yaw_delta_sin_cos",
+        )
+
+    @staticmethod
+    def _get_obs_ref_robot_yaw_error_sin_cos(
+        env: ManagerBasedRLEnv,
+        ref_motion_command_name: str = "ref_motion",
+        ref_prefix: str = "ref_",
+    ) -> torch.Tensor:  # [num_envs, 2]
+        """Current reference-vs-robot yaw error as a sin/cos pair."""
+        command = env.command_manager.get_term(ref_motion_command_name)
+        return command.get_ref_robot_yaw_error_sin_cos(prefix=ref_prefix)
+
+    @staticmethod
+    def _get_obs_ref_future_root_ori_robot_frame_6d(
+        env: ManagerBasedRLEnv,
+        ref_motion_command_name: str = "ref_motion",
+        ref_prefix: str = "ref_",
+        num_frames: int | None = None,
+    ) -> torch.Tensor:  # [num_envs, T, 6]
+        """Future reference root orientation in current robot frame."""
+        command = env.command_manager.get_term(ref_motion_command_name)
+        root_rot6d = command.get_ref_future_root_ori_robot_frame_6d(
+            prefix=ref_prefix
+        )
+        return ObservationFunctions._slice_future_frames(
+            root_rot6d,
+            num_frames=num_frames,
+            obs_name="ref_future_root_ori_robot_frame_6d",
+        )
+
+    @staticmethod
     def _get_obs_ref_motion_cur_heading_aligned_root_lin_vel(
         env: ManagerBasedRLEnv,
         ref_motion_command_name: str = "ref_motion",
@@ -1694,13 +1740,15 @@ def build_observations_config(obs_config_dict: dict):
         isaaclab_obs_group_cfg = ObsGroup()
 
         for key, value in group_cfg.items():
-            if key == "atomic_obs_list":
+            if key in {"atomic_obs_list", "additional_atomic_obs_list"}:
                 continue
             if hasattr(isaaclab_obs_group_cfg, key):
                 setattr(isaaclab_obs_group_cfg, key, value)
 
         # Add observation terms to the group
-        for obs_term_dict in group_cfg["atomic_obs_list"]:
+        atomic_obs_list = list(group_cfg["atomic_obs_list"])
+        atomic_obs_list.extend(group_cfg.get("additional_atomic_obs_list", []))
+        for obs_term_dict in atomic_obs_list:
             for obs_name, obs_params in obs_term_dict.items():
                 obs_params = resolve_holo_config(obs_params)
                 func_name = obs_params.get("func", obs_name)

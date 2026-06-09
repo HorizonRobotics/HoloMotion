@@ -15,7 +15,6 @@
 # permissions and limitations under the License.
 
 
-
 from dataclasses import MISSING
 from typing import Sequence
 import time
@@ -87,6 +86,18 @@ from holomotion.src.utils.reference_prefix import (
     resolve_reference_tensor_key,
 )
 from loguru import logger
+
+
+def _yaw_from_quat_wxyz(quat: torch.Tensor) -> torch.Tensor:
+    """Return yaw angle from a WXYZ quaternion tensor."""
+    qw = quat[..., 0]
+    qx = quat[..., 1]
+    qy = quat[..., 2]
+    qz = quat[..., 3]
+    return torch.atan2(
+        2.0 * (qw * qz + qx * qy),
+        1.0 - 2.0 * (qy * qy + qz * qz),
+    )
 
 
 class RefMotionCommand(CommandTerm):
@@ -1717,6 +1728,78 @@ class RefMotionCommand(CommandTerm):
         )[..., :2].reshape(num_envs, num_fut_frames, 6)  # [B, T, 6]
 
         return ref_root_rot6d_fut
+
+    def get_ref_motion_future_yaw_delta_sin_cos(
+        self,
+        prefix: str = "ref_",
+    ) -> torch.Tensor:
+        """Future reference yaw deltas relative to current reference yaw.
+
+        Returns:
+            torch.Tensor: [B, T, 2] as sin/cos(ref_yaw[t+k] - ref_yaw[t]).
+        """
+        ref_root_quat_cur = self.get_ref_motion_root_global_rot_quat_wxyz_cur(
+            prefix=prefix
+        )
+        ref_root_quat_fut = self.get_ref_motion_root_global_rot_quat_wxyz_fut(
+            prefix=prefix
+        )
+        ref_yaw_cur = _yaw_from_quat_wxyz(ref_root_quat_cur)
+        ref_yaw_fut = _yaw_from_quat_wxyz(ref_root_quat_fut)
+        yaw_delta = ref_yaw_fut - ref_yaw_cur[:, None]
+        return torch.stack(
+            [torch.sin(yaw_delta), torch.cos(yaw_delta)],
+            dim=-1,
+        )
+
+    def get_ref_robot_yaw_error_sin_cos(
+        self,
+        prefix: str = "ref_",
+    ) -> torch.Tensor:
+        """Current reference-vs-robot yaw error in the local world frame.
+
+        Returns:
+            torch.Tensor: [B, 2] as sin/cos(ref_yaw[t] - robot_yaw[t]).
+        """
+        ref_root_quat = self.get_ref_motion_root_global_rot_quat_wxyz_cur(
+            prefix=prefix
+        )
+        robot_root_quat = self.robot.data.root_quat_w
+        yaw_error = _yaw_from_quat_wxyz(ref_root_quat) - _yaw_from_quat_wxyz(
+            robot_root_quat
+        )
+        return torch.stack(
+            [torch.sin(yaw_error), torch.cos(yaw_error)],
+            dim=-1,
+        )
+
+    def get_ref_future_root_ori_robot_frame_6d(
+        self,
+        prefix: str = "ref_",
+    ) -> torch.Tensor:
+        """Future reference root orientation in the current robot root frame.
+
+        Returns:
+            torch.Tensor: [B, T, 6] rot6d of inv(q_robot[t]) * q_ref[t+k].
+        """
+        robot_root_quat = self.robot.data.root_quat_w
+        ref_root_quat_fut = self.get_ref_motion_root_global_rot_quat_wxyz_fut(
+            prefix=prefix
+        )
+        num_envs, num_fut_frames, _ = ref_root_quat_fut.shape
+        robot_root_quat_inv = isaaclab_math.quat_inv(robot_root_quat)
+        robot_root_quat_inv_fut = robot_root_quat_inv[:, None, :].expand(
+            -1, num_fut_frames, -1
+        )
+        rel_quat = isaaclab_math.quat_mul(
+            robot_root_quat_inv_fut.reshape(-1, 4),
+            ref_root_quat_fut.reshape(-1, 4),
+        ).reshape(num_envs, num_fut_frames, 4)
+        return isaaclab_math.matrix_from_quat(rel_quat)[..., :2].reshape(
+            num_envs,
+            num_fut_frames,
+            6,
+        )
 
     def get_ref_motion_cur_heading_aligned_root_lin_vel(
         self,

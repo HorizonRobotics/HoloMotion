@@ -161,6 +161,18 @@ def test_ref_future_observations_can_limit_num_frames(monkeypatch):
         def get_ref_motion_base_angvel_fut(self, prefix="ref_"):
             return torch.arange(24, dtype=torch.float32).reshape(2, 4, 3)
 
+        def get_ref_motion_future_yaw_delta_sin_cos(self, prefix="ref_"):
+            return torch.arange(16, dtype=torch.float32).reshape(2, 4, 2)
+
+        def get_ref_future_root_ori_robot_frame_6d(self, prefix="ref_"):
+            return torch.arange(48, dtype=torch.float32).reshape(2, 4, 6)
+
+        def get_ref_robot_yaw_error_sin_cos(self, prefix="ref_"):
+            return torch.tensor(
+                [[0.0, 1.0], [1.0, 0.0]],
+                dtype=torch.float32,
+            )
+
         def get_ref_motion_root_global_pos_fut(self, prefix="ref_"):
             pos = torch.arange(24, dtype=torch.float32).reshape(2, 4, 3)
             pos[..., 2] = torch.tensor(
@@ -204,6 +216,19 @@ def test_ref_future_observations_can_limit_num_frames(monkeypatch):
             env, num_frames=2
         )
     )
+    yaw_delta = (
+        observation.ObservationFunctions._get_obs_ref_future_yaw_delta_sin_cos(
+            env, num_frames=2
+        )
+    )
+    root_ori = observation.ObservationFunctions._get_obs_ref_future_root_ori_robot_frame_6d(
+        env, num_frames=2
+    )
+    yaw_error = (
+        observation.ObservationFunctions._get_obs_ref_robot_yaw_error_sin_cos(
+            env
+        )
+    )
 
     assert dof_pos.shape == (2, 2, 3)
     assert dof_vel.shape == (2, 6)
@@ -211,6 +236,9 @@ def test_ref_future_observations_can_limit_num_frames(monkeypatch):
     assert base_linvel.shape == (2, 2, 3)
     assert base_angvel.shape == (2, 2, 3)
     assert root_height.shape == (2, 2, 1)
+    assert yaw_delta.shape == (2, 2, 2)
+    assert root_ori.shape == (2, 2, 6)
+    assert yaw_error.shape == (2, 2)
     torch.testing.assert_close(
         dof_pos,
         torch.tensor(
@@ -233,6 +261,20 @@ def test_ref_future_observations_can_limit_num_frames(monkeypatch):
     )
     torch.testing.assert_close(
         root_height[..., 0], torch.tensor([[1.0, 2.0], [0.5, 1.5]])
+    )
+    torch.testing.assert_close(
+        yaw_delta,
+        torch.tensor(
+            [
+                [[0.0, 1.0], [2.0, 3.0]],
+                [[8.0, 9.0], [10.0, 11.0]],
+            ],
+            dtype=torch.float32,
+        ),
+    )
+    torch.testing.assert_close(
+        yaw_error,
+        torch.tensor([[0.0, 1.0], [1.0, 0.0]], dtype=torch.float32),
     )
 
 

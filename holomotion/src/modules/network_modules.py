@@ -545,14 +545,29 @@ class GroupedMoETransformerPolicy(nn.Module):
         self.expert_bias_clip = float(
             module_config_dict.get("expert_bias_clip", 0.0)
         )
-        dead_margin_cfg = module_config_dict.get(
-            "dead_expert_margin_to_topk", {}
+        load_balance_cfg = module_config_dict.get("moe_load_balance", {})
+        self.moe_load_balance_enabled = bool(
+            load_balance_cfg.get("enabled", False)
+        )
+        self.routed_expert_usage_ema_decay = float(
+            module_config_dict.get("routed_expert_usage_ema_decay", 0.99)
+        )
+        self.routed_expert_usage_ema_dead_threshold = float(
+            module_config_dict.get(
+                "routed_expert_usage_ema_dead_threshold", 1.0e-6
+            )
+        )
+        inactive_margin_cfg = module_config_dict.get(
+            "inactive_expert_margin_to_topk", {}
         )
         selected_margin_cfg = module_config_dict.get(
             "selected_expert_margin_to_unselected", {}
         )
-        self.dead_expert_margin_to_topk_enabled = bool(
-            dead_margin_cfg.get("enabled", False)
+        self.inactive_expert_margin_to_topk_enabled = bool(
+            inactive_margin_cfg.get("enabled", False)
+        )
+        self.inactive_expert_margin_to_topk_ratio_floor = float(
+            inactive_margin_cfg.get("ratio_floor", 0.0)
         )
         self.selected_expert_margin_to_unselected_enabled = bool(
             selected_margin_cfg.get("enabled", False)
@@ -572,10 +587,25 @@ class GroupedMoETransformerPolicy(nn.Module):
             raise ValueError(
                 f"expert_bias_clip must be >= 0, got {self.expert_bias_clip}"
             )
+        if not (0.0 <= self.routed_expert_usage_ema_decay < 1.0):
+            raise ValueError(
+                "routed_expert_usage_ema_decay must be in [0, 1), got "
+                f"{self.routed_expert_usage_ema_decay}"
+            )
+        if self.routed_expert_usage_ema_dead_threshold < 0.0:
+            raise ValueError(
+                "routed_expert_usage_ema_dead_threshold must be >= 0, got "
+                f"{self.routed_expert_usage_ema_dead_threshold}"
+            )
         if self.selected_expert_margin_to_unselected_target < 0.0:
             raise ValueError(
                 "selected_expert_margin_to_unselected.target must be >= 0, "
                 f"got {self.selected_expert_margin_to_unselected_target}"
+            )
+        if not (0.0 <= self.inactive_expert_margin_to_topk_ratio_floor <= 1.0):
+            raise ValueError(
+                "inactive_expert_margin_to_topk.ratio_floor must be in "
+                f"[0, 1], got {self.inactive_expert_margin_to_topk_ratio_floor}"
             )
 
         _ov = module_config_dict.get("input_dim_override", None)
@@ -639,6 +669,13 @@ class GroupedMoETransformerPolicy(nn.Module):
 
         # RoPE configuration (used in both sequence and KV-cached single-step inference)
         self.rope_theta = float(module_config_dict.get("rope_theta", 10000.0))
+        self.rope_max_seq_len = int(
+            module_config_dict.get("rope_max_seq_len", 8192)
+        )
+        if self.rope_max_seq_len <= 0:
+            raise ValueError(
+                f"rope_max_seq_len must be positive, got {self.rope_max_seq_len}"
+            )
         self.inv_freq = 1.0 / (
             self.rope_theta
             ** (
@@ -647,7 +684,7 @@ class GroupedMoETransformerPolicy(nn.Module):
             )
         )  # [head_dim//2]
         self.register_buffer("_rope_inv_freq", self.inv_freq, persistent=False)
-        self._set_cos_sin_cache(seq_len=8192)
+        self._set_cos_sin_cache(seq_len=self.rope_max_seq_len)
 
         obs_in = self.obs_input_dim or self.input_dim
         if self.use_future_cross_attn:
@@ -688,9 +725,7 @@ class GroupedMoETransformerPolicy(nn.Module):
         # as dense, otherwise the layer uses the standard sparse MoE block.
         self.layers = nn.ModuleList()
         for i in range(self.n_layers):
-            use_dense_layer = (
-                self.dense_layer_at_first and i == 0
-            ) or (
+            use_dense_layer = (self.dense_layer_at_first and i == 0) or (
                 self.dense_layer_at_last and i == self.n_layers - 1
             )
             if use_dense_layer:
@@ -726,8 +761,18 @@ class GroupedMoETransformerPolicy(nn.Module):
                     freeze_router=self.freeze_router,
                     routing_scale=self.routing_scale,
                     expert_bias_clip=self.expert_bias_clip,
-                    dead_expert_margin_to_topk_enabled=(
-                        self.dead_expert_margin_to_topk_enabled
+                    moe_load_balance_enabled=self.moe_load_balance_enabled,
+                    routed_expert_usage_ema_decay=(
+                        self.routed_expert_usage_ema_decay
+                    ),
+                    routed_expert_usage_ema_dead_threshold=(
+                        self.routed_expert_usage_ema_dead_threshold
+                    ),
+                    inactive_expert_margin_to_topk_enabled=(
+                        self.inactive_expert_margin_to_topk_enabled
+                    ),
+                    inactive_expert_margin_to_topk_ratio_floor=(
+                        self.inactive_expert_margin_to_topk_ratio_floor
                     ),
                     selected_expert_margin_to_unselected_enabled=(
                         self.selected_expert_margin_to_unselected_enabled
@@ -3828,9 +3873,13 @@ class GroupedMoEBlock(nn.Module):
         freeze_router: bool = False,
         routing_scale: float = 1.0,
         expert_bias_clip: float = 0.0,
-        dead_expert_margin_to_topk_enabled: bool = False,
+        moe_load_balance_enabled: bool = False,
+        inactive_expert_margin_to_topk_enabled: bool = False,
+        inactive_expert_margin_to_topk_ratio_floor: float = 0.0,
         selected_expert_margin_to_unselected_enabled: bool = False,
         selected_expert_margin_to_unselected_target: float = 0.0,
+        routed_expert_usage_ema_decay: float = 0.99,
+        routed_expert_usage_ema_dead_threshold: float = 1.0e-6,
         use_cross_attn: bool = False,
     ):
         super().__init__()
@@ -3845,14 +3894,24 @@ class GroupedMoEBlock(nn.Module):
         self.freeze_router = bool(freeze_router)
         self.routing_scale = float(routing_scale)
         self.expert_bias_clip = float(expert_bias_clip)
-        self.dead_expert_margin_to_topk_enabled = bool(
-            dead_expert_margin_to_topk_enabled
+        self.moe_load_balance_enabled = bool(moe_load_balance_enabled)
+        self.inactive_expert_margin_to_topk_enabled = bool(
+            inactive_expert_margin_to_topk_enabled
+        )
+        self.inactive_expert_margin_to_topk_ratio_floor = float(
+            inactive_expert_margin_to_topk_ratio_floor
         )
         self.selected_expert_margin_to_unselected_enabled = bool(
             selected_expert_margin_to_unselected_enabled
         )
         self.selected_expert_margin_to_unselected_target = float(
             selected_expert_margin_to_unselected_target
+        )
+        self.routed_expert_usage_ema_decay = float(
+            routed_expert_usage_ema_decay
+        )
+        self.routed_expert_usage_ema_dead_threshold = float(
+            routed_expert_usage_ema_dead_threshold
         )
         if self.routing_score_fn not in ("softmax", "sigmoid"):
             raise ValueError(
@@ -3870,6 +3929,21 @@ class GroupedMoEBlock(nn.Module):
             raise ValueError(
                 "selected_expert_margin_to_unselected_target must be >= 0, "
                 f"got {self.selected_expert_margin_to_unselected_target}"
+            )
+        if not (0.0 <= self.inactive_expert_margin_to_topk_ratio_floor <= 1.0):
+            raise ValueError(
+                "inactive_expert_margin_to_topk_ratio_floor must be in "
+                f"[0, 1], got {self.inactive_expert_margin_to_topk_ratio_floor}"
+            )
+        if not (0.0 <= self.routed_expert_usage_ema_decay < 1.0):
+            raise ValueError(
+                "routed_expert_usage_ema_decay must be in [0, 1), got "
+                f"{self.routed_expert_usage_ema_decay}"
+            )
+        if self.routed_expert_usage_ema_dead_threshold < 0.0:
+            raise ValueError(
+                "routed_expert_usage_ema_dead_threshold must be >= 0, got "
+                f"{self.routed_expert_usage_ema_dead_threshold}"
             )
         self.register_buffer("expert_bias", torch.zeros(num_fine_experts))
         self.register_buffer(
@@ -3908,17 +3982,37 @@ class GroupedMoEBlock(nn.Module):
             "last_dead_expert_ratio", torch.tensor(0.0), persistent=False
         )
         self.register_buffer(
+            "ema_routed_expert_usage",
+            torch.zeros(num_fine_experts, dtype=torch.float32),
+            persistent=False,
+        )
+        self.register_buffer(
+            "ema_routed_expert_usage_initialized",
+            torch.tensor(False),
+            persistent=False,
+        )
+        self.register_buffer(
+            "last_ema_dead_expert_ratio",
+            torch.tensor(0.0),
+            persistent=False,
+        )
+        self.register_buffer(
+            "last_ema_max_expert_frac",
+            torch.tensor(0.0),
+            persistent=False,
+        )
+        self.register_buffer(
             "last_dense_expert_usage",
             torch.zeros(num_fine_experts, dtype=torch.float32),
             persistent=False,
         )
         self.register_buffer(
-            "last_dead_expert_margin_to_topk_loss_value",
+            "last_inactive_expert_margin_to_topk_loss_value",
             torch.tensor(0.0),
             persistent=False,
         )
         self.register_buffer(
-            "last_dead_expert_margin_to_topk_target",
+            "last_inactive_expert_margin_to_topk_target",
             torch.tensor(0.0),
             persistent=False,
         )
@@ -3932,16 +4026,24 @@ class GroupedMoEBlock(nn.Module):
             torch.tensor(0.0),
             persistent=False,
         )
+        self.register_buffer(
+            "last_moe_load_balance_loss_value",
+            torch.tensor(0.0),
+            persistent=False,
+        )
         self.collect_routing_stats = False
         self.collect_router_distribution = False
         self.capture_router_distribution = False
         self.capture_router_logits = False
         self.last_router_distribution: torch.Tensor | None = None
         self.last_router_logits: torch.Tensor | None = None
-        self.last_dead_expert_margin_to_topk_loss: torch.Tensor | None = None
+        self.last_inactive_expert_margin_to_topk_loss: torch.Tensor | None = (
+            None
+        )
         self.last_selected_expert_margin_to_unselected_loss: (
             torch.Tensor | None
         ) = None
+        self.last_moe_load_balance_loss: torch.Tensor | None = None
         self.use_cross_attn = bool(use_cross_attn)
 
         self.norm1 = RMSNorm(d_model)
@@ -4098,12 +4200,14 @@ class GroupedMoEBlock(nn.Module):
         self.last_routed_active_expert_count.zero_()
         self.last_routed_max_expert_frac.zero_()
         self.last_dense_expert_usage.zero_()
-        self.last_dead_expert_margin_to_topk_loss_value.zero_()
-        self.last_dead_expert_margin_to_topk_target.zero_()
-        self.last_dead_expert_margin_to_topk_loss = None
+        self.last_inactive_expert_margin_to_topk_loss_value.zero_()
+        self.last_inactive_expert_margin_to_topk_target.zero_()
+        self.last_inactive_expert_margin_to_topk_loss = None
         self.last_selected_expert_margin_to_unselected.zero_()
         self.last_selected_expert_margin_to_unselected_loss_value.zero_()
         self.last_selected_expert_margin_to_unselected_loss = None
+        self.last_moe_load_balance_loss_value.zero_()
+        self.last_moe_load_balance_loss = None
 
     def accumulate_routing_stats(self, topk_idx: torch.Tensor) -> None:
         with torch.no_grad():
@@ -4148,6 +4252,23 @@ class GroupedMoEBlock(nn.Module):
             self.last_expert_count_cv.copy_(expert_count_cv)
             self.last_min_expert_frac.copy_(min_expert_frac)
             self.last_dead_expert_ratio.copy_(dead_expert_ratio)
+            usage = counts.to(torch.float32) / total.to(torch.float32)
+            if bool(self.ema_routed_expert_usage_initialized.item()):
+                self.ema_routed_expert_usage.mul_(
+                    self.routed_expert_usage_ema_decay
+                ).add_(
+                    usage,
+                    alpha=1.0 - self.routed_expert_usage_ema_decay,
+                )
+            else:
+                self.ema_routed_expert_usage.copy_(usage)
+                self.ema_routed_expert_usage_initialized.fill_(True)
+            ema_usage = self.ema_routed_expert_usage
+            ema_dead_ratio = (
+                ema_usage <= self.routed_expert_usage_ema_dead_threshold
+            ).to(torch.float32).mean()
+            self.last_ema_dead_expert_ratio.copy_(ema_dead_ratio)
+            self.last_ema_max_expert_frac.copy_(ema_usage.max())
             if self.use_dynamic_bias and self.expert_bias_clip > 0.0:
                 self.expert_bias.clamp_(
                     min=-self.expert_bias_clip, max=self.expert_bias_clip
@@ -4187,6 +4308,20 @@ class GroupedMoEBlock(nn.Module):
             self.last_dense_expert_usage.copy_(
                 dense_usage.detach().to(self.last_dense_expert_usage.dtype)
             )
+        if self.moe_load_balance_enabled:
+            load_balance_loss = (
+                self.num_fine_experts
+                * (hard_usage.detach() * dense_usage).sum()
+            )
+        else:
+            load_balance_loss = dense_distribution.new_zeros(())
+        with torch.no_grad():
+            self.last_moe_load_balance_loss_value.copy_(
+                load_balance_loss.detach().to(
+                    self.last_moe_load_balance_loss_value.dtype
+                )
+            )
+        self.last_moe_load_balance_loss = load_balance_loss
         kth_choice_score = choice_scores.gather(-1, topk_idx)[..., -1:]
         if self.top_k < self.num_fine_experts:
             selected_mask = F.one_hot(
@@ -4228,37 +4363,43 @@ class GroupedMoEBlock(nn.Module):
             selected_margin_loss
         )
 
-        if not self.dead_expert_margin_to_topk_enabled:
+        if not self.inactive_expert_margin_to_topk_enabled:
             margin_loss = dense_distribution.new_zeros(())
             with torch.no_grad():
-                self.last_dead_expert_margin_to_topk_loss_value.zero_()
-                self.last_dead_expert_margin_to_topk_target.zero_()
-            self.last_dead_expert_margin_to_topk_loss = margin_loss
-            return margin_loss
-
-        dead_mask = (counts == 0).to(choice_scores.dtype)
-        margin_gap = torch.relu(kth_choice_score - choice_scores)
-        dead_margin_sum = (
-            margin_gap * dead_mask.view(1, 1, self.num_fine_experts)
-        ).sum()
-        dead_count = dead_mask.sum()
-        num_tokens = choice_scores.new_ones(
-            choice_scores.shape[:2], dtype=choice_scores.dtype
-        ).sum()
-        normalizer = dead_count.clamp_min(1.0) * num_tokens
-        margin_loss = dead_margin_sum / normalizer
-        with torch.no_grad():
-            self.last_dead_expert_margin_to_topk_loss_value.copy_(
-                margin_loss.detach().to(
-                    self.last_dead_expert_margin_to_topk_loss_value.dtype
+                self.last_inactive_expert_margin_to_topk_loss_value.zero_()
+                self.last_inactive_expert_margin_to_topk_target.zero_()
+            self.last_inactive_expert_margin_to_topk_loss = margin_loss
+        else:
+            inactive_usage_target = (
+                hard_usage.max().clamp_min(1.0e-12)
+                * self.inactive_expert_margin_to_topk_ratio_floor
+            )
+            inactive_mask = (hard_usage < inactive_usage_target).to(
+                choice_scores.dtype
+            )
+            margin_gap = torch.relu(kth_choice_score - choice_scores)
+            inactive_margin_sum = (
+                margin_gap * inactive_mask.view(1, 1, self.num_fine_experts)
+            ).sum()
+            inactive_count = inactive_mask.sum()
+            num_tokens = choice_scores.new_ones(
+                choice_scores.shape[:2], dtype=choice_scores.dtype
+            ).sum()
+            normalizer = inactive_count.clamp_min(1.0) * num_tokens
+            margin_loss = inactive_margin_sum / normalizer
+            with torch.no_grad():
+                self.last_inactive_expert_margin_to_topk_loss_value.copy_(
+                    margin_loss.detach().to(
+                        self.last_inactive_expert_margin_to_topk_loss_value.dtype
+                    )
                 )
-            )
-            self.last_dead_expert_margin_to_topk_target.copy_(
-                kth_choice_score.mean()
-                .detach()
-                .to(self.last_dead_expert_margin_to_topk_target.dtype)
-            )
-        self.last_dead_expert_margin_to_topk_loss = margin_loss
+                self.last_inactive_expert_margin_to_topk_target.copy_(
+                    kth_choice_score.mean()
+                    .detach()
+                    .to(self.last_inactive_expert_margin_to_topk_target.dtype)
+                )
+            self.last_inactive_expert_margin_to_topk_loss = margin_loss
+
         return margin_loss
 
     @torch.compiler.disable

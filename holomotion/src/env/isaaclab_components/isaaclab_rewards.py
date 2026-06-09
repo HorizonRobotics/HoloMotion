@@ -771,6 +771,24 @@ def root_lin_vel_tracking_rel_ratio_exp(
     return torch.exp(-torch.square(error_ratio) / std**2)
 
 
+def root_z_lin_vel_tracking_l2_exp(
+    env: ManagerBasedRLEnv,
+    std: float,
+    command_name: str = "ref_motion",
+    ref_prefix: str = "ref_",
+) -> torch.Tensor:
+    """Track vertical root velocity in the world frame."""
+    command: RefMotionCommand = env.command_manager.get_term(command_name)
+
+    robot_root_z_vel = isaaclab_mdp.root_lin_vel_w(env)[:, 2]
+    ref_root_z_vel = command.get_ref_motion_root_global_lin_vel_immediate_next(
+        prefix=ref_prefix
+    )[:, 2]
+
+    error = torch.square(ref_root_z_vel - robot_root_z_vel)
+    return torch.exp(-error / std**2)
+
+
 def root_ang_vel_tracking_l2_exp(
     env: ManagerBasedRLEnv,
     std: float,

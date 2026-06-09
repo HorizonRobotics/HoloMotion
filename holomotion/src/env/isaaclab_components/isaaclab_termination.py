@@ -30,6 +30,22 @@ from holomotion.src.env.isaaclab_components import (
 )
 
 
+def _yaw_from_quat_wxyz(quat: torch.Tensor) -> torch.Tensor:
+    """Return yaw angle from a WXYZ quaternion tensor."""
+    qw = quat[..., 0]
+    qx = quat[..., 1]
+    qy = quat[..., 2]
+    qz = quat[..., 3]
+    return torch.atan2(
+        2.0 * (qw * qz + qx * qy),
+        1.0 - 2.0 * (qy * qy + qz * qz),
+    )
+
+
+def _wrap_to_pi(angle: torch.Tensor) -> torch.Tensor:
+    return torch.atan2(torch.sin(angle), torch.cos(angle))
+
+
 def _list_supported_terminations() -> list[str]:
     custom_terminations = {
         name
@@ -166,6 +182,29 @@ def ref_gravity_projection_far(
     ).abs() > threshold
 
 
+def root_yaw_ref_far(
+    env: ManagerBasedRLEnv,
+    threshold: float,
+    command_name: str = "ref_motion",
+    ref_prefix: str = "ref_",
+) -> torch.Tensor:
+    """Terminate when root yaw deviates from the reference beyond threshold."""
+    command: motion_tracking_command.RefMotionCommand = (
+        env.command_manager.get_term(command_name)
+    )
+    ref_root_quat = (
+        command.get_ref_motion_root_global_rot_quat_wxyz_immediate_next(
+            prefix=ref_prefix
+        )
+    )
+    robot_root_quat = command.robot.data.root_quat_w
+    yaw_error = _wrap_to_pi(
+        _yaw_from_quat_wxyz(ref_root_quat)
+        - _yaw_from_quat_wxyz(robot_root_quat)
+    )
+    return yaw_error.abs() > threshold
+
+
 def keybody_ref_pos_far(
     env: ManagerBasedRLEnv,
     threshold: float,
@@ -230,6 +269,160 @@ def keybody_ref_z_far(
 
     error_z = (ref_pos_w[..., 2] - robot_pos_w[..., 2]).abs()  # [B, Nb]
     return torch.any(error_z > threshold, dim=-1)  # [B]
+
+
+def root_delta_z_ref_far(
+    env: ManagerBasedRLEnv,
+    threshold: float,
+    grace_steps: int = 10,
+    command_name: str = "ref_motion",
+    ref_prefix: str = "ref_",
+) -> torch.Tensor:
+    """Terminate on root z displacement mismatch relative to a grace-step baseline."""
+    command: motion_tracking_command.RefMotionCommand = (
+        env.command_manager.get_term(command_name)
+    )
+    robot_z = command.robot.data.root_pos_w[:, 2]
+    ref_z = command.get_ref_motion_root_global_pos_immediate_next(
+        prefix=ref_prefix
+    )[:, 2]
+
+    num_envs = int(robot_z.shape[0])
+    device = robot_z.device
+    state = getattr(command, "_root_delta_z_ref_far_state", None)
+    if state is None or int(state["valid"].shape[0]) != num_envs:
+        state = {
+            "valid": torch.zeros(num_envs, device=device, dtype=torch.bool),
+            "clip": torch.full(
+                (num_envs,), -1, device=device, dtype=torch.long
+            ),
+            "start": torch.full(
+                (num_envs,), -1, device=device, dtype=torch.long
+            ),
+            "robot_base_z": torch.zeros(
+                num_envs, device=device, dtype=robot_z.dtype
+            ),
+            "ref_base_z": torch.zeros(
+                num_envs, device=device, dtype=ref_z.dtype
+            ),
+        }
+        setattr(command, "_root_delta_z_ref_far_state", state)
+
+    clip_indices = getattr(command, "_clip_indices")
+    frame_indices = getattr(command, "_frame_indices")
+    start_frame_indices = getattr(command, "_start_frame_indices")
+    segment_steps = (frame_indices - start_frame_indices).clamp(min=0)
+    within_grace = segment_steps < max(0, int(grace_steps))
+
+    valid = state["valid"]
+    valid[within_grace] = False
+    segment_changed = (
+        valid
+        & (
+            (state["clip"] != clip_indices)
+            | (state["start"] != start_frame_indices)
+        )
+    )
+    need_baseline = (~valid | segment_changed) & ~within_grace
+    fresh_baseline = torch.zeros(num_envs, device=device, dtype=torch.bool)
+    if torch.any(need_baseline):
+        state["robot_base_z"][need_baseline] = robot_z[need_baseline]
+        state["ref_base_z"][need_baseline] = ref_z[need_baseline]
+        state["clip"][need_baseline] = clip_indices[need_baseline]
+        state["start"][need_baseline] = start_frame_indices[need_baseline]
+        valid[need_baseline] = True
+        fresh_baseline[need_baseline] = True
+
+    robot_delta_z = robot_z - state["robot_base_z"]
+    ref_delta_z = ref_z - state["ref_base_z"]
+    error = (robot_delta_z - ref_delta_z).abs()
+    check_mask = valid & ~within_grace & ~fresh_baseline
+    return check_mask & (error > threshold)
+
+
+def keybody_delta_z_ref_far(
+    env: ManagerBasedRLEnv,
+    threshold: float,
+    grace_steps: int = 10,
+    command_name: str = "ref_motion",
+    keybody_names: list[str] | None = None,
+    ref_prefix: str = "ref_",
+) -> torch.Tensor:
+    """Terminate on keybody z displacement mismatch relative to a grace-step baseline."""
+    command: motion_tracking_command.RefMotionCommand = (
+        env.command_manager.get_term(command_name)
+    )
+    ref_pos_w = command.get_ref_motion_bodylink_global_pos_immediate_next(
+        prefix=ref_prefix
+    )
+    robot_pos_w = command.robot.data.body_pos_w
+
+    keybody_idxs = isaaclab_utils._get_body_indices(
+        command.robot, keybody_names
+    )
+    if keybody_idxs is not None and len(keybody_idxs) > 0:
+        idxs = torch.as_tensor(
+            keybody_idxs,
+            device=ref_pos_w.device,
+            dtype=torch.long,
+        )
+        ref_z = ref_pos_w[:, idxs, 2]
+        robot_z = robot_pos_w[:, idxs, 2]
+    else:
+        ref_z = ref_pos_w[..., 2]
+        robot_z = robot_pos_w[..., 2]
+
+    num_envs, num_bodies = int(robot_z.shape[0]), int(robot_z.shape[1])
+    device = robot_z.device
+    state = getattr(command, "_keybody_delta_z_ref_far_state", None)
+    if (
+        state is None
+        or int(state["valid"].shape[0]) != num_envs
+        or int(state["robot_base_z"].shape[1]) != num_bodies
+    ):
+        state = {
+            "valid": torch.zeros(num_envs, device=device, dtype=torch.bool),
+            "clip": torch.full(
+                (num_envs,), -1, device=device, dtype=torch.long
+            ),
+            "start": torch.full(
+                (num_envs,), -1, device=device, dtype=torch.long
+            ),
+            "robot_base_z": torch.zeros_like(robot_z),
+            "ref_base_z": torch.zeros_like(ref_z),
+        }
+        setattr(command, "_keybody_delta_z_ref_far_state", state)
+
+    clip_indices = getattr(command, "_clip_indices")
+    frame_indices = getattr(command, "_frame_indices")
+    start_frame_indices = getattr(command, "_start_frame_indices")
+    segment_steps = (frame_indices - start_frame_indices).clamp(min=0)
+    within_grace = segment_steps < max(0, int(grace_steps))
+
+    valid = state["valid"]
+    valid[within_grace] = False
+    segment_changed = (
+        valid
+        & (
+            (state["clip"] != clip_indices)
+            | (state["start"] != start_frame_indices)
+        )
+    )
+    need_baseline = (~valid | segment_changed) & ~within_grace
+    fresh_baseline = torch.zeros(num_envs, device=device, dtype=torch.bool)
+    if torch.any(need_baseline):
+        state["robot_base_z"][need_baseline] = robot_z[need_baseline]
+        state["ref_base_z"][need_baseline] = ref_z[need_baseline]
+        state["clip"][need_baseline] = clip_indices[need_baseline]
+        state["start"][need_baseline] = start_frame_indices[need_baseline]
+        valid[need_baseline] = True
+        fresh_baseline[need_baseline] = True
+
+    robot_delta_z = robot_z - state["robot_base_z"]
+    ref_delta_z = ref_z - state["ref_base_z"]
+    error = (robot_delta_z - ref_delta_z).abs()
+    check_mask = valid & ~within_grace & ~fresh_baseline
+    return check_mask & torch.any(error > threshold, dim=-1)
 
 
 def wholebody_mpjpe_far(

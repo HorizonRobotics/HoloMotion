@@ -8,7 +8,9 @@ from humanoid_policy.offline_motion_reference import OfflineMotionReference
 from humanoid_policy.offline_motion_reference import quat_rotate_inv_wxyz
 
 
-def _make_clip(frames: int = 5, dofs: int = 3, bodies: int = 3) -> LoadedMotionClip:
+def _make_clip(
+    frames: int = 5, dofs: int = 3, bodies: int = 3
+) -> LoadedMotionClip:
     dof_pos = np.arange(frames * dofs, dtype=np.float32).reshape(frames, dofs)
     dof_vel = dof_pos + 100.0
     translation = np.zeros((frames, bodies, 3), dtype=np.float32)
@@ -35,8 +37,18 @@ def _make_clip(frames: int = 5, dofs: int = 3, bodies: int = 3) -> LoadedMotionC
     )
 
 
+def _set_root_yaws(clip: LoadedMotionClip, yaws: list[float]) -> None:
+    for frame, yaw in enumerate(yaws):
+        clip.global_rotation_quat[frame, 0] = np.array(
+            [0.0, 0.0, np.sin(yaw * 0.5), np.cos(yaw * 0.5)],
+            dtype=np.float32,
+        )
+
+
 class OfflineMotionReferenceTest(unittest.TestCase):
-    def test_policy_node_initializes_future_frame_count_before_offline_reference(self):
+    def test_policy_node_initializes_future_frame_count_before_offline_reference(
+        self,
+    ):
         evaluator_path = (
             Path(__file__).resolve().parents[1]
             / "src"
@@ -46,7 +58,9 @@ class OfflineMotionReferenceTest(unittest.TestCase):
         source = evaluator_path.read_text()
 
         n_fut_init = source.index("self.n_fut_frames_int = int(")
-        offline_ref_init = source.index("self._offline_reference = OfflineMotionReference(")
+        offline_ref_init = source.index(
+            "self._offline_reference = OfflineMotionReference("
+        )
 
         self.assertLess(n_fut_init, offline_ref_init)
 
@@ -61,12 +75,20 @@ class OfflineMotionReferenceTest(unittest.TestCase):
         reference.set_clip(clip)
 
         self.assertEqual(reference.current_frame_idx(1), 1)
-        np.testing.assert_array_equal(reference.future_frame_indices(1), [2, 3, 4])
-        np.testing.assert_array_equal(reference.ref_dof_pos_onnx_order(1), [5, 3, 4])
-        np.testing.assert_array_equal(reference.ref_dof_vel_onnx_order(1), [105, 103, 104])
+        np.testing.assert_array_equal(
+            reference.future_frame_indices(1), [2, 3, 4]
+        )
+        np.testing.assert_array_equal(
+            reference.ref_dof_pos_onnx_order(1), [5, 3, 4]
+        )
+        np.testing.assert_array_equal(
+            reference.ref_dof_vel_onnx_order(1), [105, 103, 104]
+        )
 
         expected_pos_fut = clip.dof_pos[[2, 3, 4]].T
-        expected_pos_fut = expected_pos_fut[ref_to_onnx, :].transpose(1, 0).reshape(-1)
+        expected_pos_fut = (
+            expected_pos_fut[ref_to_onnx, :].transpose(1, 0).reshape(-1)
+        )
         np.testing.assert_array_equal(
             reference.obs_ref_dof_pos_fut(1),
             expected_pos_fut.astype(np.float32),
@@ -84,7 +106,9 @@ class OfflineMotionReferenceTest(unittest.TestCase):
         reference.set_clip(clip)
 
         expected_pos_fut = clip.dof_pos[[1, 2]].T
-        expected_pos_fut = expected_pos_fut[ref_to_onnx, :].transpose(1, 0).reshape(-1)
+        expected_pos_fut = (
+            expected_pos_fut[ref_to_onnx, :].transpose(1, 0).reshape(-1)
+        )
         np.testing.assert_array_equal(
             reference.obs_ref_dof_pos_fut(0),
             expected_pos_fut.astype(np.float32),
@@ -99,19 +123,31 @@ class OfflineMotionReferenceTest(unittest.TestCase):
         )
         reference.set_clip(clip)
 
-        np.testing.assert_allclose(reference.obs_ref_root_pos_cur(1), [1.0, 0.0, 1.5])
+        np.testing.assert_allclose(
+            reference.obs_ref_root_pos_cur(1), [1.0, 0.0, 1.5]
+        )
         np.testing.assert_allclose(reference.obs_ref_root_height_cur(1), 1.5)
-        np.testing.assert_allclose(reference.obs_ref_gravity_projection_cur(1), [0.0, 0.0, -1.0])
-        np.testing.assert_allclose(reference.obs_ref_base_linvel_cur(1), [1.1, 1.2, 1.3])
-        np.testing.assert_allclose(reference.obs_ref_base_angvel_cur(1), [2.1, 2.2, 2.3])
+        np.testing.assert_allclose(
+            reference.obs_ref_gravity_projection_cur(1), [0.0, 0.0, -1.0]
+        )
+        np.testing.assert_allclose(
+            reference.obs_ref_base_linvel_cur(1), [1.1, 1.2, 1.3]
+        )
+        np.testing.assert_allclose(
+            reference.obs_ref_base_angvel_cur(1), [2.1, 2.2, 2.3]
+        )
 
-        np.testing.assert_allclose(reference.obs_ref_root_height_fut(1), [2.5, 3.5])
+        np.testing.assert_allclose(
+            reference.obs_ref_root_height_fut(1), [2.5, 3.5]
+        )
         np.testing.assert_allclose(
             reference.obs_ref_root_pos_fut(1),
             [2.0, 0.0, 2.5, 3.0, 0.0, 3.5],
         )
         np.testing.assert_allclose(
-            reference.obs_ref_keybody_rel_pos_cur(1, np.array([1, 2], dtype=np.int64)),
+            reference.obs_ref_keybody_rel_pos_cur(
+                1, np.array([1, 2], dtype=np.int64)
+            ),
             [1.0, 2.0, 1.5, 4.0, 5.0, 4.5],
         )
 
@@ -124,8 +160,28 @@ class OfflineMotionReferenceTest(unittest.TestCase):
         )
         reference.set_clip(clip)
 
-        np.testing.assert_array_equal(reference.future_frame_indices(3), [4, 4, 4, 4])
-        np.testing.assert_allclose(reference.obs_ref_root_height_fut(3), [4.5, 4.5, 4.5, 4.5])
+        np.testing.assert_array_equal(
+            reference.future_frame_indices(3), [4, 4, 4, 4]
+        )
+        np.testing.assert_allclose(
+            reference.obs_ref_root_height_fut(3), [4.5, 4.5, 4.5, 4.5]
+        )
+
+    def test_future_yaw_delta_sin_cos_uses_reference_only(self):
+        clip = _make_clip()
+        _set_root_yaws(clip, [0.0, np.pi / 2.0, np.pi, np.pi, np.pi])
+        reference = OfflineMotionReference(
+            n_fut_frames=2,
+            num_actions=3,
+            ref_to_onnx=[0, 1, 2],
+        )
+        reference.set_clip(clip)
+
+        np.testing.assert_allclose(
+            reference.obs_ref_future_yaw_delta_sin_cos(0),
+            [1.0, 0.0, 0.0, -1.0],
+            atol=1.0e-6,
+        )
 
     def test_zero_future_frames_return_empty_arrays(self):
         clip = _make_clip()
@@ -138,7 +194,12 @@ class OfflineMotionReferenceTest(unittest.TestCase):
 
         self.assertEqual(reference.obs_ref_dof_pos_fut(1).shape, (0,))
         self.assertEqual(reference.obs_ref_root_pos_fut(1).shape, (0,))
-        self.assertEqual(reference.obs_ref_keybody_rel_pos_fut(1, np.array([1])).shape, (0,))
+        self.assertEqual(
+            reference.obs_ref_future_yaw_delta_sin_cos(1).shape, (0,)
+        )
+        self.assertEqual(
+            reference.obs_ref_keybody_rel_pos_fut(1, np.array([1])).shape, (0,)
+        )
 
     def test_inverse_quaternion_rotation_uses_wxyz_order(self):
         angle = np.pi / 2.0

@@ -13,7 +13,9 @@ from humanoid_policy.motion_clip_library import LoadedMotionClip
 def xyzw_to_wxyz(q_xyzw: np.ndarray) -> np.ndarray:
     q_xyzw = np.asarray(q_xyzw, dtype=np.float32)
     if q_xyzw.shape[-1] != 4:
-        raise ValueError(f"xyzw_to_wxyz expects (...,4) but got shape {q_xyzw.shape}")
+        raise ValueError(
+            f"xyzw_to_wxyz expects (...,4) but got shape {q_xyzw.shape}"
+        )
     w = q_xyzw[..., 3:4]
     xyz = q_xyzw[..., 0:3]
     return np.concatenate([w, xyz], axis=-1)
@@ -26,6 +28,18 @@ def standardize_quaternion_wxyz(q_wxyz: np.ndarray) -> np.ndarray:
             f"standardize_quaternion_wxyz expects (...,4) but got shape {q_wxyz.shape}"
         )
     return np.where(q_wxyz[..., 0:1] < 0.0, -q_wxyz, q_wxyz)
+
+
+def yaw_from_quat_wxyz(q_wxyz: np.ndarray) -> np.ndarray:
+    q_wxyz = np.asarray(q_wxyz, dtype=np.float32)
+    qw = q_wxyz[..., 0]
+    qx = q_wxyz[..., 1]
+    qy = q_wxyz[..., 2]
+    qz = q_wxyz[..., 3]
+    return np.arctan2(
+        2.0 * (qw * qz + qx * qy),
+        1.0 - 2.0 * (qy * qy + qz * qz),
+    ).astype(np.float32)
 
 
 def gravity_orientation_wxyz(q_wxyz: np.ndarray) -> np.ndarray:
@@ -81,32 +95,57 @@ class OfflineMotionReference:
         self.reference_dof_count = int(self.reference_dof_count)
         self.clip: LoadedMotionClip | None = None
 
-        self._future_frame_offsets = np.arange(1, self.n_fut_frames + 1, dtype=np.int64)
-        self._future_frame_indices_buffer = np.zeros(self.n_fut_frames, dtype=np.int64)
-        self._future_root_quat_wxyz_buffer = np.zeros((self.n_fut_frames, 4), dtype=np.float32)
+        self._future_frame_offsets = np.arange(
+            1, self.n_fut_frames + 1, dtype=np.int64
+        )
+        self._future_frame_indices_buffer = np.zeros(
+            self.n_fut_frames, dtype=np.int64
+        )
+        self._future_root_quat_wxyz_buffer = np.zeros(
+            (self.n_fut_frames, 4), dtype=np.float32
+        )
+        self._future_yaw_delta_sin_cos_buffer = np.zeros(
+            (self.n_fut_frames, 2), dtype=np.float32
+        )
         self._pos_fut_buffer = np.zeros(
             (self.reference_dof_count, self.n_fut_frames),
             dtype=np.float32,
         )
-        self._dof_pos_onnx_buffer = np.zeros(self.num_actions, dtype=np.float32)
-        self._dof_vel_onnx_buffer = np.zeros(self.num_actions, dtype=np.float32)
+        self._dof_pos_onnx_buffer = np.zeros(
+            self.num_actions, dtype=np.float32
+        )
+        self._dof_vel_onnx_buffer = np.zeros(
+            self.num_actions, dtype=np.float32
+        )
         self._dof_pos_fut_onnx_buffer = np.zeros(
             self.n_fut_frames * self.num_actions,
             dtype=np.float32,
         )
         self._h_fut_buffer = np.zeros((1, self.n_fut_frames), dtype=np.float32)
-        self._root_pos_fut_buffer = np.zeros((self.n_fut_frames, 3), dtype=np.float32)
+        self._root_pos_fut_buffer = np.zeros(
+            (self.n_fut_frames, 3), dtype=np.float32
+        )
         self._root_pos_cur_buffer = np.zeros(3, dtype=np.float32)
         self._root_height_cur_buffer = np.zeros(1, dtype=np.float32)
-        self._gravity_fut_buffer = np.zeros((self.n_fut_frames, 3), dtype=np.float32)
-        self._base_linvel_fut_buffer = np.zeros((self.n_fut_frames, 3), dtype=np.float32)
-        self._base_angvel_fut_buffer = np.zeros((self.n_fut_frames, 3), dtype=np.float32)
-        self._keybody_rel_pos_fut_buffer = np.zeros((self.n_fut_frames, 0, 3), dtype=np.float32)
+        self._gravity_fut_buffer = np.zeros(
+            (self.n_fut_frames, 3), dtype=np.float32
+        )
+        self._base_linvel_fut_buffer = np.zeros(
+            (self.n_fut_frames, 3), dtype=np.float32
+        )
+        self._base_angvel_fut_buffer = np.zeros(
+            (self.n_fut_frames, 3), dtype=np.float32
+        )
+        self._keybody_rel_pos_fut_buffer = np.zeros(
+            (self.n_fut_frames, 0, 3), dtype=np.float32
+        )
         self._root_quat_wxyz_buffer = np.zeros(4, dtype=np.float32)
         self._gravity_cur_buffer = np.zeros(3, dtype=np.float32)
         self._base_linvel_cur_buffer = np.zeros(3, dtype=np.float32)
         self._base_angvel_cur_buffer = np.zeros(3, dtype=np.float32)
-        self._motion_states_buffer = np.zeros(self.num_actions * 2, dtype=np.float32)
+        self._motion_states_buffer = np.zeros(
+            self.num_actions * 2, dtype=np.float32
+        )
         max_t = max(1, self.n_fut_frames)
         self._vel_fut_T6 = np.zeros((max_t, 6), dtype=np.float32)
         self._rot_t_buffer = np.zeros((max_t, 3), dtype=np.float32)
@@ -138,7 +177,8 @@ class OfflineMotionReference:
         if self.n_fut_frames <= 0:
             return self._future_frame_indices_buffer
         np.minimum(
-            self.current_frame_idx(motion_frame_idx) + self._future_frame_offsets,
+            self.current_frame_idx(motion_frame_idx)
+            + self._future_frame_offsets,
             self.last_valid_frame_idx,
             out=self._future_frame_indices_buffer,
         )
@@ -199,11 +239,15 @@ class OfflineMotionReference:
         self.prepare_frame(motion_frame_idx)
         return self._root_pos_fut_buffer.reshape(-1)
 
-    def obs_ref_gravity_projection_cur(self, motion_frame_idx: int) -> np.ndarray:
+    def obs_ref_gravity_projection_cur(
+        self, motion_frame_idx: int
+    ) -> np.ndarray:
         self.prepare_frame(motion_frame_idx)
         return self._gravity_cur_buffer
 
-    def obs_ref_gravity_projection_fut(self, motion_frame_idx: int) -> np.ndarray:
+    def obs_ref_gravity_projection_fut(
+        self, motion_frame_idx: int
+    ) -> np.ndarray:
         if self.n_fut_frames <= 0:
             return np.zeros(0, dtype=np.float32)
         self.prepare_frame(motion_frame_idx)
@@ -229,6 +273,28 @@ class OfflineMotionReference:
         self.prepare_frame(motion_frame_idx)
         return self._base_angvel_fut_buffer.reshape(-1)
 
+    def ref_root_quat_wxyz_cur(self, motion_frame_idx: int) -> np.ndarray:
+        frame_idx = self.current_frame_idx(motion_frame_idx)
+        return self._root_quat_wxyz(frame_idx)
+
+    def ref_root_quat_wxyz_fut(self, motion_frame_idx: int) -> np.ndarray:
+        if self.n_fut_frames <= 0:
+            return np.zeros((0, 4), dtype=np.float32)
+        return self._future_root_quat_wxyz(motion_frame_idx)
+
+    def obs_ref_future_yaw_delta_sin_cos(
+        self,
+        motion_frame_idx: int,
+    ) -> np.ndarray:
+        if self.n_fut_frames <= 0:
+            return np.zeros(0, dtype=np.float32)
+        q_cur = self.ref_root_quat_wxyz_cur(motion_frame_idx)
+        q_fut = self.ref_root_quat_wxyz_fut(motion_frame_idx)
+        yaw_delta = yaw_from_quat_wxyz(q_fut) - yaw_from_quat_wxyz(q_cur)
+        self._future_yaw_delta_sin_cos_buffer[:, 0] = np.sin(yaw_delta)
+        self._future_yaw_delta_sin_cos_buffer[:, 1] = np.cos(yaw_delta)
+        return self._future_yaw_delta_sin_cos_buffer.reshape(-1)
+
     def obs_ref_keybody_rel_pos_cur(
         self,
         motion_frame_idx: int,
@@ -240,10 +306,14 @@ class OfflineMotionReference:
         if n_keybodies == 0:
             return np.zeros(0, dtype=np.float32)
         frame_idx = self.current_frame_idx(motion_frame_idx)
-        ref_body_global_pos = np.asarray(clip.global_translation[frame_idx], dtype=np.float32)
+        ref_body_global_pos = np.asarray(
+            clip.global_translation[frame_idx], dtype=np.float32
+        )
         ref_root_global_pos = ref_body_global_pos[self.root_body_idx]
         q_root_wxyz = self._root_quat_wxyz(frame_idx)
-        rel_pos_w = ref_body_global_pos[keybody_idxs] - ref_root_global_pos[None, :]
+        rel_pos_w = (
+            ref_body_global_pos[keybody_idxs] - ref_root_global_pos[None, :]
+        )
         rel_pos_root = quat_rotate_inv_wxyz(q_root_wxyz, rel_pos_w)
         return np.asarray(rel_pos_root, dtype=np.float32).reshape(-1)
 
@@ -258,13 +328,18 @@ class OfflineMotionReference:
         keybody_idxs = np.asarray(keybody_idxs, dtype=np.int64)
         n_keybodies = int(keybody_idxs.shape[0])
         if n_keybodies == 0:
-            return np.zeros((self.n_fut_frames, 0), dtype=np.float32).reshape(-1)
+            return np.zeros((self.n_fut_frames, 0), dtype=np.float32).reshape(
+                -1
+            )
         fut_idx = self.future_frame_indices(motion_frame_idx)
         q_root_wxyz = self._future_root_quat_wxyz(motion_frame_idx)
-        ref_body_global_pos = np.asarray(clip.global_translation[fut_idx], dtype=np.float32)
+        ref_body_global_pos = np.asarray(
+            clip.global_translation[fut_idx], dtype=np.float32
+        )
         ref_root_global_pos = ref_body_global_pos[:, self.root_body_idx, :]
         rel_pos_w = (
-            ref_body_global_pos[:, keybody_idxs, :] - ref_root_global_pos[:, None, :]
+            ref_body_global_pos[:, keybody_idxs, :]
+            - ref_root_global_pos[:, None, :]
         )
         if self._keybody_rel_pos_fut_buffer.shape[1] != n_keybodies:
             self._keybody_rel_pos_fut_buffer = np.zeros(
@@ -305,10 +380,18 @@ class OfflineMotionReference:
 
         clip = self._require_clip()
         frame_idx = self.current_frame_idx(motion_frame_idx)
-        self._dof_pos_onnx_buffer[:] = clip.dof_pos[frame_idx, self.ref_to_onnx]
-        self._dof_vel_onnx_buffer[:] = clip.dof_vel[frame_idx, self.ref_to_onnx]
-        self._motion_states_buffer[: self.num_actions] = self._dof_pos_onnx_buffer
-        self._motion_states_buffer[self.num_actions :] = self._dof_vel_onnx_buffer
+        self._dof_pos_onnx_buffer[:] = clip.dof_pos[
+            frame_idx, self.ref_to_onnx
+        ]
+        self._dof_vel_onnx_buffer[:] = clip.dof_vel[
+            frame_idx, self.ref_to_onnx
+        ]
+        self._motion_states_buffer[: self.num_actions] = (
+            self._dof_pos_onnx_buffer
+        )
+        self._motion_states_buffer[self.num_actions :] = (
+            self._dof_vel_onnx_buffer
+        )
         self._root_pos_cur_buffer[:] = clip.global_translation[
             frame_idx,
             self.root_body_idx,
@@ -344,7 +427,9 @@ class OfflineMotionReference:
             ]
             self._h_fut_buffer[0, :] = self._root_pos_fut_buffer[:, 2]
             q_fut = self._future_root_quat_wxyz_buffer
-            q_root_xyzw = clip.global_rotation_quat[fut_idx, self.root_body_idx]
+            q_root_xyzw = clip.global_rotation_quat[
+                fut_idx, self.root_body_idx
+            ]
             q_fut[:, 0] = q_root_xyzw[:, 3]
             q_fut[:, 1:4] = q_root_xyzw[:, 0:3]
             neg_mask = q_fut[:, 0] < 0.0
@@ -497,5 +582,7 @@ class OfflineMotionReference:
 
     def _require_clip(self) -> LoadedMotionClip:
         if self.clip is None:
-            raise RuntimeError("Offline motion reference has no active motion clip")
+            raise RuntimeError(
+                "Offline motion reference has no active motion clip"
+            )
         return self.clip

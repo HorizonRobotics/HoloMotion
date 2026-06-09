@@ -540,7 +540,13 @@ def read_onnx_metadata(onnx_model_path: str) -> dict[str, Any]:
             dtype=np.float32,
         )
 
-    return {
+    def _parse_optional_int(value: str | None) -> int | None:
+        if value is None or str(value).strip() == "":
+            return None
+        return int(str(value).strip())
+
+    rope_max_seq_len = _parse_optional_int(meta.get("rope_max_seq_len"))
+    parsed = {
         "action_scale": _parse_floats(meta["action_scale"]),
         "kps": _parse_floats(meta["joint_stiffness"]),
         "kds": _parse_floats(meta["joint_damping"]),
@@ -549,3 +555,6 @@ def read_onnx_metadata(onnx_model_path: str) -> dict[str, Any]:
             value for value in meta["joint_names"].split(",") if value != ""
         ],
     }
+    if rope_max_seq_len is not None:
+        parsed["rope_max_seq_len"] = int(rope_max_seq_len)
+    return parsed

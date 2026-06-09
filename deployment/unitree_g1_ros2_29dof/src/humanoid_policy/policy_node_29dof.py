@@ -173,6 +173,8 @@ class HoloMotionPolicyNode(Node):
         self.latest_obs_zmq_conflate = self.deployment_config.latest_obs_zmq_conflate
         self.zmq_jitter_delay_frames = self.deployment_config.zmq_jitter_delay_frames
         self.enable_teleop_reference = self.deployment_config.enable_teleop_reference
+        self.motion_rope_max_seq_len = self.deployment_config.motion_rope_max_seq_len
+        self.motion_rope_reset_margin = self.deployment_config.motion_rope_reset_margin
         self._cpu_affinity_main_str = self.deployment_config.cpu_affinity_main
         self._cpu_affinity_zmq_sub_str = self.deployment_config.cpu_affinity_zmq_sub
         self.timing_debug_enabled = self.deployment_config.timing_debug_enabled
@@ -1036,6 +1038,36 @@ class HoloMotionPolicyNode(Node):
         self.motion_kps_onnx = motion_meta["kps"].astype(np.float32)
         self.motion_kds_onnx = motion_meta["kds"].astype(np.float32)
         self.motion_default_angles_onnx = motion_meta["default_joint_pos"].astype(np.float32)
+        configured_rope_max_seq_len = int(
+            getattr(self.deployment_config, "motion_rope_max_seq_len", 0) or 0
+        )
+        artifact_rope_max_seq_len = motion_meta.get("rope_max_seq_len", None)
+        if configured_rope_max_seq_len > 0:
+            if (
+                artifact_rope_max_seq_len is not None
+                and int(artifact_rope_max_seq_len) != configured_rope_max_seq_len
+            ):
+                self.get_logger().warn(
+                    "motion_rope_max_seq_len profile override "
+                    f"({configured_rope_max_seq_len}) differs from motion ONNX "
+                    f"artifact metadata ({artifact_rope_max_seq_len})."
+                )
+            self.motion_rope_max_seq_len = configured_rope_max_seq_len
+        elif artifact_rope_max_seq_len is not None:
+            self.motion_rope_max_seq_len = int(artifact_rope_max_seq_len)
+            self.get_logger().info(
+                "Motion RoPE max sequence length loaded from ONNX artifact: "
+                f"{self.motion_rope_max_seq_len}"
+            )
+        elif self.motion_step_idx_input_name is not None:
+            raise RuntimeError(
+                "Motion policy uses step_idx/KV-cache but ONNX artifact does not "
+                "provide rope_max_seq_len metadata. Re-export the motion policy "
+                "with current code, or set motion_rope_max_seq_len explicitly in "
+                "the launch profile for a legacy artifact."
+            )
+        else:
+            self.motion_rope_max_seq_len = 0
 
         # Use velocity model metadata as default (for backward compatibility)
         self.dof_names_onnx = self.velocity_dof_names_onnx

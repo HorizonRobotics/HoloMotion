@@ -321,5 +321,25 @@ obs:
         - critic_last_action:
             func: last_action
 
+      additional_atomic_obs_list:
+        - actor_ref_robot_yaw_error_sin_cos:
+            func: ref_robot_yaw_error_sin_cos
+            history_length: ${obs.context_length}
+            flatten_history_dim: false
+            params:
+              ref_prefix: ${obs.actor_obs_prefix}
+
+        - actor_ref_future_yaw_delta_sin_cos:
+            func: ref_future_yaw_delta_sin_cos
+            params:
+              ref_prefix: ${obs.actor_obs_prefix}
+              num_frames: ${obs.n_fut_frames}
+
+        - actor_ref_future_root_ori_robot_frame_6d:
+            func: ref_future_root_ori_robot_frame_6d
+            params:
+              ref_prefix: ${obs.actor_obs_prefix}
+              num_frames: ${obs.n_fut_frames}
+
       enable_corruption: true
       concatenate_terms: false

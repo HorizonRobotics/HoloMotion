@@ -103,6 +103,8 @@ class DeploymentConfig:
     max_data_age: float = 0.6
     enable_teleop_reference: bool = False
     inference_backend: str = "onnx"
+    motion_rope_max_seq_len: int = 0
+    motion_rope_reset_margin: int = 64
     timing_debug_enabled: bool = False
     timing_debug_log_interval_sec: float = 5.0
     timing_debug_log_per_loop: bool = False
@@ -156,6 +158,20 @@ class DeploymentConfig:
             inference_backend=str(
                 _declare_value(node, "inference_backend", cls.inference_backend)
             ),
+            motion_rope_max_seq_len=int(
+                _declare_value(
+                    node,
+                    "motion_rope_max_seq_len",
+                    cls.motion_rope_max_seq_len,
+                )
+            ),
+            motion_rope_reset_margin=int(
+                _declare_value(
+                    node,
+                    "motion_rope_reset_margin",
+                    cls.motion_rope_reset_margin,
+                )
+            ),
             timing_debug_enabled=_as_bool(
                 _declare_value(
                     node,
@@ -204,6 +220,17 @@ class DeploymentConfig:
             raise ValueError("max_data_age must be > 0")
         if self.inference_backend.strip().lower() not in {"onnx", "tensorrt"}:
             raise ValueError("inference_backend must be 'onnx' or 'tensorrt'")
+        if self.motion_rope_max_seq_len < 0:
+            raise ValueError("motion_rope_max_seq_len must be >= 0")
+        if self.motion_rope_reset_margin < 0:
+            raise ValueError("motion_rope_reset_margin must be >= 0")
+        if (
+            self.motion_rope_max_seq_len > 0
+            and self.motion_rope_reset_margin >= self.motion_rope_max_seq_len
+        ):
+            raise ValueError(
+                "motion_rope_reset_margin must be smaller than motion_rope_max_seq_len"
+            )
         if self.timing_debug_log_interval_sec <= 0.0:
             raise ValueError("timing_debug_log_interval_sec must be > 0")
 
@@ -218,6 +245,8 @@ class DeploymentConfig:
             "max_data_age": self.max_data_age,
             "enable_teleop_reference": self.enable_teleop_reference,
             "inference_backend": self.inference_backend,
+            "motion_rope_max_seq_len": self.motion_rope_max_seq_len,
+            "motion_rope_reset_margin": self.motion_rope_reset_margin,
             "timing_debug_enabled": self.timing_debug_enabled,
             "timing_debug_log_interval_sec": self.timing_debug_log_interval_sec,
             "timing_debug_log_per_loop": self.timing_debug_log_per_loop,

@@ -43,6 +43,7 @@ STABILITY_BURST_WINDOW_SECONDS = 0.5
 TOUCHDOWN_WINDOW_SECONDS = 0.05
 ROOT_BODY_INDEX = 0
 PROBABILITY_EPS = 1e-12
+TURNING_YAW_RANGE_THRESHOLD_RAD = 0.3
 
 
 def quat_inv(q):
@@ -260,6 +261,53 @@ def _safe_nanmedian(values: np.ndarray) -> float:
     if arr.size == 0:
         return float("nan")
     return float(np.median(arr))
+
+
+def _yaw_from_quat_xyzw(q_xyzw: np.ndarray) -> np.ndarray:
+    q_xyzw = np.asarray(q_xyzw, dtype=float)
+    x = q_xyzw[..., 0]
+    y = q_xyzw[..., 1]
+    z = q_xyzw[..., 2]
+    w = q_xyzw[..., 3]
+    return np.arctan2(
+        2.0 * (w * z + x * y),
+        1.0 - 2.0 * (y * y + z * z),
+    )
+
+
+def _compute_clip_yaw_summary(data: Dict[str, np.ndarray]) -> Dict[str, float]:
+    q_ref = np.asarray(data["ref_global_rotation_quat"])[:, 0, :]
+    q_robot = np.asarray(data["robot_global_rotation_quat"])[:, 0, :]
+    norms_ref = np.linalg.norm(q_ref, axis=1)
+    norms_robot = np.linalg.norm(q_robot, axis=1)
+    valid_mask = (
+        (norms_ref > 0.0)
+        & (norms_robot > 0.0)
+        & np.isfinite(norms_ref)
+        & np.isfinite(norms_robot)
+    )
+    if np.count_nonzero(valid_mask) < 2:
+        return {
+            "root_yaw_drift_error": float("nan"),
+            "ref_root_yaw_range": float("nan"),
+            "turning_motion_rate": float("nan"),
+        }
+
+    q_ref_valid = q_ref[valid_mask] / norms_ref[valid_mask, None]
+    q_robot_valid = q_robot[valid_mask] / norms_robot[valid_mask, None]
+    ref_yaw = np.unwrap(_yaw_from_quat_xyzw(q_ref_valid))
+    robot_yaw = np.unwrap(_yaw_from_quat_xyzw(q_robot_valid))
+
+    ref_yaw_delta = ref_yaw[-1] - ref_yaw[0]
+    robot_yaw_delta = robot_yaw[-1] - robot_yaw[0]
+    ref_yaw_range = float(np.nanmax(ref_yaw) - np.nanmin(ref_yaw))
+    return {
+        "root_yaw_drift_error": float(abs(robot_yaw_delta - ref_yaw_delta)),
+        "ref_root_yaw_range": ref_yaw_range,
+        "turning_motion_rate": float(
+            ref_yaw_range >= TURNING_YAW_RANGE_THRESHOLD_RAD
+        ),
+    }
 
 
 def _compute_rolling_nanmean_max(
@@ -653,6 +701,8 @@ def _per_frame_metrics_from_npz(
     jpos_pred = np.asarray(data["robot_global_translation"])  # (T, J, 3)
     rot_gt = np.asarray(data["ref_global_rotation_quat"])  # (T, J, 4) xyzw
     rot_pred = np.asarray(data["robot_global_rotation_quat"])  # (T, J, 4)
+    ang_vel_gt = np.asarray(data["ref_global_angular_velocity"])
+    ang_vel_pred = np.asarray(data["robot_global_angular_velocity"])
     dof_gt = np.asarray(data["ref_dof_pos"])  # (T, D)
     dof_pred = np.asarray(data["robot_dof_pos"])  # (T, D)
     robot_dof_vel = (
@@ -789,6 +839,7 @@ def _per_frame_metrics_from_npz(
     root_r_error = np.full((num_frames,), np.nan, dtype=float)
     root_p_error = np.full((num_frames,), np.nan, dtype=float)
     root_y_error = np.full((num_frames,), np.nan, dtype=float)
+    root_quat_error = np.full((num_frames,), np.nan, dtype=float)
 
     if np.any(valid_mask):
         q_gt_valid = q_gt_root[valid_mask] / norms_gt[valid_mask, None]
@@ -800,6 +851,7 @@ def _per_frame_metrics_from_npz(
         root_r_error[valid_mask] = np.abs(euler_xyz[:, 0])
         root_p_error[valid_mask] = np.abs(euler_xyz[:, 1])
         root_y_error[valid_mask] = np.abs(euler_xyz[:, 2])
+        root_quat_error[valid_mask] = rel_valid.magnitude()
 
     # Root velocity error [m/frame]
     root_pos_gt = jpos_gt[:, 0, :]
@@ -807,6 +859,10 @@ def _per_frame_metrics_from_npz(
     root_vel_err = np.linalg.norm(
         (root_pos_pred[1:] - root_pos_pred[:-1])
         - (root_pos_gt[1:] - root_pos_gt[:-1]),
+        axis=1,
+    )
+    root_ang_vel_error = np.linalg.norm(
+        ang_vel_pred[:, 0, :] - ang_vel_gt[:, 0, :],
         axis=1,
     )
 
@@ -888,7 +944,9 @@ def _per_frame_metrics_from_npz(
             "root_r_error": root_r_error,
             "root_p_error": root_p_error,
             "root_y_error": root_y_error,
+            "root_quat_error": root_quat_error,
             "root_vel_error": pad_front(root_vel_err, 1),
+            "root_ang_vel_error": root_ang_vel_error,
             "root_height_error": root_height_error,
             "mean_dof_vel": mean_dof_vel,
             "mean_dof_acc": mean_dof_acc,
@@ -992,6 +1050,7 @@ def offline_evaluate_dumped_npzs(
             chatter_summary = _compute_clip_torque_jump_summary(
                 data=data, dof_mode=dof_mode, torque_dt=robot_control_dt
             )
+            yaw_summary = _compute_clip_yaw_summary(data)
             stability_summary = _compute_clip_stability_summary(
                 data=data,
                 robot_control_dt=robot_control_dt,
@@ -1017,6 +1076,7 @@ def offline_evaluate_dumped_npzs(
                 "max_body_pos_err": max_body_err,
                 "failure_threshold_m": float(failure_pos_err_thresh_m),
                 **chatter_summary,
+                **yaw_summary,
                 **stability_summary,
             }
             return fpath, df_frames, motion_key, clip_meta_entry, None
@@ -1092,6 +1152,8 @@ def offline_evaluate_dumped_npzs(
         "root_r_error",
         "root_p_error",
         "root_y_error",
+        "root_quat_error",
+        "root_ang_vel_error",
         "root_height_error",
         "mean_dof_vel",
         "mean_dof_acc",
@@ -1101,10 +1163,16 @@ def offline_evaluate_dumped_npzs(
         "mean_action_rate",
     ]
     percentile_metric_cols = [
+        "root_y_error",
+        "root_quat_error",
+        "root_ang_vel_error",
         "mean_torque_jump_norm",
         "mean_torque_jump_ratio",
     ]
     percentile_rename_map = {
+        "root_y_error": "p95_root_y_error",
+        "root_quat_error": "p95_root_quat_error",
+        "root_ang_vel_error": "p95_root_ang_vel_error",
         "mean_torque_jump_norm": "p95_torque_jump_norm",
         "mean_torque_jump_ratio": "p95_torque_jump_ratio",
     }
@@ -1118,6 +1186,9 @@ def offline_evaluate_dumped_npzs(
         "foot_contact_toggle_rate",
         "foot_impact_force_p95",
         "stance_slip_speed_p95",
+        "root_yaw_drift_error",
+        "ref_root_yaw_range",
+        "turning_motion_rate",
     ]
     metric_cols += clip_only_metric_cols
     # Metric display configuration: metric_key -> (display_name, unit)
@@ -1129,6 +1200,36 @@ def offline_evaluate_dumped_npzs(
         "root_r_error": ("Root Roll Error", "rad"),
         "root_p_error": ("Root Pitch Error", "rad"),
         "root_y_error": ("Root Yaw Error", "rad"),
+        "p95_root_y_error": ("P95 Root Yaw Error", "rad"),
+        "root_quat_error": ("Root Quaternion Error", "rad"),
+        "p95_root_quat_error": ("P95 Root Quaternion Error", "rad"),
+        "root_ang_vel_error": ("Root Angular Velocity Error", "rad/s"),
+        "p95_root_ang_vel_error": (
+            "P95 Root Angular Velocity Error",
+            "rad/s",
+        ),
+        "root_yaw_drift_error": ("Root Yaw Drift Error", "rad"),
+        "ref_root_yaw_range": ("Reference Root Yaw Range", "rad"),
+        "turning_motion_rate": ("Turning Motion Rate", "ratio"),
+        "turning_root_y_error": ("Turning Root Yaw Error", "rad"),
+        "turning_p95_root_y_error": ("Turning P95 Root Yaw Error", "rad"),
+        "turning_root_quat_error": ("Turning Root Quaternion Error", "rad"),
+        "turning_p95_root_quat_error": (
+            "Turning P95 Root Quaternion Error",
+            "rad",
+        ),
+        "turning_root_ang_vel_error": (
+            "Turning Root Angular Velocity Error",
+            "rad/s",
+        ),
+        "turning_p95_root_ang_vel_error": (
+            "Turning P95 Root Angular Velocity Error",
+            "rad/s",
+        ),
+        "turning_root_yaw_drift_error": (
+            "Turning Root Yaw Drift Error",
+            "rad",
+        ),
         "root_height_error": ("Root Height Error", "mm"),
         "mean_dof_vel": ("Mean DOF Velocity", "rad/s"),
         "mean_dof_acc": ("Mean DOF Acceleration", "rad/s^2"),
@@ -1204,6 +1305,28 @@ def offline_evaluate_dumped_npzs(
             arr = per_clip_summary[k].to_numpy()
         dataset_means[k] = _safe_nanmean(arr)
         dataset_medians[k] = _safe_nanmedian(arr)
+
+    turning_mask = (
+        per_clip_summary["turning_motion_rate"].fillna(0.0).to_numpy() >= 0.5
+    )
+    turning_metric_keys = [
+        "root_y_error",
+        "p95_root_y_error",
+        "root_quat_error",
+        "p95_root_quat_error",
+        "root_ang_vel_error",
+        "p95_root_ang_vel_error",
+        "root_yaw_drift_error",
+    ]
+    for metric_key in turning_metric_keys:
+        turning_key = f"turning_{metric_key}"
+        if not np.any(turning_mask) or metric_key not in per_clip_summary:
+            dataset_means[turning_key] = float("nan")
+            dataset_medians[turning_key] = float("nan")
+            continue
+        arr = per_clip_summary.loc[turning_mask, metric_key].to_numpy()
+        dataset_means[turning_key] = _safe_nanmean(arr)
+        dataset_medians[turning_key] = _safe_nanmedian(arr)
 
     success_rate = float(
         np.mean([clip_meta[mk]["success"] for mk in clip_meta])

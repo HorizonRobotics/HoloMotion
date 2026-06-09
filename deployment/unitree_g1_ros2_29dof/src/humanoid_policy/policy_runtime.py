@@ -153,6 +153,9 @@ class PolicyRuntime:
         self.state.policy_enabled = True
         self.state.current_policy_mode = "velocity"
         self.state.motion_uses_vr_reference = False
+        obs_eval = self._obs_evaluator()
+        if hasattr(obs_eval, "clear_motion_yaw_alignment"):
+            obs_eval.clear_motion_yaw_alignment()
         self.reset_motion_action_ema_filter()
         self.reset_counters()
         self.state.actions_onnx = np.zeros(self.port.num_actions, dtype=np.float32)
@@ -169,6 +172,8 @@ class PolicyRuntime:
         self.state.motion_uses_vr_reference = False
         self.state.motion_in_progress = False
         obs_eval = self._obs_evaluator()
+        if hasattr(obs_eval, "clear_motion_yaw_alignment"):
+            obs_eval.clear_motion_yaw_alignment()
         if hasattr(obs_eval, "clear_vr_fk_cache"):
             obs_eval.clear_vr_fk_cache()
         else:
@@ -211,6 +216,9 @@ class PolicyRuntime:
         self.state.motion_uses_vr_reference = bool(
             self.port.enable_teleop_reference and vr_data_available
         )
+        obs_eval = self._obs_evaluator()
+        if hasattr(obs_eval, "begin_motion_yaw_alignment"):
+            obs_eval.begin_motion_yaw_alignment()
         source_mode = (
             "ZMQ latest_obs"
             if self.state.motion_uses_vr_reference
@@ -222,7 +230,7 @@ class PolicyRuntime:
         )
         if self.state.motion_uses_vr_reference:
             self.port.get_logger().info("[VR] Reference trajectory source: ZMQ latest_obs")
-            self._obs_evaluator()._warmup_fk_for_vr()
+            obs_eval._warmup_fk_for_vr()
         self.state.motion_in_progress = True
         return True
 
@@ -231,6 +239,29 @@ class PolicyRuntime:
         self.state.motion_step_idx = 0
         if self.port.use_kv_cache and self.port.motion_kv_cache is not None:
             self.port.motion_kv_cache.fill(0)
+
+    def _maybe_reset_motion_rope_window(self) -> None:
+        max_seq_len = int(getattr(self.port, "motion_rope_max_seq_len", 0) or 0)
+        if max_seq_len <= 0 or self.port.motion_step_idx_input_name is None:
+            return
+        margin = int(getattr(self.port, "motion_rope_reset_margin", 0) or 0)
+        reset_at = max_seq_len - margin
+        if reset_at <= 0:
+            reset_at = max_seq_len
+        if self.state.motion_step_idx < reset_at:
+            return
+
+        old_step_idx = self.state.motion_step_idx
+        if self.port.motion_kv_cache is not None:
+            self.port.motion_kv_cache.fill(0)
+        self.state.motion_step_idx = 0
+        if self._motion_step_idx_array is not None:
+            self._motion_step_idx_array[0] = 0
+        self.port.get_logger().warn(
+            "Motion RoPE step index reached "
+            f"{old_step_idx}/{max_seq_len}; reset motion KV cache and step index "
+            "to avoid exceeding exported RoPE cache."
+        )
 
     def reset_motion_action_ema_filter(self) -> None:
         self.state.motion_filtered_actions_onnx = None
@@ -490,6 +521,8 @@ class PolicyRuntime:
                 self.port.motion_kv_cache = np.zeros(
                     shape, dtype=self.port.motion_kv_dtype
                 )
+
+            self._maybe_reset_motion_rope_window()
 
             if self._motion_input_feed is None:
                 self._motion_input_feed = {

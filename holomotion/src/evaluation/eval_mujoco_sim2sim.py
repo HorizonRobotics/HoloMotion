@@ -1029,7 +1029,11 @@ class MujocoEvaluator:
 
         if obs_groups.get("policy", None) is not None:
             entries: list[tuple[str, str, dict]] = []
-            for term_dict in obs_groups.policy.atomic_obs_list:
+            atomic_obs_list = list(obs_groups.policy.atomic_obs_list)
+            atomic_obs_list.extend(
+                getattr(obs_groups.policy, "additional_atomic_obs_list", [])
+            )
+            for term_dict in atomic_obs_list:
                 term_name = str(list(term_dict.keys())[0])
                 entries.append(
                     (
@@ -1042,7 +1046,11 @@ class MujocoEvaluator:
 
         if obs_groups.get("unified", None) is not None:
             entries = []
-            for term_dict in obs_groups.unified.atomic_obs_list:
+            atomic_obs_list = list(obs_groups.unified.atomic_obs_list)
+            atomic_obs_list.extend(
+                getattr(obs_groups.unified, "additional_atomic_obs_list", [])
+            )
+            for term_dict in atomic_obs_list:
                 term_name = str(list(term_dict.keys())[0])
                 if term_name.startswith("critic_"):
                     continue
@@ -1155,6 +1163,65 @@ class MujocoEvaluator:
     @property
     def ref_motion_frame_idx(self):
         return self.motion_frame_idx
+
+    @staticmethod
+    def _yaw_from_quat_wxyz_np(q_wxyz: np.ndarray) -> np.ndarray:
+        q_wxyz = np.asarray(q_wxyz, dtype=np.float32)
+        qw = q_wxyz[..., 0]
+        qx = q_wxyz[..., 1]
+        qy = q_wxyz[..., 2]
+        qz = q_wxyz[..., 3]
+        return np.arctan2(
+            2.0 * (qw * qz + qx * qy),
+            1.0 - 2.0 * (qy * qy + qz * qz),
+        ).astype(np.float32)
+
+    def _get_ref_current_root_quat_wxyz(self) -> np.ndarray:
+        self._ensure_ref_to_sim_transform_rigid()
+        ref_rot = self.ref_global_bodylink_rot
+        if ref_rot is None:
+            return np.asarray([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
+        return ref_rot[self.root_body_idx].astype(np.float32)
+
+    def _get_ref_future_root_quat_wxyz(self) -> np.ndarray:
+        T = int(self.n_fut_frames)
+        if T <= 0:
+            return np.zeros((0, 4), dtype=np.float32)
+        if (
+            getattr(self, "ref_global_rotation_quat_xyzw", None) is None
+            or self.n_motion_frames <= 0
+        ):
+            q_identity = np.zeros((T, 4), dtype=np.float32)
+            q_identity[:, 0] = 1.0
+            return q_identity
+
+        self._ensure_ref_to_sim_transform_rigid()
+
+        frame_idx = self.motion_frame_idx
+        last_valid_frame_idx = self.n_motion_frames - 1
+        fut_idx = np.minimum(
+            frame_idx + np.arange(1, T + 1, dtype=np.int64),
+            last_valid_frame_idx,
+        )
+        q_ref_xyzw_t = torch.as_tensor(
+            self.ref_global_rotation_quat_xyzw[
+                fut_idx,
+                self.root_body_idx,
+            ].astype(np.float32),
+            dtype=torch.float32,
+            device="cpu",
+        )
+        q_ref_wxyz_t = standardize_quaternion(xyzw_to_wxyz(q_ref_xyzw_t))
+        q_ref_to_sim = torch.as_tensor(
+            self._ref_to_sim_q_wxyz,
+            dtype=torch.float32,
+            device="cpu",
+        ).unsqueeze(0)
+        q_ref_to_sim = q_ref_to_sim.expand_as(q_ref_wxyz_t)
+        q_ref_sim_wxyz_t = standardize_quaternion(
+            quat_mul(q_ref_to_sim, q_ref_wxyz_t)
+        )
+        return q_ref_sim_wxyz_t.detach().cpu().numpy().astype(np.float32)
 
     @property
     def anchor_body_idx(self) -> int:
@@ -2509,6 +2576,55 @@ class MujocoEvaluator:
             )
         return base_angvel_fut.reshape(-1).astype(np.float32)
 
+    def _get_obs_ref_future_yaw_delta_sin_cos(self):
+        T = int(self.n_fut_frames)
+        if T <= 0:
+            return np.zeros(0, dtype=np.float32)
+        q_cur = self._get_ref_current_root_quat_wxyz()
+        q_fut = self._get_ref_future_root_quat_wxyz()
+        yaw_delta = self._yaw_from_quat_wxyz_np(
+            q_fut
+        ) - self._yaw_from_quat_wxyz_np(q_cur)
+        yaw_delta_sin_cos = np.stack(
+            [np.sin(yaw_delta), np.cos(yaw_delta)],
+            axis=-1,
+        )
+        return yaw_delta_sin_cos.reshape(-1).astype(np.float32)
+
+    def _get_obs_ref_robot_yaw_error_sin_cos(self):
+        q_ref = self._get_ref_current_root_quat_wxyz()
+        q_robot = self.robot_global_bodylink_rot[self.root_body_idx].astype(
+            np.float32
+        )
+        yaw_error = self._yaw_from_quat_wxyz_np(
+            q_ref
+        ) - self._yaw_from_quat_wxyz_np(q_robot)
+        return np.asarray(
+            [np.sin(yaw_error), np.cos(yaw_error)],
+            dtype=np.float32,
+        ).reshape(2)
+
+    def _get_obs_ref_future_root_ori_robot_frame_6d(self):
+        T = int(self.n_fut_frames)
+        if T <= 0:
+            return np.zeros(0, dtype=np.float32)
+        q_ref_fut_t = torch.as_tensor(
+            self._get_ref_future_root_quat_wxyz(),
+            dtype=torch.float32,
+            device="cpu",
+        )
+        q_robot_t = torch.as_tensor(
+            self.robot_global_bodylink_rot[self.root_body_idx].astype(
+                np.float32
+            ),
+            dtype=torch.float32,
+            device="cpu",
+        ).unsqueeze(0)
+        q_robot_inv_t = quat_inv(q_robot_t).expand_as(q_ref_fut_t)
+        q_rel_t = standardize_quaternion(quat_mul(q_robot_inv_t, q_ref_fut_t))
+        root_rot6d = matrix_from_quat(q_rel_t)[..., :2].reshape(T, 6)
+        return root_rot6d.detach().cpu().numpy().reshape(-1).astype(np.float32)
+
     def _get_obs_ref_keybody_rel_pos_cur(self):
         keybody_idxs = self._get_ref_keybody_indices(
             "actor_ref_keybody_rel_pos_cur"
@@ -2744,6 +2860,15 @@ class MujocoEvaluator:
 
     def _get_obs_actor_ref_base_angvel_fut(self):
         return self._get_obs_ref_base_angvel_fut()
+
+    def _get_obs_actor_ref_future_yaw_delta_sin_cos(self):
+        return self._get_obs_ref_future_yaw_delta_sin_cos()
+
+    def _get_obs_actor_ref_robot_yaw_error_sin_cos(self):
+        return self._get_obs_ref_robot_yaw_error_sin_cos()
+
+    def _get_obs_actor_ref_future_root_ori_robot_frame_6d(self):
+        return self._get_obs_ref_future_root_ori_robot_frame_6d()
 
     def _get_obs_actor_ref_keybody_rel_pos_cur(self):
         return self._get_obs_ref_keybody_rel_pos_cur()

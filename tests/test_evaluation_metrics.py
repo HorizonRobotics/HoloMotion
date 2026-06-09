@@ -18,6 +18,9 @@ def _make_eval_data(
     robot_dof_acc: np.ndarray | None = None,
     robot_action_rate: np.ndarray | None = None,
     robot_low_level_dof_torque: np.ndarray | None = None,
+    ref_global_rotation_quat: np.ndarray | None = None,
+    robot_global_rotation_quat: np.ndarray | None = None,
+    ref_global_angular_velocity: np.ndarray | None = None,
     robot_global_angular_velocity: np.ndarray | None = None,
     robot_low_level_foot_contact: np.ndarray | None = None,
     robot_low_level_foot_normal_force: np.ndarray | None = None,
@@ -36,6 +39,14 @@ def _make_eval_data(
         np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
         (num_frames, 2, 1),
     )
+    if ref_global_rotation_quat is not None:
+        ref_global_rotation = ref_global_rotation_quat.astype(np.float32)
+    else:
+        ref_global_rotation = global_rotation.copy()
+    if robot_global_rotation_quat is not None:
+        robot_global_rotation = robot_global_rotation_quat.astype(np.float32)
+    else:
+        robot_global_rotation = global_rotation.copy()
 
     zeros_dof = np.zeros((num_frames, num_dofs), dtype=np.float32)
 
@@ -45,11 +56,13 @@ def _make_eval_data(
         "ref_dof_vel": zeros_dof.copy(),
         "ref_global_translation": global_translation.copy(),
         "robot_global_translation": global_translation.copy(),
-        "ref_global_rotation_quat": global_rotation.copy(),
-        "robot_global_rotation_quat": global_rotation.copy(),
+        "ref_global_rotation_quat": ref_global_rotation,
+        "robot_global_rotation_quat": robot_global_rotation,
         "ref_global_velocity": np.zeros((num_frames, 2, 3), dtype=np.float32),
-        "ref_global_angular_velocity": np.zeros(
-            (num_frames, 2, 3), dtype=np.float32
+        "ref_global_angular_velocity": (
+            np.zeros((num_frames, 2, 3), dtype=np.float32)
+            if ref_global_angular_velocity is None
+            else ref_global_angular_velocity.astype(np.float32)
         ),
         "robot_global_velocity": np.zeros(
             (num_frames, 2, 3), dtype=np.float32
@@ -99,6 +112,13 @@ def _make_eval_data(
     return payload
 
 
+def _root_yaw_quats(num_frames: int, yaw: np.ndarray) -> np.ndarray:
+    quat = np.zeros((num_frames, 2, 4), dtype=np.float32)
+    quat[..., 2] = np.sin(yaw[:, None] * 0.5)
+    quat[..., 3] = np.cos(yaw[:, None] * 0.5)
+    return quat
+
+
 def test_per_frame_metrics_include_torque_jump_diagnostics():
     constant_torque = np.ones((4, 2), dtype=np.float32)
     constant_df = _per_frame_metrics_from_npz(
@@ -137,6 +157,56 @@ def test_per_frame_metrics_include_torque_jump_diagnostics():
 
     assert jump_df["mean_torque_jump_norm"].iloc[2] > 3.9
     assert jump_df["mean_torque_jump_ratio"].iloc[2] > 1.9
+
+
+def test_offline_evaluate_dumped_npzs_exports_yaw_diagnostics(
+    tmp_path: Path,
+):
+    eval_dir = tmp_path / "eval"
+    eval_dir.mkdir()
+
+    num_frames = 5
+    ref_yaw = np.linspace(0.0, 0.6, num_frames, dtype=np.float32)
+    robot_yaw = np.linspace(0.0, 0.3, num_frames, dtype=np.float32)
+    ref_ang_vel = np.zeros((num_frames, 2, 3), dtype=np.float32)
+    robot_ang_vel = np.zeros((num_frames, 2, 3), dtype=np.float32)
+    ref_ang_vel[:, 0, 2] = 0.6
+    robot_ang_vel[:, 0, 2] = 0.3
+
+    payload = _make_eval_data(
+        np.zeros((num_frames, 2), dtype=np.float32),
+        ref_global_rotation_quat=_root_yaw_quats(num_frames, ref_yaw),
+        robot_global_rotation_quat=_root_yaw_quats(num_frames, robot_yaw),
+        ref_global_angular_velocity=ref_ang_vel,
+        robot_global_angular_velocity=robot_ang_vel,
+    )
+    np.savez_compressed(eval_dir / "turning_clip.npz", **payload)
+
+    result = offline_evaluate_dumped_npzs(
+        npz_dir=str(eval_dir),
+        output_json_path=str(eval_dir / "summary.json"),
+    )
+
+    per_clip = result["per_clip"][0]
+    assert per_clip["root_y_error"] > 0.0
+    assert per_clip["p95_root_y_error"] > per_clip["root_y_error"]
+    assert per_clip["root_quat_error"] > 0.0
+    assert per_clip["root_ang_vel_error"] > 0.0
+    assert per_clip["root_yaw_drift_error"] > 0.29
+    assert per_clip["turning_motion_rate"] == 1.0
+
+    dataset_mean = result["dataset"]["mean"]
+    assert dataset_mean["turning_root_y_error"] == per_clip["root_y_error"]
+    assert (
+        dataset_mean["turning_root_yaw_drift_error"]
+        == per_clip["root_yaw_drift_error"]
+    )
+
+    csv_path = eval_dir / "per_clip_metrics.csv"
+    with csv_path.open("r", encoding="utf-8", newline="") as handle:
+        row = next(csv.DictReader(handle))
+    assert "p95_root_y_error" in row
+    assert "root_yaw_drift_error" in row
 
 
 def test_offline_evaluate_dumped_npzs_exports_torque_jump_summary_metrics(

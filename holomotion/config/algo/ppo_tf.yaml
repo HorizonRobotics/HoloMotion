@@ -11,6 +11,7 @@ algo:
     schedule: adaptive
     actor_learning_rate: 3.0e-5
     critic_learning_rate: 5.0e-5
+    save_interval: 1000
 
     num_learning_epochs: 3
     num_mini_batches: 24
@@ -23,6 +24,7 @@ algo:
     init_noise_std: 1.0
     min_sigma: 0.01
     max_sigma: 1.2
+
     aux_state_pred:
       enabled: true
       w_keybody_contact: 1.0e-2
@@ -55,9 +57,10 @@ algo:
         - left_wrist_yaw_link
         - right_wrist_yaw_link
 
-    dead_expert_margin_to_topk:
+    inactive_expert_margin_to_topk:
       enabled: true
-      weight: 0.1
+      weight: 10
+      ratio_floor: 0.1
 
     aux_router_command_recon:
       enabled: false
@@ -66,6 +69,10 @@ algo:
       term_prefix: actor_ref_
 
     aux_router_switch_penalty:
+      enabled: false
+      weight: 0.0
+
+    moe_load_balance:
       enabled: false
       weight: 0.0
 

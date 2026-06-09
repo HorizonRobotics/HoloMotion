@@ -23,7 +23,7 @@ terminations:
 
   keybody_ref_pos_far:
     params:
-      threshold: 0.25
+      threshold: 0.2
       ref_prefix: ${rewards._config.reward_prefix}
       keybody_names:
         - pelvis

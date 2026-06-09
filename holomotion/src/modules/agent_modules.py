@@ -1555,12 +1555,26 @@ class PPOTFRefRouterActor(PPOTFActor):
         cls,
         obs_schema: dict,
         obs_example: TensorDict,
+        router_obs_terms=None,
     ) -> list[int]:
         if not isinstance(obs_example, TensorDict):
             raise ValueError(
                 "PPOTFRefRouterActor requires TensorDict obs_example."
             )
 
+        router_term_names = None
+        requested_router_terms: list[str] = []
+        if router_obs_terms is not None:
+            requested_router_terms = [str(term) for term in router_obs_terms]
+            if len(requested_router_terms) == 0:
+                raise ValueError(
+                    "PPOTFRefRouterActor received an empty router_obs_terms "
+                    "whitelist."
+                )
+            router_term_names = set(requested_router_terms)
+            router_term_names.update(
+                cls._leaf_obs_name(term) for term in requested_router_terms
+            )
         router_feature_indices: list[int] = []
         offset = 0
         for _, seq_cfg in obs_schema.items():
@@ -1575,16 +1589,28 @@ class PPOTFRefRouterActor(PPOTFActor):
                     seq_len=seq_len,
                 )
                 leaf_name = cls._leaf_obs_name(term_str)
-                if leaf_name.startswith("actor_ref_"):
+                if router_term_names is None:
+                    include_router_term = leaf_name.startswith("actor_ref_")
+                else:
+                    include_router_term = (
+                        term_str in router_term_names
+                        or leaf_name in router_term_names
+                    )
+                if include_router_term:
                     router_feature_indices.extend(
                         range(offset, offset + flat_dim)
                     )
                 offset += flat_dim
 
         if len(router_feature_indices) == 0:
+            if router_term_names is None:
+                raise ValueError(
+                    "PPOTFRefRouterActor could not infer any actor_ref_* "
+                    "features from obs_schema."
+                )
             raise ValueError(
-                "PPOTFRefRouterActor could not infer any actor_ref_* features "
-                "from obs_schema."
+                "PPOTFRefRouterActor could not match any configured "
+                f"router_obs_terms in obs_schema: {requested_router_terms}"
             )
         return router_feature_indices
 
@@ -1616,7 +1642,9 @@ class PPOTFRefRouterActor(PPOTFActor):
                 "aux_router_future_recon."
             )
         router_feature_indices = self.infer_router_feature_indices(
-            obs_schema, obs_example
+            obs_schema,
+            obs_example,
+            router_obs_terms=actor_module_cfg.get("router_obs_terms", None),
         )
         actor_module_cfg["router_input_dim"] = int(len(router_feature_indices))
         actor_module_cfg["router_feature_indices"] = list(

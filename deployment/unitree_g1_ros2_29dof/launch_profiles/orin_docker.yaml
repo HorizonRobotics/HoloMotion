@@ -41,6 +41,10 @@ policy:
   # inference_backend: onnx keeps the current ONNX Runtime CUDA path.
   # Change to tensorrt to use the strict TensorRTExecutionProvider path.
   inference_backend: "tensorrt"
+  # 0 = read from motion ONNX metadata. Set a positive value only as an explicit
+  # override for legacy artifacts.
+  motion_rope_max_seq_len: 0
+  motion_rope_reset_margin: 64
   timing_debug_enabled: false
   timing_debug_log_interval_sec: 5.0
   timing_debug_log_per_loop: false

@@ -16,10 +16,27 @@ modules:
     use_dynamic_bias: ${algo.config.moe_router.use_dynamic_bias}
     bias_update_rate: ${algo.config.moe_router.bias_update_rate}
     expert_bias_clip: ${algo.config.moe_router.expert_bias_clip}
+    routed_expert_usage_ema_decay: 0.99
+    routed_expert_usage_ema_dead_threshold: 1.0e-6
 
     # Transformer hyperparameters - smaller model for stability
     obs_embed_mlp_hidden: 2048
     router_embed_mlp_hidden: 2048
+    # Router should only see reference/command-like terms. Keep actor obs broad,
+    # but exclude robot-state and tracking-error-like actor_ref terms from routing.
+    router_obs_terms:
+      - unified/actor_ref_gravity_projection_cur
+      - unified/actor_ref_base_linvel_cur
+      - unified/actor_ref_base_angvel_cur
+      - unified/actor_ref_dof_pos_cur
+      - unified/actor_ref_root_height_cur
+      - unified/actor_ref_dof_pos_fut
+      - unified/actor_ref_root_height_fut
+      - unified/actor_ref_gravity_projection_fut
+      - unified/actor_ref_base_linvel_fut
+      - unified/actor_ref_base_angvel_fut
+      - unified/actor_ref_future_yaw_delta_sin_cos
+      - unified/actor_ref_future_root_ori_robot_frame_6d
     d_model: 512
     n_heads: 8
     n_kv_heads: 4
@@ -32,6 +49,9 @@ modules:
     attn_dropout: 0.0
     mlp_dropout: 0.0
     max_ctx_len: 32
+    # Keep the static ONNX/TRT RoPE table compact. Deployment resets the motion
+    # KV cache before this boundary using motion_rope_reset_margin.
+    rope_max_seq_len: 8192
 
     # Auxiliary dynamics prediction weights (0.0 = disabled)
     aux_sys_id_weight: 0.0
@@ -58,6 +78,7 @@ modules:
           - unified/actor_ref_base_angvel_cur
           - unified/actor_ref_dof_pos_cur
           - unified/actor_ref_root_height_cur
+          - unified/actor_ref_robot_yaw_error_sin_cos
           - unified/actor_projected_gravity
           - unified/actor_rel_robot_root_ang_vel
           - unified/actor_dof_pos
@@ -71,6 +92,8 @@ modules:
           - unified/actor_ref_gravity_projection_fut
           - unified/actor_ref_base_linvel_fut
           - unified/actor_ref_base_angvel_fut
+          - unified/actor_ref_future_yaw_delta_sin_cos
+          - unified/actor_ref_future_root_ori_robot_frame_6d
 
     output_dim: robot_action_dim
 

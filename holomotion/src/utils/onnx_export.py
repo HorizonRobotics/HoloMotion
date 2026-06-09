@@ -30,7 +30,7 @@ def _list_to_csv_str(arr, *, decimals: int = 3, delimiter: str = ",") -> str:
     )
 
 
-def attach_onnx_metadata_holomotion(env, onnx_path: str) -> None:
+def attach_onnx_metadata_holomotion(env, onnx_path: str, actor_module=None) -> None:
     import onnx
 
     metadata = {
@@ -52,6 +52,10 @@ def attach_onnx_metadata_holomotion(env, onnx_path: str) -> None:
         .cpu()
         .tolist(),
     }
+    if actor_module is not None:
+        rope_max_seq_len = getattr(actor_module, "rope_max_seq_len", None)
+        if rope_max_seq_len is not None:
+            metadata["rope_max_seq_len"] = int(rope_max_seq_len)
 
     model = onnx.load(onnx_path)
     for key, value in metadata.items():
@@ -99,7 +103,11 @@ def export_policy_to_onnx(
             export_kwargs["use_kv_cache"] = bool(use_kv_cache)
 
         onnx_path_str = actor_for_export.export_onnx(**export_kwargs)
-        attach_onnx_metadata_holomotion(algo.env._env, onnx_path=onnx_path_str)
+        attach_onnx_metadata_holomotion(
+            algo.env._env,
+            onnx_path=onnx_path_str,
+            actor_module=getattr(actor_for_export, "actor_module", actor_for_export),
+        )
         logger.info(
             f"Successfully exported minimal policy to: {onnx_path_str}"
         )

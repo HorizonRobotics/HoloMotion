@@ -15,7 +15,6 @@
 # permissions and limitations under the License.
 
 
-
 from typing import Generator
 
 import torch
@@ -77,11 +76,8 @@ class PPOTF(PPO):
     def _summarize_moe_layer_stats(moe_layers) -> dict[str, float | None]:
         if len(moe_layers) == 0:
             return {
-                "moe_active_expert_ratio": None,
-                "moe_max_expert_frac": None,
-                "moe_least_expert_frac": None,
-                "moe_dead_expert_ratio": None,
-                "moe_expert_count_cv": None,
+                "moe_ema_dead_expert_ratio": None,
+                "moe_ema_max_expert_frac": None,
                 "moe_selected_expert_margin_to_unselected": None,
             }
 
@@ -95,11 +91,12 @@ class PPOTF(PPO):
             return float(values.mean().item())
 
         return {
-            "moe_active_expert_ratio": _mean_attr("last_active_expert_ratio"),
-            "moe_max_expert_frac": _mean_attr("last_max_expert_frac"),
-            "moe_least_expert_frac": _mean_attr("last_min_expert_frac"),
-            "moe_dead_expert_ratio": _mean_attr("last_dead_expert_ratio"),
-            "moe_expert_count_cv": _mean_attr("last_expert_count_cv"),
+            "moe_ema_dead_expert_ratio": _mean_attr(
+                "last_ema_dead_expert_ratio"
+            ),
+            "moe_ema_max_expert_frac": _mean_attr(
+                "last_ema_max_expert_frac"
+            ),
             "moe_selected_expert_margin_to_unselected": _mean_attr(
                 "last_selected_expert_margin_to_unselected"
             ),
@@ -282,12 +279,24 @@ class PPOTF(PPO):
         self.aux_router_future_recon_huber_beta = float(
             aux_router_future_cfg.get("huber_beta", 1.0)
         )
-        dead_margin_cfg = self.config.get("dead_expert_margin_to_topk", {})
-        self.use_dead_expert_margin_to_topk = bool(
-            dead_margin_cfg.get("enabled", False)
+        load_balance_cfg = self.config.get("moe_load_balance", {})
+        self.use_moe_load_balance = bool(
+            load_balance_cfg.get("enabled", False)
         )
-        self.dead_expert_margin_to_topk_weight = float(
-            dead_margin_cfg.get("weight", 0.0)
+        self.moe_load_balance_weight = float(
+            load_balance_cfg.get("weight", 0.0)
+        )
+        inactive_margin_cfg = self.config.get(
+            "inactive_expert_margin_to_topk", {}
+        )
+        self.use_inactive_expert_margin_to_topk = bool(
+            inactive_margin_cfg.get("enabled", False)
+        )
+        self.inactive_expert_margin_to_topk_weight = float(
+            inactive_margin_cfg.get("weight", 0.0)
+        )
+        self.inactive_expert_margin_to_topk_ratio_floor = float(
+            inactive_margin_cfg.get("ratio_floor", 0.0)
         )
         orth_cfg = self.config.get("router_expert_orthogonal", {})
         self.use_router_expert_orthogonal = bool(
@@ -327,8 +336,16 @@ class PPOTF(PPO):
             raise ValueError("aux_router_future_recon.weight must be >= 0.")
         if self.aux_router_switch_penalty_weight < 0.0:
             raise ValueError("aux_router_switch_penalty.weight must be >= 0.")
-        if self.dead_expert_margin_to_topk_weight < 0.0:
-            raise ValueError("dead_expert_margin_to_topk.weight must be >= 0.")
+        if self.moe_load_balance_weight < 0.0:
+            raise ValueError("moe_load_balance.weight must be >= 0.")
+        if self.inactive_expert_margin_to_topk_weight < 0.0:
+            raise ValueError(
+                "inactive_expert_margin_to_topk.weight must be >= 0."
+            )
+        if not (0.0 <= self.inactive_expert_margin_to_topk_ratio_floor <= 1.0):
+            raise ValueError(
+                "inactive_expert_margin_to_topk.ratio_floor must be in [0, 1]."
+            )
         if self.router_expert_orthogonal_weight < 0.0:
             raise ValueError("router_expert_orthogonal.weight must be >= 0.")
         if self.router_expert_orthogonal_min_active_usage < 0.0:
@@ -350,20 +367,28 @@ class PPOTF(PPO):
                 "selected_expert_margin_to_unselected.target must be >= 0."
             )
         if (
-            self.use_dead_expert_margin_to_topk
-            and self.dead_expert_margin_to_topk_weight == 0.0
+            self.use_moe_load_balance
+            and self.moe_load_balance_weight == 0.0
         ):
             logger.warning(
-                "dead_expert_margin_to_topk.enabled=True but weight=0.0; "
-                "dead-expert margin loss will have no effect."
+                "moe_load_balance.enabled=True but weight=0.0; "
+                "MoE load-balance loss will have no effect."
+            )
+        if (
+            self.use_inactive_expert_margin_to_topk
+            and self.inactive_expert_margin_to_topk_weight == 0.0
+        ):
+            logger.warning(
+                "inactive_expert_margin_to_topk.enabled=True but weight=0.0; "
+                "inactive-expert margin loss will have no effect."
             )
         if (
             self.use_router_expert_orthogonal
-            and not self.use_dead_expert_margin_to_topk
+            and not self.use_inactive_expert_margin_to_topk
         ):
             raise ValueError(
                 "router_expert_orthogonal.enabled=True requires "
-                "dead_expert_margin_to_topk.enabled=True in sparse top-k MoE."
+                "inactive_expert_margin_to_topk.enabled=True in sparse top-k MoE."
             )
         if (
             self.use_router_expert_orthogonal
@@ -931,12 +956,21 @@ class PPOTF(PPO):
             actor_aux_router_future_cfg = OmegaConf.to_container(
                 aux_router_future_cfg, resolve=True
             )
-        dead_margin_cfg = self.config.get("dead_expert_margin_to_topk", {})
-        if isinstance(dead_margin_cfg, dict):
-            actor_dead_margin_cfg = dict(dead_margin_cfg)
+        load_balance_cfg = self.config.get("moe_load_balance", {})
+        if isinstance(load_balance_cfg, dict):
+            actor_load_balance_cfg = dict(load_balance_cfg)
         else:
-            actor_dead_margin_cfg = OmegaConf.to_container(
-                dead_margin_cfg, resolve=True
+            actor_load_balance_cfg = OmegaConf.to_container(
+                load_balance_cfg, resolve=True
+            )
+        inactive_margin_cfg = self.config.get(
+            "inactive_expert_margin_to_topk", {}
+        )
+        if isinstance(inactive_margin_cfg, dict):
+            actor_inactive_margin_cfg = dict(inactive_margin_cfg)
+        else:
+            actor_inactive_margin_cfg = OmegaConf.to_container(
+                inactive_margin_cfg, resolve=True
             )
         selected_margin_cfg = self.config.get(
             "selected_expert_margin_to_unselected", {}
@@ -977,7 +1011,8 @@ class PPOTF(PPO):
         actor_cfg["aux_router_command_recon"] = actor_aux_cmd_cfg
         actor_cfg["aux_router_future_recon"] = actor_aux_router_future_cfg
         actor_cfg["aux_router_switch_penalty"] = actor_aux_switch_cfg
-        actor_cfg["dead_expert_margin_to_topk"] = actor_dead_margin_cfg
+        actor_cfg["moe_load_balance"] = actor_load_balance_cfg
+        actor_cfg["inactive_expert_margin_to_topk"] = actor_inactive_margin_cfg
         actor_cfg["selected_expert_margin_to_unselected"] = (
             actor_selected_margin_cfg
         )
@@ -1729,7 +1764,8 @@ class PPOTF(PPO):
         mean_aux_router_command_recon_mse = 0.0
         mean_aux_router_future_recon_huber = 0.0
         mean_aux_router_switch_penalty_js = 0.0
-        mean_dead_expert_margin_to_topk_loss = 0.0
+        mean_moe_load_balance_loss = 0.0
+        mean_inactive_expert_margin_to_topk_loss = 0.0
         mean_router_expert_orthogonal_loss = 0.0
         mean_selected_expert_margin_to_unselected_loss = 0.0
         moe_layers = [
@@ -1938,7 +1974,8 @@ class PPOTF(PPO):
             aux_router_command_recon_loss = None
             aux_router_future_recon_loss = None
             aux_router_switch_penalty_loss = None
-            dead_expert_margin_to_topk_loss = None
+            moe_load_balance_loss = None
+            inactive_expert_margin_to_topk_loss = None
             router_expert_orthogonal_loss = None
             selected_expert_margin_to_unselected_loss = None
             if self.use_aux_state_pred:
@@ -2184,14 +2221,33 @@ class PPOTF(PPO):
                     + self.aux_router_switch_penalty_weight
                     * aux_router_switch_penalty_loss
                 )
-            if self.use_dead_expert_margin_to_topk and len(moe_layers) > 0:
-                margin_losses = [
-                    layer.last_dead_expert_margin_to_topk_loss
+            if self.use_moe_load_balance and len(moe_layers) > 0:
+                load_balance_losses = [
+                    layer.last_moe_load_balance_loss
                     for layer in moe_layers
-                    if layer.last_dead_expert_margin_to_topk_loss is not None
+                    if layer.last_moe_load_balance_loss is not None
+                ]
+                if len(load_balance_losses) > 0:
+                    moe_load_balance_loss = torch.stack(
+                        [
+                            loss.to(actor_loss.device, dtype=actor_loss.dtype)
+                            for loss in load_balance_losses
+                        ]
+                    ).mean()
+                    actor_loss = (
+                        actor_loss
+                        + self.moe_load_balance_weight
+                        * moe_load_balance_loss
+                    )
+            if self.use_inactive_expert_margin_to_topk and len(moe_layers) > 0:
+                margin_losses = [
+                    layer.last_inactive_expert_margin_to_topk_loss
+                    for layer in moe_layers
+                    if layer.last_inactive_expert_margin_to_topk_loss
+                    is not None
                 ]
                 if len(margin_losses) > 0:
-                    dead_expert_margin_to_topk_loss = torch.stack(
+                    inactive_expert_margin_to_topk_loss = torch.stack(
                         [
                             loss.to(actor_loss.device, dtype=actor_loss.dtype)
                             for loss in margin_losses
@@ -2199,8 +2255,8 @@ class PPOTF(PPO):
                     ).mean()
                     actor_loss = (
                         actor_loss
-                        + self.dead_expert_margin_to_topk_weight
-                        * dead_expert_margin_to_topk_loss
+                        + self.inactive_expert_margin_to_topk_weight
+                        * inactive_expert_margin_to_topk_loss
                     )
             if self.use_router_expert_orthogonal and len(moe_layers) > 0:
                 orth_losses = []
@@ -2336,9 +2392,13 @@ class PPOTF(PPO):
                 mean_aux_router_switch_penalty_js += float(
                     aux_router_switch_penalty_loss.item()
                 )
-            if dead_expert_margin_to_topk_loss is not None:
-                mean_dead_expert_margin_to_topk_loss += float(
-                    dead_expert_margin_to_topk_loss.item()
+            if moe_load_balance_loss is not None:
+                mean_moe_load_balance_loss += float(
+                    moe_load_balance_loss.item()
+                )
+            if inactive_expert_margin_to_topk_loss is not None:
+                mean_inactive_expert_margin_to_topk_loss += float(
+                    inactive_expert_margin_to_topk_loss.item()
                 )
             if router_expert_orthogonal_loss is not None:
                 mean_router_expert_orthogonal_loss += float(
@@ -2374,7 +2434,8 @@ class PPOTF(PPO):
         mean_aux_router_command_recon_mse /= denom
         mean_aux_router_future_recon_huber /= denom
         mean_aux_router_switch_penalty_js /= denom
-        mean_dead_expert_margin_to_topk_loss /= denom
+        mean_moe_load_balance_loss /= denom
+        mean_inactive_expert_margin_to_topk_loss /= denom
         mean_router_expert_orthogonal_loss /= denom
         mean_selected_expert_margin_to_unselected_loss /= denom
         self._last_update_metrics["0-Train/num_updates_executed"] = float(
@@ -2406,62 +2467,18 @@ class PPOTF(PPO):
             for layer in actor_unwrapped.actor_module.layers
             if isinstance(layer, GroupedMoEBlock)
         ]
-        moe_active_expert_ratio = None
-        moe_max_expert_frac = None
-        moe_least_expert_frac = None
-        moe_dead_expert_ratio = None
-        moe_expert_count_cv = None
+        moe_ema_dead_expert_ratio = None
+        moe_ema_max_expert_frac = None
         moe_selected_expert_margin_to_unselected = None
-        moe_last_router_js_step = None
-        moe_last_router_top1_switch_rate = None
         if len(moe_layers) > 0:
             moe_metrics = self._summarize_moe_layer_stats(moe_layers)
-            moe_active_expert_ratio = moe_metrics["moe_active_expert_ratio"]
-            moe_max_expert_frac = moe_metrics["moe_max_expert_frac"]
-            moe_least_expert_frac = moe_metrics["moe_least_expert_frac"]
-            moe_dead_expert_ratio = moe_metrics["moe_dead_expert_ratio"]
-            moe_expert_count_cv = moe_metrics["moe_expert_count_cv"]
+            moe_ema_dead_expert_ratio = moe_metrics[
+                "moe_ema_dead_expert_ratio"
+            ]
+            moe_ema_max_expert_frac = moe_metrics["moe_ema_max_expert_frac"]
             moe_selected_expert_margin_to_unselected = moe_metrics[
                 "moe_selected_expert_margin_to_unselected"
             ]
-            router_shift_stats = actor_policy.get_last_moe_router_shift_stats()
-            js_sum = router_shift_stats["js_sum"]
-            js_count = router_shift_stats["js_count"]
-            top1_switch_sum = router_shift_stats["top1_switch_sum"]
-            top1_switch_count = router_shift_stats["top1_switch_count"]
-            if (
-                js_sum is not None
-                and js_count is not None
-                and top1_switch_sum is not None
-                and top1_switch_count is not None
-            ):
-                js_sum = js_sum.detach().to(self.device, dtype=torch.float32)
-                js_count = js_count.detach().to(
-                    self.device, dtype=torch.float32
-                )
-                top1_switch_sum = top1_switch_sum.detach().to(
-                    self.device, dtype=torch.float32
-                )
-                top1_switch_count = top1_switch_count.detach().to(
-                    self.device, dtype=torch.float32
-                )
-                if self.is_distributed:
-                    js_sum = self.accelerator.reduce(js_sum, reduction="sum")
-                    js_count = self.accelerator.reduce(
-                        js_count, reduction="sum"
-                    )
-                    top1_switch_sum = self.accelerator.reduce(
-                        top1_switch_sum, reduction="sum"
-                    )
-                    top1_switch_count = self.accelerator.reduce(
-                        top1_switch_count, reduction="sum"
-                    )
-                if float(js_count.item()) > 0.0:
-                    moe_last_router_js_step = float((js_sum / js_count).item())
-                if float(top1_switch_count.item()) > 0.0:
-                    moe_last_router_top1_switch_rate = float(
-                        (top1_switch_sum / top1_switch_count).item()
-                    )
 
         self.storage.clear()
         loss_out = {
@@ -2498,24 +2515,18 @@ class PPOTF(PPO):
             "aux_router_switch_penalty_js": (
                 mean_aux_router_switch_penalty_js
             ),
-            "dead_expert_margin_to_topk": (
-                mean_dead_expert_margin_to_topk_loss
+            "moe_load_balance": mean_moe_load_balance_loss,
+            "inactive_expert_margin_to_topk": (
+                mean_inactive_expert_margin_to_topk_loss
             ),
             "router_expert_orthogonal": mean_router_expert_orthogonal_loss,
             "selected_expert_margin_to_unselected": (
                 mean_selected_expert_margin_to_unselected_loss
             ),
-            "moe_active_expert_ratio": moe_active_expert_ratio,
-            "moe_max_expert_frac": moe_max_expert_frac,
-            "moe_least_expert_frac": moe_least_expert_frac,
-            "moe_dead_expert_ratio": moe_dead_expert_ratio,
-            "moe_expert_count_cv": moe_expert_count_cv,
+            "moe_ema_dead_expert_ratio": moe_ema_dead_expert_ratio,
+            "moe_ema_max_expert_frac": moe_ema_max_expert_frac,
             "moe_selected_expert_margin_to_unselected": (
                 moe_selected_expert_margin_to_unselected
-            ),
-            "moe_last_router_js_step": moe_last_router_js_step,
-            "moe_last_router_top1_switch_rate": (
-                moe_last_router_top1_switch_rate
             ),
         }
         if self.is_distributed:

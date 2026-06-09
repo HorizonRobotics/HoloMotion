@@ -234,6 +234,40 @@ def test_ref_gravity_projection_far_uses_immediate_next_reference():
     assert torch.equal(result, torch.tensor([False]))
 
 
+def test_root_yaw_ref_far_flags_large_yaw_error():
+    termination_module = _load_isaaclab_termination_module(
+        "isaaclab_termination_under_test_yaw"
+    )
+
+    ref_quat = torch.tensor(
+        [
+            [0.70710677, 0.0, 0.0, 0.70710677],
+            [1.0, 0.0, 0.0, 0.0],
+        ],
+        dtype=torch.float32,
+    )
+    robot_quat = torch.tensor(
+        [
+            [1.0, 0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0, 0.0],
+        ],
+        dtype=torch.float32,
+    )
+    command = SimpleNamespace(
+        robot=SimpleNamespace(data=SimpleNamespace(root_quat_w=robot_quat)),
+        get_ref_motion_root_global_rot_quat_wxyz_immediate_next=(
+            lambda prefix="ref_": ref_quat
+        ),
+    )
+    env = SimpleNamespace(
+        command_manager=SimpleNamespace(get_term=lambda name: command)
+    )
+
+    result = termination_module.root_yaw_ref_far(env, threshold=0.5)
+
+    assert torch.equal(result, torch.tensor([True, False]))
+
+
 def test_build_terminations_config_registers_wholebody_mpjpe_far():
     termination_module = _load_isaaclab_termination_module(
         "isaaclab_termination_under_test_for_cfg"
