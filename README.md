@@ -70,6 +70,16 @@ Send your resume by scanning the **WeChat** QR code below to get in touch with u
   <img width="420" height="150" src="assets/media/qr_codes.jpg" hspace="10">
 </p>
 
+# Projects Using HoloMotion
+
+We are glad to see HoloMotion being used as a motion control foundation for humanoid research and applications.
+
+| Project | Description | Links |
+| --- | --- | --- |
+| OMG: Omni-Modal Motion Generation for Generalist Humanoid Control | Uses HoloMotion as the motion control foundation for omni-modal motion generation and generalist humanoid control. | [Paper](https://arxiv.org/abs/2606.10340) / [Project](https://tsinghua-mars-lab.github.io/OMG/) |
+
+If your project uses HoloMotion, feel free to open a PR to add it here.
+
 # Citation
 
 ```
