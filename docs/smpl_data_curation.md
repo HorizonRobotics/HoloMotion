@@ -70,6 +70,8 @@ Download and extract the datasets into the `data/` folder as follows:
   - [MotionX dataset](https://github.com/IDEA-Research/Motion-X)
 - `data/raw_datasets/ZJU_Mocap/` (optional)
   - [EasyMocap](https://github.com/zju3dv/EasyMocap)
+- `data/raw_datasets/MotionMillion/` (optional)
+  - [MotionMillion](https://github.com/VankouF/MotionMillion-Codes)
 
 ---
 
@@ -119,7 +121,19 @@ Step:
 
     This script reads from `data/{dataset}/` and writes to `data/amass_compatible_datasets/{dataset}/`.
 
----
+    #### MotionMillion (optional)
+
+    Place 272-dim `.npy` files under `data/raw_datasets/MotionMillion/`, then convert directly (no SMPLify fitting required):
+
+    ```bash
+    python holomotion/src/data_curation/smplify/smplify_motionmillion.py \
+      --src_folder data/raw_datasets/MotionMillion \
+      --tgt_folder data/amass_compatible_datasets/MotionMillion
+    ```
+
+    For a single file, set `--src_folder` to one `.npy` path and `--tgt_folder` to the output `.npz` path.
+
+    ---
 
 ### 3. Filter Datasets (optional)
 
