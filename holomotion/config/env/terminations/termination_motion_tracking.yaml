@@ -1,7 +1,6 @@
 # @package _global_
 
 terminations:
-
   time_out:
     time_out: true
 
@@ -9,21 +8,3 @@ terminations:
     params:
       threshold: 0.8
       ref_prefix: ${rewards._config.reward_prefix}
-
-  keybody_ref_z_far:
-    params:
-      threshold: 0.25
-      ref_prefix: ${rewards._config.reward_prefix}
-      keybody_names:
-        - pelvis
-        - left_ankle_roll_link
-        - right_ankle_roll_link
-        - left_wrist_yaw_link
-        - right_wrist_yaw_link
-
-  keybody_ref_pos_far:
-    params:
-      threshold: 0.2
-      ref_prefix: ${rewards._config.reward_prefix}
-      keybody_names:
-        - pelvis

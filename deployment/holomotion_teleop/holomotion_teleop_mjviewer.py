@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-Subscribe to obs65 packets and visualize the robot pose in MuJoCo.
+Subscribe to reference qpos packets and visualize the robot pose in MuJoCo.
 
 Expected packet layout:
-- topic: b"obs65"
-- latest_obs: float32[65] = dof_pos[29] + dof_vel[29] + root_pos[3] + root_rot_wxyz[4]
+- topic: b"reference_qpos"
+- reference_qpos: float32[36] = root_pos[3] + root_rot_wxyz[4] + dof_pos[29]
 - frame_index: int64[1]
 - timestamp_realtime: float64[1]
 """
@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
 import time
 from pathlib import Path
 from typing import Dict
@@ -21,17 +20,14 @@ from typing import Dict
 import numpy as np
 import zmq
 
+from holoretarget.schema import DOF_POS_DIM, QPOS_DIM
+
 
 HEADER_SIZE = 1280
-OBS_DIM = 65
-DOF_DIM = 29
+DOF_DIM = DOF_POS_DIM
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-GMR_ROOT = PROJECT_ROOT / "thirdparties" / "GMR"
-if str(GMR_ROOT) not in sys.path:
-    sys.path.insert(0, str(GMR_ROOT))
-
-from general_motion_retargeting import RobotMotionViewer  # noqa: E402
+DEFAULT_MJCF_PATH = PROJECT_ROOT / "holoretarget" / "assets" / "unitree_g1" / "g1_mocap_29dof.xml"
 
 
 def dtype_from_str(dtype_str: str) -> np.dtype:
@@ -78,7 +74,7 @@ def decode_numpy_message(packet: bytes, topic: bytes) -> Dict[str, np.ndarray]:
     return result
 
 
-class Obs65Receiver:
+class ReferenceReceiver:
     def __init__(self, uri: str, topic: str):
         self.uri = uri
         self.topic = topic.encode("utf-8")
@@ -112,20 +108,88 @@ class Obs65Receiver:
         self.context.term()
 
 
-def obs_to_state(obs: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    if obs.size != OBS_DIM:
-        raise ValueError(f"latest_obs must have {OBS_DIM} values, got {obs.size}")
-    dof_pos = np.asarray(obs[:DOF_DIM], dtype=np.float32)
-    root_pos = np.asarray(obs[58:61], dtype=np.float32)
-    root_rot = np.asarray(obs[61:65], dtype=np.float32)
+class ReferenceMujocoViewer:
+    """Minimal MuJoCo viewer for reference qpos packets.
+
+    The model is the packaged Unitree G1 mocap MJCF used by HoloRetarget. The
+    The contract stores root pose followed by 29 G1 joint positions.
+    """
+
+    def __init__(self, mjcf_path: str | Path, viewer_fps: float, camera_follow: bool):
+        import mujoco
+        import mujoco.viewer
+
+        self.mujoco = mujoco
+        self.model = mujoco.MjModel.from_xml_path(str(Path(mjcf_path).expanduser()))
+        if self.model.nq < 7 + DOF_DIM:
+            raise ValueError(f"MJCF has nq={self.model.nq}, expected at least {7 + DOF_DIM}")
+        self.data = mujoco.MjData(self.model)
+        mujoco.mj_forward(self.model, self.data)
+        self.viewer = mujoco.viewer.launch_passive(self.model, self.data)
+        self.viewer_fps = float(viewer_fps)
+        self.camera_follow = bool(camera_follow)
+        self._last_step_time = time.time()
+
+    def step(
+        self,
+        root_pos: np.ndarray,
+        root_rot: np.ndarray,
+        dof_pos: np.ndarray,
+        *,
+        rate_limit: bool = True,
+        follow_camera: bool = True,
+    ) -> None:
+        root_pos = np.asarray(root_pos, dtype=np.float64).reshape(3)
+        root_rot = np.asarray(root_rot, dtype=np.float64).reshape(4)
+        dof_pos = np.asarray(dof_pos, dtype=np.float64).reshape(DOF_DIM)
+
+        quat_norm = float(np.linalg.norm(root_rot))
+        if quat_norm > 1e-8:
+            root_rot = root_rot / quat_norm
+        else:
+            root_rot = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
+
+        self.data.qpos[:3] = root_pos
+        self.data.qpos[3:7] = root_rot
+        self.data.qpos[7 : 7 + DOF_DIM] = dof_pos
+        self.mujoco.mj_forward(self.model, self.data)
+
+        if follow_camera and hasattr(self.viewer, "cam"):
+            self.viewer.cam.lookat[:] = root_pos
+        self.viewer.sync()
+
+        if rate_limit and self.viewer_fps > 0.0:
+            now = time.time()
+            target_dt = 1.0 / self.viewer_fps
+            sleep_time = target_dt - (now - self._last_step_time)
+            if sleep_time > 0.0:
+                time.sleep(sleep_time)
+            self._last_step_time = time.time()
+
+    def is_running(self) -> bool:
+        return bool(self.viewer.is_running())
+
+    def close(self) -> None:
+        self.viewer.close()
+
+
+def qpos_to_state(qpos: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    if qpos.size != QPOS_DIM:
+        raise ValueError(f"reference_qpos must have {QPOS_DIM} values, got {qpos.size}")
+    root_pos = np.asarray(qpos[:3], dtype=np.float32)
+    root_rot = np.asarray(qpos[3:7], dtype=np.float32)
+    dof_pos = np.asarray(qpos[7:], dtype=np.float32)
     return root_pos, root_rot, dof_pos
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Visualize obs65 ZMQ stream in MuJoCo")
+    parser = argparse.ArgumentParser(
+        description="Visualize reference qpos ZMQ stream in MuJoCo"
+    )
     parser.add_argument("--uri", default="tcp://127.0.0.1:6001", help="Publisher endpoint to connect to")
-    parser.add_argument("--topic", default="obs65", help="ZMQ topic to subscribe")
-    parser.add_argument("--robot", default="unitree_g1", help="Robot type supported by GMR RobotMotionViewer")
+    parser.add_argument("--topic", default="reference_qpos", help="ZMQ topic to subscribe")
+    parser.add_argument("--robot", default="unitree_g1", help="Deprecated; kept for script compatibility")
+    parser.add_argument("--mjcf", default=str(DEFAULT_MJCF_PATH), help="MuJoCo XML used for visualization")
     parser.add_argument("--viewer-fps", type=float, default=55.0, help="Viewer refresh rate")
     parser.add_argument("--recv-timeout-ms", type=int, default=10, help="Polling timeout for new packets")
     parser.add_argument("--print-every", type=int, default=100, help="Print stream stats every N received frames")
@@ -137,8 +201,11 @@ def parse_args():
 def main():
     args = parse_args()
 
-    receiver = Obs65Receiver(uri=args.uri, topic=args.topic)
-    print(f"[INFO] obs65 viewer connected: uri={args.uri}, topic={args.topic}, robot={args.robot}")
+    receiver = ReferenceReceiver(uri=args.uri, topic=args.topic)
+    print(
+        f"[INFO] reference viewer connected: uri={args.uri}, "
+        f"topic={args.topic}, mjcf={args.mjcf}"
+    )
 
     viewer = None
     latest_root_pos = np.array([0.0, 0.0, 0.793], dtype=np.float32)
@@ -146,9 +213,9 @@ def main():
     latest_dof_pos = np.zeros(DOF_DIM, dtype=np.float32)
 
     if not args.dry_run:
-        viewer = RobotMotionViewer(
-            robot_type=args.robot,
-            motion_fps=args.viewer_fps,
+        viewer = ReferenceMujocoViewer(
+            mjcf_path=args.mjcf,
+            viewer_fps=args.viewer_fps,
             camera_follow=not args.no_follow_camera,
         )
         latest_root_pos = viewer.data.qpos[:3].copy().astype(np.float32)
@@ -163,12 +230,14 @@ def main():
         while True:
             decoded = receiver.recv_latest(timeout_ms=args.recv_timeout_ms)
             if decoded is not None:
-                latest_obs = decoded.get("latest_obs")
-                if latest_obs is None:
-                    print("[WARN] packet does not contain latest_obs")
+                reference_qpos = decoded.get("reference_qpos")
+                if reference_qpos is None:
+                    print("[WARN] packet does not contain reference_qpos")
                 else:
-                    latest_obs = np.asarray(latest_obs).reshape(-1)
-                    latest_root_pos, latest_root_rot, latest_dof_pos = obs_to_state(latest_obs)
+                    reference_qpos = np.asarray(reference_qpos).reshape(-1)
+                    latest_root_pos, latest_root_rot, latest_dof_pos = qpos_to_state(
+                        reference_qpos
+                    )
 
                     recv_count += 1
                     now = time.time()
@@ -182,13 +251,15 @@ def main():
                         frame_index = int(decoded.get("frame_index", np.array([-1], dtype=np.int64))[0])
                         avg_recv_hz = sum(recv_freq_log) / len(recv_freq_log) if recv_freq_log else 0.0
                         print(
-                            f"[obs65] frame={frame_index}, recv_hz={avg_recv_hz:.2f}, "
+                            f"[reference] frame={frame_index}, recv_hz={avg_recv_hz:.2f}, "
                             f"root_pos={np.array2string(latest_root_pos, precision=4, suppress_small=True)}, "
                             f"root_rot_wxyz={np.array2string(latest_root_rot, precision=4, suppress_small=True)}"
                         )
                         recv_freq_log.clear()
 
             if viewer is not None:
+                if not viewer.is_running():
+                    break
                 viewer.step(
                     latest_root_pos,
                     latest_root_rot,

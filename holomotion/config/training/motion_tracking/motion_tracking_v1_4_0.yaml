@@ -1,0 +1,42 @@
+# @package _global_
+
+defaults:
+  - /training: train_base
+  - /algo: ppo_tf
+  - /robot: unitree/G1/29dof/29dof_training_isaaclab
+  - /env: motion_tracking
+  - /env/terminations: termination_motion_tracking
+  - /env/observations: motion_tracking/obs_motion_tracking_tf-moe
+  - /env/rewards: motion_tracking/rew_motion_tracking
+  - /env/domain_randomization: domain_rand_medium
+  - /env/terrain: isaaclab_rough
+  - /modules: motion_tracking/motion_tracking_tf-moe
+  - _self_
+
+project_name: HoloMotionMotrackV1.4
+
+train_hdf5_roots:
+  - { root: data/h5v2_datasets/AMASS_test, ratio: 1.0 }
+
+# checkpoint: ???
+
+algo:
+  config:
+    save_interval: 1000
+    num_learning_iterations: 10000
+    sampling_strategy: weighted_bin
+
+mujoco_eval:
+  enabled: true
+  robot_xml_path: assets/robots/unitree/G1/29dof/scene_29dof.xml
+  dump_npzs: true
+  calc_per_clip_metrics: true
+  generate_report: true
+  ray_actors_per_gpu: 16
+  ray_multi_ckpt_mode: "split"
+  ckpt_onnx_names:
+    - model_2000.onnx
+    - model_4000.onnx
+    - model_6000.onnx
+    - model_8000.onnx
+    - model_10000.onnx

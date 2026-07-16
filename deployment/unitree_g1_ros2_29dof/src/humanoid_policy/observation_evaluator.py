@@ -1,14 +1,11 @@
-"""Observation and FK-derived observation formulas for the 29DOF policy node."""
+"""Observation formulas for the 29DOF policy node."""
 
 from __future__ import annotations
-
-import math
 
 import numpy as np
 
 from humanoid_policy.offline_motion_reference import OfflineMotionReference
 from humanoid_policy.offline_motion_reference import yaw_from_quat_wxyz
-from humanoid_policy.vr_reference import VrLatestObsReference
 
 
 def get_gravity_orientation(quaternion: np.ndarray) -> np.ndarray:
@@ -37,46 +34,17 @@ class PolicyObservationEvaluator:
     def get_logger(self):
         return self._node.get_logger()
 
-    def clear_vr_fk_cache(self) -> None:
-        self._fk_vr_out = None
-        self._use_fk_vr = False
-        self._fk_vr_cache_ready = False
+    def clear_vr_reference_cache(self) -> None:
+        if getattr(self, "_vr_reference", None) is not None:
+            self._vr_reference.kinematics = None
 
-    def initialize_vr_fk_buffers(self, n_fut: int, num_actions: int) -> None:
-        import torch
-
+    def initialize_vr_reference_buffers(self, n_fut: int, num_actions: int) -> None:
         n_fut = int(n_fut)
         num_actions = int(num_actions)
         if n_fut > 0:
-            self._fk_root_pos_seq_np = np.zeros(
-                (1, n_fut + 1, 3), dtype=np.float32
-            )
-            self._fk_root_rot_seq_np = np.zeros(
-                (1, n_fut + 1, 4), dtype=np.float32
-            )
-            self._fk_dof_pos_seq_np = np.zeros(
-                (1, n_fut + 1, num_actions), dtype=np.float32
-            )
-            self._fk_root_pos_seq_tensor = torch.from_numpy(
-                self._fk_root_pos_seq_np
-            )
-            self._fk_root_rot_seq_tensor = torch.from_numpy(
-                self._fk_root_rot_seq_np
-            )
-            self._fk_dof_pos_seq_tensor = torch.from_numpy(
-                self._fk_dof_pos_seq_np
-            )
             self.get_logger().info(
                 f"Initialized VR future frame queues: n_fut_frames={n_fut}, num_actions={num_actions}"
             )
-            return
-
-        self._fk_root_pos_seq_np = None
-        self._fk_root_rot_seq_np = None
-        self._fk_dof_pos_seq_np = None
-        self._fk_root_pos_seq_tensor = None
-        self._fk_root_rot_seq_tensor = None
-        self._fk_dof_pos_seq_tensor = None
 
     def initialize_observation_state(self) -> None:
         node = self._node
@@ -191,39 +159,12 @@ class PolicyObservationEvaluator:
             dtype=np.float32,
         )
         self._motion_ref_yaw_alignment_ready = False
-        self._gravity_cur_buffer = np.zeros(3, dtype=np.float32)
-        self._base_linvel_cur_buffer = np.zeros(3, dtype=np.float32)
-        self._base_angvel_cur_buffer = np.zeros(3, dtype=np.float32)
         self._keybody_rel_pos_fut_buffer = np.zeros(
             (self.n_fut_frames_int, 0, 3), dtype=np.float32
         )
         self._keybody_rel_pos_w_buffer = None
         max_t = max(1, self.n_fut_frames_int)
-        self._vel_fut_T6 = np.zeros((max_t, 6), dtype=np.float32)
-        self._rot_t_buffer = np.zeros((max_t, 3), dtype=np.float32)
-        self._rot_cross_buffer = np.zeros((max_t, 3), dtype=np.float32)
-        self._fk_root_vel_seq_np = np.zeros((max_t + 1, 3), dtype=np.float32)
-        self._fk_root_angvel_seq_np = np.zeros(
-            (max_t + 1, 3), dtype=np.float32
-        )
-        self._fk_q_rel_buffer = np.zeros((max_t, 4), dtype=np.float32)
-        self._fk_axis_angle_buffer = np.zeros((max_t, 3), dtype=np.float32)
-        self._use_fk_vr = False
-        self._fk_vr_cache_ready = False
-        self._fk_vel_0_root = np.zeros(3, dtype=np.float32)
-        self._fk_angvel_0_root = np.zeros(3, dtype=np.float32)
-        self._fk_quat_0_root = np.zeros(4, dtype=np.float32)
-        self._fk_trans_0 = None
-        self._fk_vel_fut = np.zeros((max_t, 3), dtype=np.float32)
-        self._fk_angvel_fut = np.zeros((max_t, 3), dtype=np.float32)
-        self._fk_quat_fut = np.zeros((max_t, 4), dtype=np.float32)
-        self._fk_trans_fut = None
         self._q_conj_buffer = np.zeros((max_t + 1, 4), dtype=np.float32)
-        self._rotated_3vec_buffer = np.zeros(3, dtype=np.float32)
-        self._rotated_angvel_cur_buffer = np.zeros(3, dtype=np.float32)
-        self._cross_t_buffer = np.zeros(3, dtype=np.float32)
-        self._fk_quat_0_root_wxyz = np.zeros(4, dtype=np.float32)
-        self._fk_quat_fut_wxyz = np.zeros((max_t, 4), dtype=np.float32)
         self._velocity_cmd_obs = np.zeros(4, dtype=np.float32)
         self._projected_gravity_buffer = np.zeros(3, dtype=np.float32)
         self._ref_motion_states_buffer = np.zeros(
@@ -234,61 +175,6 @@ class PolicyObservationEvaluator:
             int(getattr(node, "actor_place_holder_ndim", 0) or 0),
             dtype=np.float32,
         )
-
-    def initialize_fk(self) -> None:
-        import torch
-
-        from humanoid_policy.holomotion_fk_root_only import (
-            HoloMotionFKRootOnly,
-        )
-
-        node = self._node
-        try:
-            self.get_logger().info(
-                "Initializing root-only FK (no URDF, sync main-thread mode)"
-            )
-            self.fk = HoloMotionFKRootOnly(
-                dof_names=node.dof_names_ref_motion,
-                device="cpu",
-                timing_logger_enabled=True,
-                timing_log_interval_sec=5.0,
-                timing_log_per_call=False,
-                timing_name="FKRootOnlyVR",
-                timing_log_fn=self.get_logger().info,
-            )
-            try:
-                ndof = len(self.fk.dof_names)
-                root_pos_dummy = torch.zeros((1, 4, 3), dtype=torch.float32)
-                root_quat_dummy = torch.zeros((1, 4, 4), dtype=torch.float32)
-                root_quat_dummy[..., 0] = 1.0
-                dof_pos_dummy = torch.zeros((1, 4, ndof), dtype=torch.float32)
-                _ = self.fk(
-                    root_pos=root_pos_dummy,
-                    root_quat=root_quat_dummy,
-                    dof_pos=dof_pos_dummy,
-                    fps=float(1.0 / node.dt),
-                    quat_format="wxyz",
-                    vel_smoothing_sigma=0.0,
-                    compute_velocity=False,
-                )
-                self.get_logger().info(
-                    "[FK] Root-only warmup completed (B=1,T=4)"
-                )
-            except Exception as exc:
-                self.get_logger().warn(
-                    f"[FK] Root-only warmup failed (ignored): {exc}"
-                )
-
-            self.fk_initialized = True
-            self.get_logger().info(
-                f"Root-only FK initialized successfully with {len(self.fk.dof_names)} dofs"
-            )
-        except Exception as exc:
-            self.get_logger().error(
-                f"Failed to initialize root-only FK: {exc}"
-            )
-            self.fk = None
-            self.fk_initialized = False
 
     def _init_keybody_indices_cache(self):
         if self.motion_config is None:
@@ -581,7 +467,7 @@ class PolicyObservationEvaluator:
     @property
     def ref_motion_frame_idx(self):
         if (
-            not getattr(self, "latest_obs_flag", False)
+            not getattr(self, "reference_stream_active", False)
             and self._offline_reference is not None
             and self._offline_reference.has_clip
         ):
@@ -592,7 +478,7 @@ class PolicyObservationEvaluator:
 
     @property
     def ref_dof_pos_raw(self):
-        if not self.latest_obs_flag:
+        if not self.reference_stream_active:
             if (
                 self._offline_reference is not None
                 and self._offline_reference.has_clip
@@ -604,7 +490,7 @@ class PolicyObservationEvaluator:
         if self._vr_reference is not None:
             fallback = (
                 self.ref_dof_pos[self.ref_motion_frame_idx]
-                if not self._vr_reference.has_latest_obs
+                if not self._vr_reference.has_reference
                 else None
             )
             return self._vr_reference.current_dof_pos(fallback)
@@ -612,7 +498,7 @@ class PolicyObservationEvaluator:
 
     @property
     def ref_dof_vel_raw(self):
-        if not self.latest_obs_flag:
+        if not self.reference_stream_active:
             if (
                 self._offline_reference is not None
                 and self._offline_reference.has_clip
@@ -624,7 +510,7 @@ class PolicyObservationEvaluator:
         if self._vr_reference is not None:
             fallback = (
                 self.ref_dof_vel[self.ref_motion_frame_idx]
-                if not self._vr_reference.has_latest_obs
+                if not self._vr_reference.has_reference
                 else None
             )
             return self._vr_reference.current_dof_vel(fallback)
@@ -633,7 +519,7 @@ class PolicyObservationEvaluator:
     @property
     def ref_dof_pos_onnx_order(self):
         if (
-            not getattr(self, "latest_obs_flag", False)
+            not getattr(self, "reference_stream_active", False)
             and self._offline_reference is not None
             and self._offline_reference.has_clip
         ):
@@ -645,7 +531,7 @@ class PolicyObservationEvaluator:
     @property
     def ref_dof_vel_onnx_order(self):
         if (
-            not getattr(self, "latest_obs_flag", False)
+            not getattr(self, "reference_stream_active", False)
             and self._offline_reference is not None
             and self._offline_reference.has_clip
         ):
@@ -656,7 +542,7 @@ class PolicyObservationEvaluator:
 
     @property
     def ref_root_pos_raw(self):
-        if not self.latest_obs_flag:
+        if not self.reference_stream_active:
             if (
                 self._offline_reference is not None
                 and self._offline_reference.has_clip
@@ -681,7 +567,7 @@ class PolicyObservationEvaluator:
     @property
     def last_valid_ref_motion_frame_idx(self):
         if (
-            not getattr(self, "latest_obs_flag", False)
+            not getattr(self, "reference_stream_active", False)
             and self._offline_reference is not None
             and self._offline_reference.has_clip
         ):
@@ -837,22 +723,6 @@ class PolicyObservationEvaluator:
         q_conj[..., 1:4] = -q_wxyz[..., 1:4]
         return self._quat_rotate_wxyz(q_conj, v)
 
-    def _quat_rotate_inv_wxyz_single(
-        self, q_wxyz: np.ndarray, v: np.ndarray, out: np.ndarray
-    ) -> np.ndarray:
-        """Rotate one 3D vector by the inverse quaternion into a preallocated output."""
-        qx = -q_wxyz[1]
-        qy = -q_wxyz[2]
-        qz = -q_wxyz[3]
-        qw = q_wxyz[0]
-        tx = 2.0 * (qy * v[2] - qz * v[1])
-        ty = 2.0 * (qz * v[0] - qx * v[2])
-        tz = 2.0 * (qx * v[1] - qy * v[0])
-        out[0] = v[0] + qw * tx + (qy * tz - qz * ty)
-        out[1] = v[1] + qw * ty + (qz * tx - qx * tz)
-        out[2] = v[2] + qw * tz + (qx * ty - qy * tx)
-        return out
-
     @staticmethod
     def _fill_gravity_wxyz(q_wxyz: np.ndarray, out: np.ndarray) -> None:
         qw = q_wxyz[0]
@@ -863,16 +733,6 @@ class PolicyObservationEvaluator:
         out[1] = -2.0 * (qz * qy + qw * qx)
         out[2] = 1.0 - 2.0 * (qw * qw + qz * qz)
 
-    @staticmethod
-    def _fill_gravity_wxyz_batch(q_wxyz: np.ndarray, out: np.ndarray) -> None:
-        qw = q_wxyz[:, 0]
-        qx = q_wxyz[:, 1]
-        qy = q_wxyz[:, 2]
-        qz = q_wxyz[:, 3]
-        out[:, 0] = 2.0 * (-qz * qx + qw * qy)
-        out[:, 1] = -2.0 * (qz * qy + qw * qx)
-        out[:, 2] = 1.0 - 2.0 * (qw * qw + qz * qz)
-
     def _get_future_frame_indices(self) -> np.ndarray:
         frame_idx = self.ref_motion_frame_idx
         last_valid = self.last_valid_ref_motion_frame_idx
@@ -882,445 +742,6 @@ class PolicyObservationEvaluator:
             out=self._future_frame_indices_buffer,
         )
         return self._future_frame_indices_buffer
-
-    def _cache_fk_vr_for_obs(self):
-        """Cache FK outputs used repeatedly during observation construction."""
-        fk = getattr(self, "_fk_vr_out", None)
-        if not getattr(self, "latest_obs_flag", False) or fk is None:
-            self._use_fk_vr = False
-            self._fk_vr_cache_ready = False
-            return
-        if self._fk_vr_cache_ready:
-            return
-        self._use_fk_vr = True
-        T = self.n_fut_frames_int
-        rb = self.root_body_idx
-        np.copyto(self._fk_vel_0_root, fk["global_velocity"][0, 0, rb])
-        np.copyto(
-            self._fk_angvel_0_root, fk["global_angular_velocity"][0, 0, rb]
-        )
-        np.copyto(self._fk_quat_0_root, fk["global_rotation_quat"][0, 0, rb])
-        self._fk_quat_0_root_wxyz[0] = self._fk_quat_0_root[3]
-        self._fk_quat_0_root_wxyz[1:4] = self._fk_quat_0_root[:3]
-        if self._fk_quat_0_root_wxyz[0] < 0.0:
-            self._fk_quat_0_root_wxyz *= -1.0
-        self._fill_gravity_wxyz(
-            self._fk_quat_0_root_wxyz, self._gravity_cur_buffer
-        )
-        self._quat_rotate_inv_wxyz_single(
-            self._fk_quat_0_root_wxyz,
-            self._fk_vel_0_root,
-            self._base_linvel_cur_buffer,
-        )
-        self._quat_rotate_inv_wxyz_single(
-            self._fk_quat_0_root_wxyz,
-            self._fk_angvel_0_root,
-            self._base_angvel_cur_buffer,
-        )
-        trans_0 = fk["global_translation"][0, 0]
-        if self._fk_trans_0 is None or self._fk_trans_0.shape != trans_0.shape:
-            self._fk_trans_0 = np.empty_like(trans_0)
-        np.copyto(self._fk_trans_0, trans_0)
-        if T > 0:
-            np.copyto(
-                self._fk_vel_fut[:T], fk["global_velocity"][0, 1 : 1 + T, rb]
-            )
-            np.copyto(
-                self._fk_angvel_fut[:T],
-                fk["global_angular_velocity"][0, 1 : 1 + T, rb],
-            )
-            np.copyto(
-                self._fk_quat_fut[:T],
-                fk["global_rotation_quat"][0, 1 : 1 + T, rb],
-            )
-            self._fk_quat_fut_wxyz[:T, 0] = self._fk_quat_fut[:T, 3]
-            self._fk_quat_fut_wxyz[:T, 1:4] = self._fk_quat_fut[:T, :3]
-            neg = self._fk_quat_fut_wxyz[:T, 0] < 0.0
-            self._fk_quat_fut_wxyz[:T][neg] *= -1.0
-            trans_fut = fk["global_translation"][0, 1 : 1 + T]
-            if (
-                self._fk_trans_fut is None
-                or self._fk_trans_fut.shape != trans_fut.shape
-            ):
-                self._fk_trans_fut = np.empty_like(trans_fut)
-            np.copyto(self._fk_trans_fut, trans_fut)
-            self._fill_vr_base_linvel_angvel_fut()
-        self._fk_vr_cache_ready = True
-
-    def _fill_vr_base_linvel_angvel_fut(self):
-        """Rotate future linear and angular velocity buffers in one pass."""
-        T = self.n_fut_frames_int
-        if T <= 0:
-            return
-        if T <= 16:
-            self._fill_vr_base_linvel_angvel_fut_small(T)
-            return
-        vel_T6 = self._vel_fut_T6[:T]
-        vel_T6[:, :3] = self._fk_vel_fut[:T]
-        vel_T6[:, 3:6] = self._fk_angvel_fut[:T]
-        q = self._fk_quat_fut_wxyz[:T]
-        q_conj = self._q_conj_buffer[:T].reshape(T, 4)
-        q_conj[:, 0] = q[:, 0]
-        q_conj[:, 1:4] = -q[:, 1:4]
-        qvec = q_conj[:, 1:4]
-        w = q_conj[:, 0:1]
-        rt = self._rot_t_buffer[:T]
-        rc = self._rot_cross_buffer[:T]
-        rt[:, 0] = 2.0 * (
-            qvec[:, 1] * vel_T6[:, 2] - qvec[:, 2] * vel_T6[:, 1]
-        )
-        rt[:, 1] = 2.0 * (
-            qvec[:, 2] * vel_T6[:, 0] - qvec[:, 0] * vel_T6[:, 2]
-        )
-        rt[:, 2] = 2.0 * (
-            qvec[:, 0] * vel_T6[:, 1] - qvec[:, 1] * vel_T6[:, 0]
-        )
-        rc[:, 0] = qvec[:, 1] * rt[:, 2] - qvec[:, 2] * rt[:, 1]
-        rc[:, 1] = qvec[:, 2] * rt[:, 0] - qvec[:, 0] * rt[:, 2]
-        rc[:, 2] = qvec[:, 0] * rt[:, 1] - qvec[:, 1] * rt[:, 0]
-        self._base_linvel_fut_buffer[:T] = vel_T6[:, :3] + w * rt + rc
-        rt[:, 0] = 2.0 * (
-            qvec[:, 1] * vel_T6[:, 5] - qvec[:, 2] * vel_T6[:, 4]
-        )
-        rt[:, 1] = 2.0 * (
-            qvec[:, 2] * vel_T6[:, 3] - qvec[:, 0] * vel_T6[:, 5]
-        )
-        rt[:, 2] = 2.0 * (
-            qvec[:, 0] * vel_T6[:, 4] - qvec[:, 1] * vel_T6[:, 3]
-        )
-        rc[:, 0] = qvec[:, 1] * rt[:, 2] - qvec[:, 2] * rt[:, 1]
-        rc[:, 1] = qvec[:, 2] * rt[:, 0] - qvec[:, 0] * rt[:, 2]
-        rc[:, 2] = qvec[:, 0] * rt[:, 1] - qvec[:, 1] * rt[:, 0]
-        self._base_angvel_fut_buffer[:T] = vel_T6[:, 3:6] + w * rt + rc
-        self._fill_gravity_wxyz_batch(q, self._gravity_fut_buffer[:T])
-
-    def _fill_vr_base_linvel_angvel_fut_small(self, T: int) -> None:
-        for i in range(T):
-            qw = float(self._fk_quat_fut_wxyz[i, 0])
-            qx = float(self._fk_quat_fut_wxyz[i, 1])
-            qy = float(self._fk_quat_fut_wxyz[i, 2])
-            qz = float(self._fk_quat_fut_wxyz[i, 3])
-            vx = float(self._fk_vel_fut[i, 0])
-            vy = float(self._fk_vel_fut[i, 1])
-            vz = float(self._fk_vel_fut[i, 2])
-            (
-                self._base_linvel_fut_buffer[i, 0],
-                self._base_linvel_fut_buffer[i, 1],
-                self._base_linvel_fut_buffer[i, 2],
-            ) = self._quat_rotate_inv_wxyz_values(qw, qx, qy, qz, vx, vy, vz)
-
-            wx = float(self._fk_angvel_fut[i, 0])
-            wy = float(self._fk_angvel_fut[i, 1])
-            wz = float(self._fk_angvel_fut[i, 2])
-            (
-                self._base_angvel_fut_buffer[i, 0],
-                self._base_angvel_fut_buffer[i, 1],
-                self._base_angvel_fut_buffer[i, 2],
-            ) = self._quat_rotate_inv_wxyz_values(qw, qx, qy, qz, wx, wy, wz)
-
-            self._gravity_fut_buffer[i, 0] = 2.0 * (-qz * qx + qw * qy)
-            self._gravity_fut_buffer[i, 1] = -2.0 * (qz * qy + qw * qx)
-            self._gravity_fut_buffer[i, 2] = 1.0 - 2.0 * (qw * qw + qz * qz)
-
-    @staticmethod
-    def _quat_rotate_inv_wxyz_values(
-        qw: float,
-        qx: float,
-        qy: float,
-        qz: float,
-        vx: float,
-        vy: float,
-        vz: float,
-    ) -> tuple[float, float, float]:
-        qx = -qx
-        qy = -qy
-        qz = -qz
-        tx = 2.0 * (qy * vz - qz * vy)
-        ty = 2.0 * (qz * vx - qx * vz)
-        tz = 2.0 * (qx * vy - qy * vx)
-        return (
-            vx + qw * tx + (qy * tz - qz * ty),
-            vy + qw * ty + (qz * tx - qx * tz),
-            vz + qw * tz + (qx * ty - qy * tx),
-        )
-
-    def _prepare_vr_fk_tensors(
-        self,
-        vr_reference: VrLatestObsReference,
-        cur_root_pos: np.ndarray,
-        cur_root_rot: np.ndarray,
-        cur_dof_pos: np.ndarray,
-        n_fut: int,
-    ):
-        """Fill preallocated FK input buffers and return torch views without reallocation."""
-        if (
-            n_fut <= 0
-            or self._fk_root_pos_seq_np is None
-            or self._fk_root_rot_seq_np is None
-            or self._fk_dof_pos_seq_np is None
-        ):
-            raise ValueError("VR FK sequence buffers are not initialized")
-
-        copied = vr_reference.copy_fk_sequence_inputs(
-            root_pos_seq=self._fk_root_pos_seq_np,
-            root_rot_seq=self._fk_root_rot_seq_np,
-            dof_pos_seq=self._fk_dof_pos_seq_np,
-            cur_root_pos=cur_root_pos,
-            cur_root_rot=cur_root_rot,
-            cur_dof_pos=cur_dof_pos,
-            n_frames=n_fut,
-        )
-        if not copied:
-            raise ValueError(
-                "VR latest_obs future sequence is not ready for FK"
-            )
-        return (
-            self._fk_root_pos_seq_tensor,
-            self._fk_root_rot_seq_tensor,
-            self._fk_dof_pos_seq_tensor,
-        )
-
-    def _prepare_vr_fk_arrays(
-        self,
-        vr_reference: VrLatestObsReference,
-        cur_root_pos: np.ndarray,
-        cur_root_rot: np.ndarray,
-        cur_dof_pos: np.ndarray,
-        n_fut: int,
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        if (
-            n_fut <= 0
-            or self._fk_root_pos_seq_np is None
-            or self._fk_root_rot_seq_np is None
-            or self._fk_dof_pos_seq_np is None
-        ):
-            raise ValueError("VR FK sequence buffers are not initialized")
-
-        copied = vr_reference.copy_fk_sequence_inputs(
-            root_pos_seq=self._fk_root_pos_seq_np,
-            root_rot_seq=self._fk_root_rot_seq_np,
-            dof_pos_seq=self._fk_dof_pos_seq_np,
-            cur_root_pos=cur_root_pos,
-            cur_root_rot=cur_root_rot,
-            cur_dof_pos=cur_dof_pos,
-            n_frames=n_fut,
-        )
-        if not copied:
-            raise ValueError(
-                "VR latest_obs future sequence is not ready for FK"
-            )
-        return (
-            self._fk_root_pos_seq_np,
-            self._fk_root_rot_seq_np,
-            self._fk_dof_pos_seq_np,
-        )
-
-    def _compute_and_cache_vr_root_fk(
-        self,
-        *,
-        vr_reference: VrLatestObsReference,
-        cur_root_pos: np.ndarray,
-        cur_root_rot: np.ndarray,
-        cur_dof_pos: np.ndarray | None = None,
-        n_fut: int,
-        fps: float,
-    ) -> None:
-        """Compute root-only FK directly into observation caches."""
-        if fps <= 0.0:
-            raise ValueError(f"Invalid fps: {fps}")
-
-        if (
-            n_fut <= 0
-            or self._fk_root_pos_seq_np is None
-            or self._fk_root_rot_seq_np is None
-            or not vr_reference.has_future_sequence(n_fut)
-        ):
-            raise ValueError(
-                "VR latest_obs future sequence is not ready for FK"
-            )
-        root_pos_seq = self._fk_root_pos_seq_np
-        root_rot_seq = self._fk_root_rot_seq_np
-        np.copyto(root_pos_seq[0, 0], cur_root_pos)
-        np.copyto(root_rot_seq[0, 0], cur_root_rot)
-        np.copyto(
-            root_pos_seq[0, 1 : 1 + n_fut], vr_reference.root_pos_queue[:n_fut]
-        )
-        np.copyto(
-            root_rot_seq[0, 1 : 1 + n_fut], vr_reference.root_rot_queue[:n_fut]
-        )
-        pos = root_pos_seq[0, : n_fut + 1]
-        quat = root_rot_seq[0, : n_fut + 1]
-
-        self._standardize_quat_sequence(quat, n_fut)
-
-        dt = 1.0 / float(fps)
-        inv_dt = float(fps)
-
-        self._fill_root_linear_velocity_seq(pos, n_fut, inv_dt)
-        self._fill_root_angular_velocity_seq(quat, n_fut, dt)
-
-        self._use_fk_vr = True
-        T = int(n_fut)
-        np.copyto(self._fk_vel_0_root, self._fk_root_vel_seq_np[0])
-        np.copyto(self._fk_angvel_0_root, self._fk_root_angvel_seq_np[0])
-        self._fk_quat_0_root_wxyz[:] = quat[0]
-        self._fill_gravity_wxyz(
-            self._fk_quat_0_root_wxyz, self._gravity_cur_buffer
-        )
-        self._quat_rotate_inv_wxyz_single(
-            self._fk_quat_0_root_wxyz,
-            self._fk_vel_0_root,
-            self._base_linvel_cur_buffer,
-        )
-        self._quat_rotate_inv_wxyz_single(
-            self._fk_quat_0_root_wxyz,
-            self._fk_angvel_0_root,
-            self._base_angvel_cur_buffer,
-        )
-
-        if self._fk_trans_0 is None or self._fk_trans_0.shape != (1, 3):
-            self._fk_trans_0 = np.empty((1, 3), dtype=np.float32)
-        self._fk_trans_0[0] = pos[0]
-        if T > 0:
-            np.copyto(
-                self._fk_vel_fut[:T], self._fk_root_vel_seq_np[1 : 1 + T]
-            )
-            np.copyto(
-                self._fk_angvel_fut[:T],
-                self._fk_root_angvel_seq_np[1 : 1 + T],
-            )
-            self._fk_quat_fut_wxyz[:T] = quat[1 : 1 + T]
-            if self._fk_trans_fut is None or self._fk_trans_fut.shape != (
-                T,
-                1,
-                3,
-            ):
-                self._fk_trans_fut = np.empty((T, 1, 3), dtype=np.float32)
-            self._fk_trans_fut[:, 0, :] = pos[1 : 1 + T]
-            self._fill_vr_base_linvel_angvel_fut()
-        self._fk_vr_cache_ready = True
-        self._fk_vr_out = None
-
-    def _standardize_quat_sequence(
-        self, quat_wxyz: np.ndarray, n_fut: int
-    ) -> None:
-        q = quat_wxyz[: n_fut + 1]
-        neg = q[:, 0] < 0.0
-        q[neg] *= -1.0
-
-    def _fill_root_linear_velocity_seq(
-        self, pos: np.ndarray, n_fut: int, inv_dt: float
-    ) -> None:
-        vel = self._fk_root_vel_seq_np[: n_fut + 1]
-        if n_fut <= 0:
-            vel[0].fill(0.0)
-            return
-        vel[0] = (pos[1] - pos[0]) * inv_dt
-        if n_fut > 1:
-            vel[1:n_fut] = (pos[2 : n_fut + 1] - pos[: n_fut - 1]) * (
-                0.5 * inv_dt
-            )
-        vel[n_fut] = (pos[n_fut] - pos[n_fut - 1]) * inv_dt
-
-    def _fill_root_angular_velocity_seq(
-        self, quat_wxyz: np.ndarray, n_fut: int, dt: float
-    ) -> None:
-        angvel = self._fk_root_angvel_seq_np[: n_fut + 1]
-        angvel.fill(0.0)
-        if n_fut <= 0:
-            return
-        if n_fut <= 16:
-            self._fill_root_angular_velocity_seq_small(
-                quat_wxyz, n_fut, dt, angvel
-            )
-            return
-
-        q0 = quat_wxyz[:n_fut]
-        q1 = quat_wxyz[1 : n_fut + 1]
-        rel = self._fk_q_rel_buffer[:n_fut]
-        w1 = q1[:, 0]
-        x1 = q1[:, 1]
-        y1 = q1[:, 2]
-        z1 = q1[:, 3]
-        w0 = q0[:, 0]
-        x0 = q0[:, 1]
-        y0 = q0[:, 2]
-        z0 = q0[:, 3]
-        rel[:, 0] = w1 * w0 + x1 * x0 + y1 * y0 + z1 * z0
-        rel[:, 1] = -w1 * x0 + x1 * w0 - y1 * z0 + z1 * y0
-        rel[:, 2] = -w1 * y0 + x1 * z0 + y1 * w0 - z1 * x0
-        rel[:, 3] = -w1 * z0 - x1 * y0 + y1 * x0 + z1 * w0
-        self._axis_angle_from_wxyz_inplace(
-            rel, self._fk_axis_angle_buffer[:n_fut]
-        )
-        angvel[:n_fut] = self._fk_axis_angle_buffer[:n_fut] / dt
-
-    @staticmethod
-    def _fill_root_angular_velocity_seq_small(
-        quat_wxyz: np.ndarray,
-        n_fut: int,
-        dt: float,
-        angvel: np.ndarray,
-    ) -> None:
-        for i in range(n_fut):
-            w1 = float(quat_wxyz[i + 1, 0])
-            x1 = float(quat_wxyz[i + 1, 1])
-            y1 = float(quat_wxyz[i + 1, 2])
-            z1 = float(quat_wxyz[i + 1, 3])
-            w0 = float(quat_wxyz[i, 0])
-            x0 = float(quat_wxyz[i, 1])
-            y0 = float(quat_wxyz[i, 2])
-            z0 = float(quat_wxyz[i, 3])
-            rw = w1 * w0 + x1 * x0 + y1 * y0 + z1 * z0
-            rx = -w1 * x0 + x1 * w0 - y1 * z0 + z1 * y0
-            ry = -w1 * y0 + x1 * z0 + y1 * w0 - z1 * x0
-            rz = -w1 * z0 - x1 * y0 + y1 * x0 + z1 * w0
-            if rw < 0.0:
-                rw = -rw
-                rx = -rx
-                ry = -ry
-                rz = -rz
-            norm = math.sqrt(rw * rw + rx * rx + ry * ry + rz * rz)
-            norm = max(norm, 1.0e-9)
-            rw /= norm
-            rx /= norm
-            ry /= norm
-            rz /= norm
-            mag = math.sqrt(rx * rx + ry * ry + rz * rz)
-            half_angle = math.atan2(mag, rw)
-            angle = 2.0 * half_angle
-            if abs(angle) <= 1.0e-6:
-                sin_half_over_angle = 0.5 - angle * angle / 48.0
-            else:
-                sin_half_over_angle = math.sin(half_angle) / angle
-            scale = 1.0 / (sin_half_over_angle * dt)
-            angvel[i, 0] = rx * scale
-            angvel[i, 1] = ry * scale
-            angvel[i, 2] = rz * scale
-
-    @staticmethod
-    def _axis_angle_from_wxyz_inplace(
-        q_wxyz: np.ndarray, out: np.ndarray
-    ) -> None:
-        neg = q_wxyz[:, 0] < 0.0
-        q_wxyz[neg] *= -1.0
-        norm = np.sqrt(np.sum(q_wxyz * q_wxyz, axis=1))
-        norm = np.maximum(norm, 1.0e-9)
-        q_wxyz /= norm[:, None]
-
-        quat_w = q_wxyz[:, 0]
-        quat_xyz = q_wxyz[:, 1:4]
-        mag = np.sqrt(np.sum(quat_xyz * quat_xyz, axis=1))
-        half_angle = np.arctan2(mag, quat_w)
-        angle = 2.0 * half_angle
-        use_taylor = np.abs(angle) <= 1.0e-6
-        angle_safe = np.where(use_taylor, 1.0, angle)
-        sin_half_over_angle = np.where(
-            use_taylor,
-            0.5 - angle * angle / 48.0,
-            np.sin(half_angle) / angle_safe,
-        )
-        out[:] = quat_xyz / sin_half_over_angle[:, None]
 
     def _get_future_root_quat_wxyz(self) -> np.ndarray:
         if (
@@ -1354,22 +775,15 @@ class PolicyObservationEvaluator:
 
     def _get_ref_current_root_quat_wxyz(self) -> np.ndarray:
         if (
-            getattr(self, "_use_fk_vr", False)
-            and getattr(self, "_fk_root_rot_seq_np", None) is not None
-        ):
-            return self._standardize_quaternion_wxyz(
-                self._fk_root_rot_seq_np[0, 0]
-            )
-        if (
-            getattr(self, "latest_obs_flag", False)
+            getattr(self, "reference_stream_active", False)
             and self._vr_reference is not None
-            and self._vr_reference.has_latest_obs
+            and self._vr_reference.has_reference
         ):
-            q_root_wxyz = self._vr_reference.latest_root_rot()
+            q_root_wxyz = self._vr_reference.current_root_rot()
             if q_root_wxyz is not None:
                 return self._standardize_quaternion_wxyz(q_root_wxyz)
         if (
-            not getattr(self, "latest_obs_flag", False)
+            not getattr(self, "reference_stream_active", False)
             and self._offline_reference is not None
             and self._offline_reference.has_clip
         ):
@@ -1394,15 +808,9 @@ class PolicyObservationEvaluator:
         if T <= 0:
             return self._future_root_quat_wxyz_buffer[:0]
         if (
-            getattr(self, "_use_fk_vr", False)
-            and getattr(self, "_fk_root_rot_seq_np", None) is not None
-        ):
-            q_root_wxyz = self._fk_root_rot_seq_np[0, 1 : 1 + T]
-            return self._standardize_quaternion_wxyz(q_root_wxyz)
-        if (
-            getattr(self, "latest_obs_flag", False)
+            getattr(self, "reference_stream_active", False)
             and self._vr_reference is not None
-            and self._vr_reference.has_latest_obs
+            and self._vr_reference.has_reference
             and self._vr_reference.root_rot_queue is not None
             and self._vr_reference.root_rot_queue.shape[0] >= T
         ):
@@ -1410,7 +818,7 @@ class PolicyObservationEvaluator:
                 self._vr_reference.root_rot_queue[:T]
             )
         if (
-            not getattr(self, "latest_obs_flag", False)
+            not getattr(self, "reference_stream_active", False)
             and self._offline_reference is not None
             and self._offline_reference.has_clip
         ):
@@ -1576,7 +984,7 @@ class PolicyObservationEvaluator:
 
     def _get_obs_ref_motion_states(self):
         if (
-            not getattr(self, "latest_obs_flag", False)
+            not getattr(self, "reference_stream_active", False)
             and self._offline_reference is not None
             and self._offline_reference.has_clip
         ):
@@ -1594,7 +1002,7 @@ class PolicyObservationEvaluator:
         if T <= 0:
             return np.zeros(0, dtype=np.float32)
         if (
-            getattr(self, "latest_obs_flag", False)
+            getattr(self, "reference_stream_active", False)
             and self._vr_reference is not None
         ):
             return self._vr_reference.obs_ref_dof_pos_fut(
@@ -1602,7 +1010,7 @@ class PolicyObservationEvaluator:
                 pos_fut_buffer=self._pos_fut_buffer,
                 n_frames=T,
             )
-        if getattr(self, "latest_obs_flag", False):
+        if getattr(self, "reference_stream_active", False):
             return np.zeros(self.num_actions * T, dtype=np.float32)
         if (
             self._offline_reference is not None
@@ -1613,7 +1021,7 @@ class PolicyObservationEvaluator:
             )
         if not hasattr(self, "ref_dof_pos") or self.ref_dof_pos is None:
             self.get_logger().warn(
-                "[VR] ref_dof_pos is unavailable and latest_obs is not active; returning zeros for ref_dof_pos_fut."
+                "[VR] ref_dof_pos is unavailable and reference_qpos is not active; returning zeros for ref_dof_pos_fut."
             )
             return np.zeros(self.num_actions * T, dtype=np.float32)
         fut_idx = self._get_future_frame_indices()
@@ -1628,12 +1036,12 @@ class PolicyObservationEvaluator:
         T = self.n_fut_frames_int
         if T <= 0:
             return np.zeros(0, dtype=np.float32)
-        if self.latest_obs_flag and self._vr_reference is not None:
+        if self.reference_stream_active and self._vr_reference is not None:
             return self._vr_reference.obs_ref_root_height_fut(n_frames=T)
-        if self.latest_obs_flag:
+        if self.reference_stream_active:
             return np.zeros(T, dtype=np.float32)
         if (
-            not getattr(self, "latest_obs_flag", False)
+            not getattr(self, "reference_stream_active", False)
             and self._offline_reference is not None
             and self._offline_reference.has_clip
         ):
@@ -1645,7 +1053,7 @@ class PolicyObservationEvaluator:
             or self.ref_raw_bodylink_pos is None
         ):
             self.get_logger().warn(
-                "[VR] ref_raw_bodylink_pos is unavailable and latest_obs is not active; returning zeros for ref_root_height_fut."
+                "[VR] ref_raw_bodylink_pos is unavailable and reference_qpos is not active; returning zeros for ref_root_height_fut."
             )
             return np.zeros(T, dtype=np.float32)
         fut_idx = self._get_future_frame_indices()
@@ -1658,12 +1066,12 @@ class PolicyObservationEvaluator:
         T = self.n_fut_frames_int
         if T <= 0:
             return np.zeros(0, dtype=np.float32)
-        if self.latest_obs_flag and self._vr_reference is not None:
+        if self.reference_stream_active and self._vr_reference is not None:
             return self._vr_reference.obs_ref_root_pos_fut(n_frames=T)
-        if self.latest_obs_flag:
+        if self.reference_stream_active:
             return np.zeros(3 * T, dtype=np.float32)
         if (
-            not getattr(self, "latest_obs_flag", False)
+            not getattr(self, "reference_stream_active", False)
             and self._offline_reference is not None
             and self._offline_reference.has_clip
         ):
@@ -1675,7 +1083,7 @@ class PolicyObservationEvaluator:
             or self.ref_raw_bodylink_pos is None
         ):
             self.get_logger().warn(
-                "[VR] ref_raw_bodylink_pos is unavailable and latest_obs is not active; returning zeros for ref_root_pos_fut."
+                "[VR] ref_raw_bodylink_pos is unavailable and reference_qpos is not active; returning zeros for ref_root_pos_fut."
             )
             return np.zeros(3 * T, dtype=np.float32)
         fut_idx = self._get_future_frame_indices()
@@ -1692,7 +1100,7 @@ class PolicyObservationEvaluator:
         return self.ref_dof_vel_onnx_order
 
     def _get_obs_ref_root_height_cur(self):
-        if not self.latest_obs_flag:
+        if not self.reference_stream_active:
             if (
                 self._offline_reference is not None
                 and self._offline_reference.has_clip
@@ -1709,20 +1117,14 @@ class PolicyObservationEvaluator:
         return self.ref_root_pos_raw.astype(np.float32)
 
     def _get_obs_ref_gravity_projection_cur(self):
-        if getattr(self, "_use_fk_vr", False):
-            return self._gravity_cur_buffer
         if (
-            getattr(self, "latest_obs_flag", False)
+            getattr(self, "reference_stream_active", False)
             and self._vr_reference is not None
-            and self._vr_reference.has_latest_obs
+            and self._vr_reference.kinematics is not None
         ):
-            q_root_wxyz = self._vr_reference.latest_root_rot()
-            if q_root_wxyz is None:
-                return np.zeros(3, dtype=np.float32)
-            q_root_wxyz = self._standardize_quaternion_wxyz(q_root_wxyz)
-            return get_gravity_orientation(q_root_wxyz)
+            return self._vr_reference.kinematics.projected_gravity[0]
         if (
-            not getattr(self, "latest_obs_flag", False)
+            not getattr(self, "reference_stream_active", False)
             and self._offline_reference is not None
             and self._offline_reference.has_clip
         ):
@@ -1734,7 +1136,7 @@ class PolicyObservationEvaluator:
             or self.ref_raw_bodylink_rot is None
         ):
             self.get_logger().warn(
-                "[VR] ref_raw_bodylink_rot is unavailable and latest_obs is not active; returning zeros for gravity_projection_cur."
+                "[VR] ref_raw_bodylink_rot is unavailable and reference_qpos is not active; returning zeros for gravity_projection_cur."
             )
             return np.zeros(3, dtype=np.float32)
         q_root_xyzw = self.ref_raw_bodylink_rot[
@@ -1748,10 +1150,14 @@ class PolicyObservationEvaluator:
         T = self.n_fut_frames_int
         if T <= 0:
             return np.zeros(0, dtype=np.float32)
-        if getattr(self, "_use_fk_vr", False):
-            return self._gravity_fut_buffer[:T].reshape(-1)
         if (
-            not getattr(self, "latest_obs_flag", False)
+            getattr(self, "reference_stream_active", False)
+            and self._vr_reference is not None
+            and self._vr_reference.kinematics is not None
+        ):
+            return self._vr_reference.kinematics.projected_gravity[1 : 1 + T].reshape(-1)
+        if (
+            not getattr(self, "reference_stream_active", False)
             and self._offline_reference is not None
             and self._offline_reference.has_clip
         ):
@@ -1763,7 +1169,7 @@ class PolicyObservationEvaluator:
             or self.ref_raw_bodylink_rot is None
         ):
             self.get_logger().warn(
-                "[VR] ref_raw_bodylink_rot is unavailable and latest_obs is not active; returning zeros for ref_gravity_projection_fut."
+                "[VR] ref_raw_bodylink_rot is unavailable and reference_qpos is not active; returning zeros for ref_gravity_projection_fut."
             )
             return np.zeros(3 * T, dtype=np.float32)
         q_root_wxyz = self._get_future_root_quat_wxyz()
@@ -1778,16 +1184,14 @@ class PolicyObservationEvaluator:
         return gravity_fut.reshape(-1).astype(np.float32)
 
     def _get_obs_ref_base_linvel_cur(self):
-        if getattr(self, "_use_fk_vr", False):
-            return self._base_linvel_cur_buffer
         if (
-            getattr(self, "latest_obs_flag", False)
+            getattr(self, "reference_stream_active", False)
             and self._vr_reference is not None
-            and self._vr_reference.has_latest_obs
+            and self._vr_reference.kinematics is not None
         ):
-            return np.zeros(3, dtype=np.float32)
+            return self._vr_reference.kinematics.root_linvel_local[0]
         if (
-            not getattr(self, "latest_obs_flag", False)
+            not getattr(self, "reference_stream_active", False)
             and self._offline_reference is not None
             and self._offline_reference.has_clip
         ):
@@ -1799,7 +1203,7 @@ class PolicyObservationEvaluator:
             or self.ref_global_velocity is None
         ):
             self.get_logger().warn(
-                "[VR] ref_global_velocity is unavailable and latest_obs is not active; returning zeros for ref_base_linvel_cur."
+                "[VR] ref_global_velocity is unavailable and reference_qpos is not active; returning zeros for ref_base_linvel_cur."
             )
             return np.zeros(3, dtype=np.float32)
         if (
@@ -1807,7 +1211,7 @@ class PolicyObservationEvaluator:
             or self.ref_raw_bodylink_rot is None
         ):
             self.get_logger().warn(
-                "[VR] ref_raw_bodylink_rot is unavailable and latest_obs is not active; returning zeros for ref_base_linvel_cur."
+                "[VR] ref_raw_bodylink_rot is unavailable and reference_qpos is not active; returning zeros for ref_base_linvel_cur."
             )
             return np.zeros(3, dtype=np.float32)
         q_root_xyzw = self.ref_raw_bodylink_rot[
@@ -1828,11 +1232,15 @@ class PolicyObservationEvaluator:
         T = self.n_fut_frames_int
         if T <= 0:
             return np.zeros(0, dtype=np.float32)
-        if getattr(self, "_use_fk_vr", False):
-            return self._base_linvel_fut_buffer[:T].reshape(-1)
+        if (
+            getattr(self, "reference_stream_active", False)
+            and self._vr_reference is not None
+            and self._vr_reference.kinematics is not None
+        ):
+            return self._vr_reference.kinematics.root_linvel_local[1 : 1 + T].reshape(-1)
 
         if (
-            not getattr(self, "latest_obs_flag", False)
+            not getattr(self, "reference_stream_active", False)
             and self._offline_reference is not None
             and self._offline_reference.has_clip
         ):
@@ -1844,7 +1252,7 @@ class PolicyObservationEvaluator:
             or self.ref_global_velocity is None
         ):
             self.get_logger().warn(
-                "[VR] ref_global_velocity is unavailable and latest_obs is not active; returning zeros for ref_base_linvel_fut."
+                "[VR] ref_global_velocity is unavailable and reference_qpos is not active; returning zeros for ref_base_linvel_fut."
             )
             return np.zeros(3 * T, dtype=np.float32)
         if (
@@ -1852,7 +1260,7 @@ class PolicyObservationEvaluator:
             or self.ref_raw_bodylink_rot is None
         ):
             self.get_logger().warn(
-                "[VR] ref_raw_bodylink_rot is unavailable and latest_obs is not active; returning zeros for ref_base_linvel_fut."
+                "[VR] ref_raw_bodylink_rot is unavailable and reference_qpos is not active; returning zeros for ref_base_linvel_fut."
             )
             return np.zeros(3 * T, dtype=np.float32)
         fut_idx = self._get_future_frame_indices()
@@ -1868,16 +1276,14 @@ class PolicyObservationEvaluator:
         return base_linvel_fut.reshape(-1).astype(np.float32)
 
     def _get_obs_ref_base_angvel_cur(self):
-        if getattr(self, "_use_fk_vr", False):
-            return self._base_angvel_cur_buffer
         if (
-            getattr(self, "latest_obs_flag", False)
+            getattr(self, "reference_stream_active", False)
             and self._vr_reference is not None
-            and self._vr_reference.has_latest_obs
+            and self._vr_reference.kinematics is not None
         ):
-            return np.zeros(3, dtype=np.float32)
+            return self._vr_reference.kinematics.root_angvel_local[0]
         if (
-            not getattr(self, "latest_obs_flag", False)
+            not getattr(self, "reference_stream_active", False)
             and self._offline_reference is not None
             and self._offline_reference.has_clip
         ):
@@ -1889,7 +1295,7 @@ class PolicyObservationEvaluator:
             or self.ref_global_angular_velocity is None
         ):
             self.get_logger().warn(
-                "[VR] ref_global_angular_velocity is unavailable and latest_obs is not active; returning zeros for ref_base_angvel_cur."
+                "[VR] ref_global_angular_velocity is unavailable and reference_qpos is not active; returning zeros for ref_base_angvel_cur."
             )
             return np.zeros(3, dtype=np.float32)
         if (
@@ -1897,7 +1303,7 @@ class PolicyObservationEvaluator:
             or self.ref_raw_bodylink_rot is None
         ):
             self.get_logger().warn(
-                "[VR] ref_raw_bodylink_rot is unavailable and latest_obs is not active; returning zeros for ref_base_angvel_cur."
+                "[VR] ref_raw_bodylink_rot is unavailable and reference_qpos is not active; returning zeros for ref_base_angvel_cur."
             )
             return np.zeros(3, dtype=np.float32)
         q_root_xyzw = self.ref_raw_bodylink_rot[
@@ -1918,11 +1324,15 @@ class PolicyObservationEvaluator:
         T = self.n_fut_frames_int
         if T <= 0:
             return np.zeros(0, dtype=np.float32)
-        if getattr(self, "_use_fk_vr", False):
-            return self._base_angvel_fut_buffer[:T].reshape(-1)
+        if (
+            getattr(self, "reference_stream_active", False)
+            and self._vr_reference is not None
+            and self._vr_reference.kinematics is not None
+        ):
+            return self._vr_reference.kinematics.root_angvel_local[1 : 1 + T].reshape(-1)
 
         if (
-            not getattr(self, "latest_obs_flag", False)
+            not getattr(self, "reference_stream_active", False)
             and self._offline_reference is not None
             and self._offline_reference.has_clip
         ):
@@ -1934,7 +1344,7 @@ class PolicyObservationEvaluator:
             or self.ref_global_angular_velocity is None
         ):
             self.get_logger().warn(
-                "[VR] ref_global_angular_velocity is unavailable and latest_obs is not active; returning zeros for ref_base_angvel_fut."
+                "[VR] ref_global_angular_velocity is unavailable and reference_qpos is not active; returning zeros for ref_base_angvel_fut."
             )
             return np.zeros(3 * T, dtype=np.float32)
         if (
@@ -1942,7 +1352,7 @@ class PolicyObservationEvaluator:
             or self.ref_raw_bodylink_rot is None
         ):
             self.get_logger().warn(
-                "[VR] ref_raw_bodylink_rot is unavailable and latest_obs is not active; returning zeros for ref_base_angvel_fut."
+                "[VR] ref_raw_bodylink_rot is unavailable and reference_qpos is not active; returning zeros for ref_base_angvel_fut."
             )
             return np.zeros(3 * T, dtype=np.float32)
         fut_idx = self._get_future_frame_indices()
@@ -1962,7 +1372,7 @@ class PolicyObservationEvaluator:
         if T <= 0:
             return np.zeros(0, dtype=np.float32)
         if (
-            not getattr(self, "latest_obs_flag", False)
+            not getattr(self, "reference_stream_active", False)
             and self._offline_reference is not None
             and self._offline_reference.has_clip
         ):
@@ -2011,27 +1421,10 @@ class PolicyObservationEvaluator:
         )
 
     def _get_obs_ref_keybody_rel_pos_cur(self):
-        if getattr(self, "_use_fk_vr", False) and self._fk_trans_0 is not None:
-            keybody_idxs = self._get_ref_keybody_indices(
-                "actor_ref_keybody_rel_pos_cur"
-            )
-            n_keybodies = int(keybody_idxs.shape[0])
-            if n_keybodies == 0:
-                return np.zeros(0, dtype=np.float32)
-            if not self._root_only_fk_has_required_keybodies(keybody_idxs):
-                return np.zeros(3 * n_keybodies, dtype=np.float32)
-            root_pos = self._fk_trans_0[self.root_body_idx]
-            keybody_pos = self._fk_trans_0[keybody_idxs]
-            rel_pos_w = keybody_pos - root_pos[None, :]
-            rel_pos_root = self._quat_rotate_inv_wxyz(
-                self._fk_quat_0_root_wxyz, rel_pos_w
-            )
-            return np.asarray(rel_pos_root, dtype=np.float32).reshape(-1)
-
         if (
-            getattr(self, "latest_obs_flag", False)
+            getattr(self, "reference_stream_active", False)
             and self._vr_reference is not None
-            and self._vr_reference.has_latest_obs
+            and self._vr_reference.has_reference
         ):
             keybody_idxs = self._get_ref_keybody_indices(
                 "actor_ref_keybody_rel_pos_cur"
@@ -2042,7 +1435,7 @@ class PolicyObservationEvaluator:
             return np.zeros(3 * n_keybodies, dtype=np.float32)
 
         if (
-            not getattr(self, "latest_obs_flag", False)
+            not getattr(self, "reference_stream_active", False)
             and self._offline_reference is not None
             and self._offline_reference.has_clip
         ):
@@ -2058,7 +1451,7 @@ class PolicyObservationEvaluator:
             or self.ref_raw_bodylink_pos is None
         ):
             self.get_logger().warn(
-                "[VR] ref_raw_bodylink_pos is unavailable and latest_obs is not active; returning zeros for ref_keybody_rel_pos_cur."
+                "[VR] ref_raw_bodylink_pos is unavailable and reference_qpos is not active; returning zeros for ref_keybody_rel_pos_cur."
             )
             keybody_idxs = self._get_ref_keybody_indices(
                 "actor_ref_keybody_rel_pos_cur"
@@ -2072,7 +1465,7 @@ class PolicyObservationEvaluator:
             or self.ref_raw_bodylink_rot is None
         ):
             self.get_logger().warn(
-                "[VR] ref_raw_bodylink_rot is unavailable and latest_obs is not active; returning zeros for ref_keybody_rel_pos_cur."
+                "[VR] ref_raw_bodylink_rot is unavailable and reference_qpos is not active; returning zeros for ref_keybody_rel_pos_cur."
             )
             keybody_idxs = self._get_ref_keybody_indices(
                 "actor_ref_keybody_rel_pos_cur"
@@ -2108,54 +1501,12 @@ class PolicyObservationEvaluator:
         T = self.n_fut_frames_int
         if T <= 0:
             return np.zeros(0, dtype=np.float32)
-        if (
-            getattr(self, "_use_fk_vr", False)
-            and self._fk_trans_fut is not None
-        ):
-            keybody_idxs = self._get_ref_keybody_indices(
-                "actor_ref_keybody_rel_pos_fut"
-            )
-            n_keybodies = int(keybody_idxs.shape[0])
-            if n_keybodies == 0:
-                return np.zeros((T, 0), dtype=np.float32).reshape(-1)
-            if not self._root_only_fk_has_required_keybodies(keybody_idxs):
-                return np.zeros((T, n_keybodies, 3), dtype=np.float32).reshape(
-                    -1
-                )
-            ref_body = self._fk_trans_fut[:T]  # (T, num_bodies, 3)
-            ref_root = ref_body[:, self.root_body_idx, :]  # (T, 3)
-            if self._keybody_rel_pos_fut_buffer.shape[1] != n_keybodies:
-                self._keybody_rel_pos_fut_buffer = np.zeros(
-                    (T, n_keybodies, 3), dtype=np.float32
-                )
-                self._keybody_rel_pos_w_buffer = np.zeros(
-                    (T, n_keybodies, 3), dtype=np.float32
-                )
-            elif (
-                self._keybody_rel_pos_w_buffer is None
-                or self._keybody_rel_pos_w_buffer.shape[0] < T
-                or self._keybody_rel_pos_w_buffer.shape[1] != n_keybodies
-            ):
-                self._keybody_rel_pos_w_buffer = np.zeros(
-                    (T, n_keybodies, 3), dtype=np.float32
-                )
-            rel_pos_fut = self._keybody_rel_pos_fut_buffer
-            np.subtract(
-                ref_body[:, keybody_idxs, :],
-                ref_root[:, None, :],
-                out=self._keybody_rel_pos_w_buffer[:T, :n_keybodies, :],
-            )
-            rel_pos_fut[:, :, :] = self._quat_rotate_inv_wxyz(
-                self._fk_quat_fut_wxyz[:T, None, :],
-                self._keybody_rel_pos_w_buffer[:T, :n_keybodies, :],
-            )
-            return rel_pos_fut.reshape(-1).astype(np.float32)
         keybody_idxs = self._get_ref_keybody_indices(
             "actor_ref_keybody_rel_pos_fut"
         )
         n_keybodies = int(keybody_idxs.shape[0])
         if (
-            not getattr(self, "latest_obs_flag", False)
+            not getattr(self, "reference_stream_active", False)
             and self._offline_reference is not None
             and self._offline_reference.has_clip
         ):
@@ -2168,7 +1519,7 @@ class PolicyObservationEvaluator:
             or self.ref_raw_bodylink_pos is None
         ):
             self.get_logger().warn(
-                "[VR] ref_raw_bodylink_pos is unavailable and latest_obs is not active; returning zeros for ref_keybody_rel_pos_fut."
+                "[VR] ref_raw_bodylink_pos is unavailable and reference_qpos is not active; returning zeros for ref_keybody_rel_pos_fut."
             )
             if n_keybodies == 0:
                 return np.zeros((T, 0), dtype=np.float32).reshape(-1)
@@ -2178,7 +1529,7 @@ class PolicyObservationEvaluator:
             or self.ref_raw_bodylink_rot is None
         ):
             self.get_logger().warn(
-                "[VR] ref_raw_bodylink_rot is unavailable and latest_obs is not active; returning zeros for ref_keybody_rel_pos_fut."
+                "[VR] ref_raw_bodylink_rot is unavailable and reference_qpos is not active; returning zeros for ref_keybody_rel_pos_fut."
             )
             if n_keybodies == 0:
                 return np.zeros((T, 0), dtype=np.float32).reshape(-1)
@@ -2216,74 +1567,3 @@ class PolicyObservationEvaluator:
                 expected_dim, dtype=np.float32
             )
         return self._place_holder_buffer
-
-    # =========== Policy Obeservation Methods ===========
-
-    def _warmup_fk_for_vr(self):
-        """Run one FK warmup step when entering VR motion mode."""
-        try:
-            if getattr(self, "fk", None) is None or not getattr(
-                self, "fk_initialized", False
-            ):
-                return
-            vr_reference = self._vr_reference
-            if vr_reference is None or not vr_reference.has_latest_obs:
-                return
-
-            n_fut = int(getattr(self, "n_fut_frames", 0))
-            if n_fut <= 0 or not vr_reference.has_future_sequence(n_fut):
-                return
-
-            cur_root_pos = vr_reference.latest_root_pos()
-            cur_root_rot = vr_reference.latest_root_rot()
-            cur_dof_pos = vr_reference.latest_dof_pos()
-            if (
-                cur_root_pos is None
-                or cur_root_rot is None
-                or cur_dof_pos is None
-            ):
-                return
-            root_pos_tensor, root_rot_tensor, dof_pos_tensor = (
-                self._prepare_vr_fk_tensors(
-                    vr_reference=vr_reference,
-                    cur_root_pos=cur_root_pos,
-                    cur_root_rot=cur_root_rot,
-                    cur_dof_pos=cur_dof_pos,
-                    n_fut=n_fut,
-                )
-            )
-
-            fk_out = self.fk(
-                root_pos=root_pos_tensor,
-                root_quat=root_rot_tensor,
-                dof_pos=dof_pos_tensor,
-                fps=float(1.0 / self.dt),
-                quat_format="wxyz",
-                vel_smoothing_sigma=0.0,
-                compute_velocity=False,
-            )
-            self._fk_vr_out = {
-                k: v.detach().cpu().numpy() for k, v in fk_out.items()
-            }
-        except Exception as e:
-            self.get_logger().warn(
-                f"[VR] FK warmup failed, fallback to zeros: {e}"
-            )
-
-    def _root_only_fk_has_required_keybodies(
-        self, keybody_idxs: np.ndarray
-    ) -> bool:
-        if keybody_idxs.size == 0:
-            return True
-        available_bodies = (
-            0 if self._fk_trans_0 is None else int(self._fk_trans_0.shape[0])
-        )
-        if available_bodies <= int(np.max(keybody_idxs)):
-            if not self._root_only_fk_keybody_warned:
-                self.get_logger().warn(
-                    "[RootOnlyFK] FK output only contains root body, but obs schema still "
-                    "requests non-root keybody positions. Returning zeros for keybody obs."
-                )
-                self._root_only_fk_keybody_warned = True
-            return False
-        return True

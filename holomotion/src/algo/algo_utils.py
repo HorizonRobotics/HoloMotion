@@ -253,18 +253,6 @@ class PpoAuxTransition:
             "shape": ("K", 3),
             "dtype": torch.float32,
         },
-        "gt_denoise_ref_root_lin_vel": {
-            "shape": (3,),
-            "dtype": torch.float32,
-        },
-        "gt_denoise_ref_root_ang_vel": {
-            "shape": (3,),
-            "dtype": torch.float32,
-        },
-        "gt_denoise_ref_dof_pos": {
-            "shape": ("A",),
-            "dtype": torch.float32,
-        },
     }
 
     obs: TensorDict
@@ -283,9 +271,6 @@ class PpoAuxTransition:
     gt_keybody_contacts: torch.Tensor
     gt_ref_keybody_rel_pos: torch.Tensor
     gt_robot_keybody_rel_pos: torch.Tensor
-    gt_denoise_ref_root_lin_vel: torch.Tensor
-    gt_denoise_ref_root_ang_vel: torch.Tensor
-    gt_denoise_ref_dof_pos: torch.Tensor
 
 
 class RolloutStorage(nn.Module):

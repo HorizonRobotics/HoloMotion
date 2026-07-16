@@ -20,7 +20,7 @@ source train.env
 npz_dir="your_npz_dir"
 dataset_suffix="HoloMotion_eval"
 metric_calculation="per_clip"   # Options: "per_clip" or "per_frame"
-dof_mode="23"  # Options: "29" for full DoF, "23" for upper body only
+dof_mode="29"  # Options: "29" for full DoF, "23" for upper body only
 
 ${Train_CONDA_PREFIX}/bin/python \
     holomotion/src/evaluation/metrics.py \

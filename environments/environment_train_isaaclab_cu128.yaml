@@ -6,7 +6,6 @@ dependencies:
   - pip
   - mesalib
   - pip:
-      - -r requirements_torch_cu128.txt
       - -r requirements_base.txt
       - -e ../thirdparties/SMPLSim
       - -e ../

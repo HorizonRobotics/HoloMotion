@@ -53,7 +53,7 @@ class FakeNode:
         self.num_actions = 3
         self.actions_dim = 3
         self.current_policy_mode = "velocity"
-        self.latest_obs_flag = False
+        self.reference_stream_active = False
         self.motion_frame_idx = 0
         self.n_motion_frames = 1
         self.actions_onnx = np.array([1.0, 2.0, 3.0], dtype=np.float32)
@@ -88,7 +88,7 @@ class PolicyObservationEvaluatorTest(unittest.TestCase):
         self.assertEqual(evaluator.ref_to_onnx, [2, 0, 1])
         self.assertEqual(evaluator._offline_reference.n_fut_frames, 2)
         self.assertEqual(evaluator._pos_fut_buffer.shape, (3, 2))
-        self.assertEqual(evaluator._fk_quat_fut_wxyz.shape, (2, 4))
+        self.assertEqual(evaluator._future_root_quat_wxyz_buffer.shape, (2, 4))
 
     def test_robot_and_velocity_observation_terms_match_node_contract(self):
         node = FakeNode()

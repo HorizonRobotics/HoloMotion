@@ -78,11 +78,8 @@ from loguru import logger
 from tabulate import tabulate
 from tqdm import tqdm
 
-from holomotion.src.motion_retargeting.reference_filtering import (
-    butterworth_filter_root_dof_arrays,
-)
 from holomotion.src.utils import torch_utils
-from holomotion.src.motion_retargeting.holomotion_fk import HoloMotionFK
+from holomotion.src.training.reference_fk import TrainingReferenceFK
 
 Tensor = torch.Tensor
 
@@ -142,9 +139,25 @@ def _configure_weighted_bins(
 
     cfg_local: Dict[str, Any] = dict(cfg or {})
 
-    patterns_cfg = cfg_local.get("bin_regex_patterns")
-    if patterns_cfg is None:
-        patterns_cfg = cfg_local.get("bin_regrex_patterns")
+    dataset_ratios = cfg_local.get("dataset_ratios")
+    normalize_dataset_ratios = dataset_ratios is not None
+    if dataset_ratios is not None:
+        if not isinstance(dataset_ratios, Mapping) or not dataset_ratios:
+            raise ValueError(
+                "weighted_bin dataset_ratios must be a non-empty mapping"
+            )
+        patterns_cfg = [
+            {
+                "name": str(dataset_name),
+                "regex": rf"^{re.escape(_normalize_dataset_id(dataset_name))}::",
+                "ratio": ratio,
+            }
+            for dataset_name, ratio in dataset_ratios.items()
+        ]
+    else:
+        patterns_cfg = cfg_local.get("bin_regex_patterns")
+        if patterns_cfg is None:
+            patterns_cfg = cfg_local.get("bin_regrex_patterns")
     if not patterns_cfg:
         raise ValueError(
             "weighted_bin configuration requires 'bin_regex_patterns' "
@@ -186,7 +199,14 @@ def _configure_weighted_bins(
         ratios.append(ratio_f)
 
     sum_explicit = float(sum(ratios))
-    if sum_explicit > 1.0 + 1.0e-6:
+    if normalize_dataset_ratios:
+        if sum_explicit <= 0.0:
+            raise ValueError(
+                "weighted_bin root ratios must contain at least one positive value"
+            )
+        ratios = [ratio / sum_explicit for ratio in ratios]
+        sum_explicit = 1.0
+    elif sum_explicit > 1.0 + 1.0e-6:
         raise ValueError(
             f"Sum of weighted-bin ratios is {sum_explicit:.6f} (> 1.0). "
             "Please reduce the ratios so that their sum is <= 1.0."
@@ -202,7 +222,8 @@ def _configure_weighted_bins(
 
     num_items_total = float(len(keys))
     num_explicit = len(compiled_patterns)
-    bin_indices: List[List[int]] = [[] for _ in range(num_explicit + 1)]
+    bin_count = num_explicit if normalize_dataset_ratios else num_explicit + 1
+    bin_indices: List[List[int]] = [[] for _ in range(bin_count)]
 
     for idx, motion_key in enumerate(keys):
         assigned = False
@@ -211,18 +232,24 @@ def _configure_weighted_bins(
                 bin_indices[b_idx].append(idx)
                 assigned = True
                 break
-        if not assigned:
+        if not assigned and not normalize_dataset_ratios:
             bin_indices[-1].append(idx)
 
     # Combine explicit ratios with implicit "others" ratio
     all_ratios: List[float] = list(ratios)
-    all_ratios.append(others_ratio)
+    if not normalize_dataset_ratios:
+        all_ratios.append(others_ratio)
 
     # If all motion keys are covered by explicit regex bins, but the specified
     # ratios sum to less than 1.0, linearly reweight explicit ratios so that
     # they sum to 1.0 and disable the implicit "others" bin.
-    others_count = len(bin_indices[-1])
-    if others_count == 0 and others_ratio > 0.0 and sum_explicit > 0.0:
+    others_count = 0 if normalize_dataset_ratios else len(bin_indices[-1])
+    if (
+        not normalize_dataset_ratios
+        and others_count == 0
+        and others_ratio > 0.0
+        and sum_explicit > 0.0
+    ):
         scale = 1.0 / sum_explicit
         ratios = [r * scale for r in ratios]
         others_ratio = 0.0
@@ -277,24 +304,61 @@ def _configure_weighted_bins(
                 "batch_fraction": bf,
             }
         )
-    # Others bin
-    others_name = "others"
-    others_regex = "<unmatched>"
-    n_o = len(bin_indices[-1])
-    ds_frac_o = float(n_o) / total_items
-    bf_o = batch_fractions_log[-1]
-    specs.append(
-        {
-            "name": others_name,
-            "regex": others_regex,
-            "ratio": bf_o,
-            "count": n_o,
-            "dataset_fraction": ds_frac_o,
-            "batch_fraction": bf_o,
-        }
-    )
+    if not normalize_dataset_ratios:
+        n_o = len(bin_indices[-1])
+        ds_frac_o = float(n_o) / total_items
+        bf_o = batch_fractions_log[-1]
+        specs.append(
+            {
+                "name": "others",
+                "regex": "<unmatched>",
+                "ratio": bf_o,
+                "count": n_o,
+                "dataset_fraction": ds_frac_o,
+                "batch_fraction": bf_o,
+            }
+        )
 
     return bin_indices, all_ratios, specs
+
+
+def _normalize_dataset_id(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(value).lower())
+
+
+def _manifest_dataset_id(
+    manifest: Mapping[str, Any], manifest_path: str
+) -> str:
+    explicit = manifest.get("dataset_id")
+    if explicit:
+        return _normalize_dataset_id(explicit)
+
+    path_candidates = [
+        manifest.get("source_holosmpl_h5_root"),
+        os.path.dirname(manifest_path),
+    ]
+    for path_value in path_candidates:
+        if not path_value:
+            continue
+        for part in reversed(Path(str(path_value)).parts):
+            lowered = part.lower()
+            if lowered.startswith(("train_", "eval_")):
+                return _normalize_dataset_id(part)
+
+    for field in ("dataset_name", "dataset", "source_name"):
+        value = manifest.get(field)
+        if value:
+            return _normalize_dataset_id(value)
+    return "unknown"
+
+
+def _weighted_bin_motion_key(
+    motion_key: str, metadata: Mapping[str, Any] | None = None
+) -> str:
+    dataset_id = None if metadata is None else metadata.get("_dataset_id")
+    if not dataset_id:
+        return str(motion_key)
+    return f"{dataset_id}::{motion_key}"
 
 
 def _collect_manifest_keys(
@@ -322,49 +386,19 @@ def _collect_manifest_keys(
             raise ValueError(
                 f"Manifest at {mp} contains no clips; cannot preview sampling."
             )
+        dataset_id = _manifest_dataset_id(manifest, mp)
         for key in clips.keys():
-            if key in key_source:
+            weighted_key = _weighted_bin_motion_key(
+                key, {"_dataset_id": dataset_id}
+            )
+            if weighted_key in key_source:
                 raise ValueError(
-                    f"Duplicate motion clip key '{key}' found in multiple "
+                    f"Duplicate weighted-bin key '{weighted_key}' found in multiple "
                     "manifests; clip keys must be globally unique."
                 )
-            key_source[key] = mp
+            key_source[weighted_key] = mp
 
     return list(key_source.keys()), key_source, manifest_paths
-
-
-def _normalize_online_filter_cfg(
-    cfg: Optional[Mapping[str, Any]],
-    *,
-    default_vel_smoothing_sigma: float = 2.0,
-) -> Dict[str, Any]:
-    cfg_local = dict(cfg or {})
-    enabled = bool(cfg_local.get("enabled", False))
-    cutoff_pool_cfg = cfg_local.get("butter_cutoff_hz_pool", [])
-    cutoff_pool = tuple(float(v) for v in cutoff_pool_cfg)
-    ref_vel_smoothing_sigma = float(
-        cfg_local.get("ref_vel_smoothing_sigma", default_vel_smoothing_sigma)
-    )
-    ft_ref_vel_smoothing_sigma = float(
-        cfg_local.get(
-            "ft_ref_vel_smoothing_sigma", default_vel_smoothing_sigma
-        )
-    )
-    if enabled and len(cutoff_pool) == 0:
-        raise ValueError(
-            "online_filter.enabled=True requires butter_cutoff_hz_pool to "
-            "contain at least one cutoff value"
-        )
-    butter_order = int(cfg_local.get("butter_order", 4))
-    if butter_order <= 0:
-        raise ValueError("online_filter.butter_order must be positive")
-    return {
-        "enabled": enabled,
-        "butter_order": butter_order,
-        "butter_cutoff_hz_pool": cutoff_pool,
-        "ref_vel_smoothing_sigma": ref_vel_smoothing_sigma,
-        "ft_ref_vel_smoothing_sigma": ft_ref_vel_smoothing_sigma,
-    }
 
 
 def preview_weighted_bin_from_manifest(
@@ -611,7 +645,7 @@ def preview_sampling_from_cfg(motion_cfg: Mapping[str, Any]) -> None:
     batch_size = int(cache_cfg.get("max_num_clips", 1))
 
     if sampling_strategy == "weighted_bin":
-        weighted_bin_cfg = dict(motion_cfg.get("weighted_bin", {}))
+        weighted_bin_cfg = weighted_bin_cfg_from_motion_cfg(motion_cfg)
         preview_weighted_bin_from_manifest(
             manifest_path=manifest_paths
             if len(manifest_paths) > 1
@@ -741,22 +775,21 @@ class _WorldFrameNormalizeTransform:
         q_flat = q_heading_inv.view(1, 1, 4).expand(t, b, 4).reshape(-1, 4)
         q_flat_wxyz = torch_utils.xyzw_to_wxyz(q_flat)
 
-        for pfx in ("ref_", "ft_ref_"):
-            self._apply_prefix(
-                arrays,
-                pfx,
-                offset_xy=offset_xy,
-                q_flat_wxyz=q_flat_wxyz,
-                ref_rg_pos_shape=rg_pos.shape,
-                ref_rb_rot_shape=rb_rot.shape,
-            )
+        self._apply_prefix(
+            arrays,
+            "ref_",
+            offset_xy=offset_xy,
+            q_flat_wxyz=q_flat_wxyz,
+            ref_rg_pos_shape=rg_pos.shape,
+            ref_rb_rot_shape=rb_rot.shape,
+        )
 
 
 class _CpuFKTransform:
     """Compute FK on CPU and write ref_* tensors in-place."""
 
     def __init__(self, robot_file_path: str) -> None:
-        self._fk = HoloMotionFK(
+        self._fk = TrainingReferenceFK(
             robot_file_path=str(robot_file_path), device=torch.device("cpu")
         )
         self._fk = self._fk.to(torch.device("cpu"))
@@ -766,7 +799,6 @@ class _CpuFKTransform:
         arrays: Dict[str, Tensor],
         fps: float,
         prefix: str = "ref_",
-        vel_smoothing_sigma: float = 2.0,
     ) -> None:
         root_pos_key = f"{prefix}root_pos"
         root_rot_key = f"{prefix}root_rot"
@@ -783,7 +815,6 @@ class _CpuFKTransform:
                 root_quat=arrays[root_rot_key][None, ...],
                 dof_pos=arrays[dof_pos_key][None, ...],
                 fps=float(fps),
-                vel_smoothing_sigma=float(vel_smoothing_sigma),
                 quat_format="xyzw",
             )
         arrays[f"{prefix}rg_pos"] = fk_out["global_translation"][0]
@@ -909,9 +940,6 @@ class Hdf5RootDofDataset(Dataset[MotionClipSample]):
         handpicked_motion_names: Optional[List[str]] = None,
         excluded_motion_names: Optional[List[str]] = None,
         fk_robot_file_path: Optional[str] = None,
-        fk_vel_smoothing_sigma: float = 2.0,
-        fk_world_frame_normalization: bool = True,
-        online_filter_cfg: Optional[Mapping[str, Any]] = None,
         allowed_prefixes: Optional[Sequence[str]] = None,
     ) -> None:
         super().__init__()
@@ -937,39 +965,17 @@ class Hdf5RootDofDataset(Dataset[MotionClipSample]):
         )
         if not self._fk_robot_file_path:
             raise ValueError("fk_robot_file_path is required for hdf5_v2 FK")
-        self._fk_world_frame_normalization = bool(fk_world_frame_normalization)
         self._fk_transform = _CpuFKTransform(self._fk_robot_file_path)
-        self._world_frame_transform = (
-            _WorldFrameNormalizeTransform()
-            if self._fk_world_frame_normalization
-            else None
-        )
-        self._fk_vel_smoothing_sigma = float(fk_vel_smoothing_sigma)
-        self._online_filter_cfg = _normalize_online_filter_cfg(
-            online_filter_cfg,
-            default_vel_smoothing_sigma=self._fk_vel_smoothing_sigma,
-        )
-        self._online_filter_enabled = bool(self._online_filter_cfg["enabled"])
-        self._online_filter_butter_order = int(
-            self._online_filter_cfg["butter_order"]
-        )
-        self._online_filter_cutoff_hz_pool = tuple(
-            float(v) for v in self._online_filter_cfg["butter_cutoff_hz_pool"]
-        )
-        self._ref_vel_smoothing_sigma = float(
-            self._online_filter_cfg["ref_vel_smoothing_sigma"]
-        )
-        self._ft_ref_vel_smoothing_sigma = float(
-            self._online_filter_cfg["ft_ref_vel_smoothing_sigma"]
-        )
+        self._world_frame_transform = _WorldFrameNormalizeTransform()
         if allowed_prefixes is None:
-            self._allowed_prefixes = ("ref_", "ft_ref_")
+            self._allowed_prefixes = ("ref_",)
         else:
             self._allowed_prefixes = tuple(str(v) for v in allowed_prefixes)
         if "ref_" not in self._allowed_prefixes:
             raise ValueError(
                 "Hdf5RootDofDataset requires 'ref_' in allowed_prefixes"
             )
+        self._progress_counter: Optional[mp.Value] = None
 
         if isinstance(manifest_path, (str, os.PathLike)):
             manifest_paths: List[str] = [str(manifest_path)]
@@ -997,6 +1003,7 @@ class Hdf5RootDofDataset(Dataset[MotionClipSample]):
             root = os.path.dirname(mp)
             shards_local = list(manifest.get("hdf5_shards", []))
             clips_local = manifest.get("clips", {})
+            dataset_id = _manifest_dataset_id(manifest, mp)
 
             shard_offset = len(self.shards)
             for shard_meta in shards_local:
@@ -1015,6 +1022,7 @@ class Hdf5RootDofDataset(Dataset[MotionClipSample]):
                         "manifests; clip keys must be globally unique."
                     )
                 meta_global = dict(meta)
+                meta_global["_dataset_id"] = dataset_id
                 meta_global["shard"] = (
                     int(meta_global.get("shard", 0)) + shard_offset
                 )
@@ -1151,44 +1159,6 @@ class Hdf5RootDofDataset(Dataset[MotionClipSample]):
     def _make_scalar_metadata_tensor(value: float, length: int) -> Tensor:
         return torch.full((int(length), 1), float(value), dtype=torch.float32)
 
-    def _sample_online_filter_cutoff_hz(self) -> float:
-        if not self._online_filter_enabled:
-            return 0.0
-        cutoff_pool = self._online_filter_cutoff_hz_pool
-        if len(cutoff_pool) == 0:
-            raise ValueError(
-                "Online filter is enabled but butter_cutoff_hz_pool is empty"
-            )
-        if len(cutoff_pool) == 1:
-            return cutoff_pool[0]
-        sample_idx = int(torch.randint(len(cutoff_pool), size=(1,)).item())
-        return cutoff_pool[sample_idx]
-
-    def _add_online_filtered_reference_tensors(
-        self,
-        arrays: Dict[str, Tensor],
-        fps: float,
-        cutoff_hz: float,
-    ) -> None:
-        filtered_inputs_np = butterworth_filter_root_dof_arrays(
-            arrays={
-                "ref_root_pos": arrays["ref_root_pos"].cpu().numpy(),
-                "ref_root_rot": arrays["ref_root_rot"].cpu().numpy(),
-                "ref_dof_pos": arrays["ref_dof_pos"].cpu().numpy(),
-            },
-            fps=float(fps),
-            cutoff_hz=float(cutoff_hz),
-            order=self._online_filter_butter_order,
-        )
-        for tensor_name, np_array in filtered_inputs_np.items():
-            arrays[tensor_name] = torch.from_numpy(np_array).to(torch.float32)
-        self._fk_transform(
-            arrays,
-            fps,
-            prefix="ft_ref_",
-            vel_smoothing_sigma=self._ft_ref_vel_smoothing_sigma,
-        )
-
     @staticmethod
     def _derive_root_state_tensors(
         arrays: Dict[str, Tensor],
@@ -1257,27 +1227,10 @@ class Hdf5RootDofDataset(Dataset[MotionClipSample]):
         arrays["motion_fps"] = self._make_scalar_metadata_tensor(
             motion_fps, window.length
         )
-        cutoff_hz = self._sample_online_filter_cutoff_hz()
-        arrays["filter_cutoff_hz"] = self._make_scalar_metadata_tensor(
-            cutoff_hz, window.length
-        )
-
-        self._fk_transform(
-            arrays,
-            motion_fps,
-            vel_smoothing_sigma=self._ref_vel_smoothing_sigma,
-        )
-        if self._online_filter_enabled and "ft_ref_" in self._allowed_prefixes:
-            self._add_online_filtered_reference_tensors(
-                arrays,
-                motion_fps,
-                cutoff_hz,
-            )
-        if self._world_frame_transform is not None:
-            self._world_frame_transform(arrays)
+        self._fk_transform(arrays, motion_fps)
+        self._world_frame_transform(arrays)
 
         self._derive_root_state_tensors(arrays, prefix="ref_")
-        self._derive_root_state_tensors(arrays, prefix="ft_ref_")
 
         if self._progress_counter is not None:
             with self._progress_counter.get_lock():
@@ -1344,11 +1297,60 @@ class Hdf5RootDofDataset(Dataset[MotionClipSample]):
 
 
 def _normalize_root_list(value: Any) -> List[str]:
+    roots, _ = normalize_hdf5_root_entries(value)
+    return roots
+
+
+def normalize_hdf5_root_entries(
+    value: Any,
+) -> Tuple[List[str], Dict[str, float]]:
+    """Parse string roots or ``{root, ratio}`` entries."""
+
     if value is None:
-        return []
+        return [], {}
     if isinstance(value, (str, os.PathLike)):
-        return [str(value)]
-    return [str(v) for v in value]
+        return [str(value)], {}
+
+    roots: List[str] = []
+    dataset_ratios: Dict[str, float] = {}
+    for index, entry in enumerate(value):
+        if isinstance(entry, Mapping):
+            root = entry.get("root", entry.get("path"))
+            if not root:
+                raise ValueError(
+                    f"train_hdf5_roots entry {index} requires 'root'"
+                )
+            root_str = str(root)
+            ratio = entry.get("ratio")
+            if ratio is not None:
+                dataset_id = _manifest_dataset_id(
+                    {}, os.path.join(root_str, "manifest.json")
+                )
+                if dataset_id in dataset_ratios:
+                    raise ValueError(
+                        f"Duplicate ratio-bearing HDF5 dataset '{dataset_id}'"
+                    )
+                dataset_ratios[dataset_id] = float(ratio)
+            roots.append(root_str)
+            continue
+        roots.append(str(entry))
+    return roots, dataset_ratios
+
+
+def weighted_bin_cfg_from_motion_cfg(
+    motion_cfg: Mapping[str, Any],
+) -> Dict[str, Any]:
+    cfg = dict(motion_cfg.get("weighted_bin", {}) or {})
+    _, root_ratios = normalize_hdf5_root_entries(
+        motion_cfg.get("train_hdf5_roots")
+    )
+    if not root_ratios:
+        return cfg
+    cfg.pop("bin_regex_patterns", None)
+    cfg.pop("bin_regrex_patterns", None)
+    cfg.pop("dataset_ratios", None)
+    cfg["dataset_ratios"] = root_ratios
+    return cfg
 
 
 def build_motion_datasets_from_cfg(
@@ -1416,18 +1418,11 @@ def build_motion_datasets_from_cfg(
 
     if backend == "hdf5_v2":
         fk_robot_file_path = motion_cfg.get("fk_robot_file_path")
-        fk_vel_smoothing_sigma = float(
-            motion_cfg.get("fk_vel_smoothing_sigma", 2.0)
-        )
-        fk_world_frame_normalization = bool(
-            motion_cfg.get("online_fk_world_frame_normalization", True)
-        )
         cache_cfg = motion_cfg.get("cache", {})
         allowed_prefixes = cache_cfg.get(
             "allowed_prefixes",
-            ["ref_", "ft_ref_"],
+            ["ref_"],
         )
-        online_filter_cfg = motion_cfg.get("online_filter", {})
         train_roots = _normalize_root_list(
             motion_cfg.get("train_hdf5_roots", None)
         )
@@ -1450,9 +1445,6 @@ def build_motion_datasets_from_cfg(
             handpicked_motion_names=handpicked_motion_names,
             excluded_motion_names=excluded_motion_names,
             fk_robot_file_path=fk_robot_file_path,
-            fk_vel_smoothing_sigma=fk_vel_smoothing_sigma,
-            fk_world_frame_normalization=fk_world_frame_normalization,
-            online_filter_cfg=online_filter_cfg,
             allowed_prefixes=allowed_prefixes,
         )
 
@@ -1473,9 +1465,6 @@ def build_motion_datasets_from_cfg(
                 handpicked_motion_names=handpicked_motion_names,
                 excluded_motion_names=excluded_motion_names,
                 fk_robot_file_path=fk_robot_file_path,
-                fk_vel_smoothing_sigma=fk_vel_smoothing_sigma,
-                fk_world_frame_normalization=fk_world_frame_normalization,
-                online_filter_cfg=online_filter_cfg,
                 allowed_prefixes=allowed_prefixes,
             )
         cache_kwargs = {
@@ -2160,7 +2149,7 @@ class Hdf5MotionDataset(Dataset[MotionClipSample]):
             if bool(world_frame_normalization)
             else None
         )
-        self._allowed_prefixes: Tuple[str, ...] = ("ref_", "ft_ref_")
+        self._allowed_prefixes: Tuple[str, ...] = ("ref_",)
         self._progress_counter: Optional[mp.Value] = None
 
         # Normalize manifest path(s) to a list for aggregation.
@@ -2192,6 +2181,7 @@ class Hdf5MotionDataset(Dataset[MotionClipSample]):
             root = os.path.dirname(mp)
             shards_local = list(manifest.get("hdf5_shards", []))
             clips_local = manifest.get("clips", {})
+            dataset_id = _manifest_dataset_id(manifest, mp)
 
             shard_offset = len(self.shards)
             for shard_meta in shards_local:
@@ -2210,6 +2200,7 @@ class Hdf5MotionDataset(Dataset[MotionClipSample]):
                         "manifests; clip keys must be globally unique."
                     )
                 meta_global = dict(meta)
+                meta_global["_dataset_id"] = dataset_id
                 meta_global["shard"] = (
                     int(meta_global.get("shard", 0)) + shard_offset
                 )
@@ -2307,15 +2298,6 @@ class Hdf5MotionDataset(Dataset[MotionClipSample]):
                 torch.float32
             )
 
-        # Optional filtered reference source: ft_ref_*
-        for logical_name, dataset_name in MANDATORY_DATASETS.items():
-            dname = f"ft_ref_{dataset_name}"
-            if dname in shard_handle:
-                np_array = shard_handle[dname][start:end]
-                arrays[f"ft_ref_{logical_name}"] = torch.from_numpy(
-                    np_array
-                ).to(torch.float32)
-
         if "frame_flag" in shard_handle:
             frame_flag_np = shard_handle["frame_flag"][start:end]
             frame_flag = torch.from_numpy(frame_flag_np).to(torch.long)
@@ -2337,20 +2319,6 @@ class Hdf5MotionDataset(Dataset[MotionClipSample]):
         arrays["ref_root_rot"] = arrays["ref_rb_rot"][:, 0, :]
         arrays["ref_root_vel"] = arrays["ref_body_vel"][:, 0, :]
         arrays["ref_root_ang_vel"] = arrays["ref_body_ang_vel"][:, 0, :]
-
-        # Derived root_* for optional ft_ref_* (after normalization)
-        if (
-            "ft_ref_rg_pos" in arrays
-            and "ft_ref_rb_rot" in arrays
-            and "ft_ref_body_vel" in arrays
-            and "ft_ref_body_ang_vel" in arrays
-        ):
-            arrays["ft_ref_root_pos"] = arrays["ft_ref_rg_pos"][:, 0, :]
-            arrays["ft_ref_root_rot"] = arrays["ft_ref_rb_rot"][:, 0, :]
-            arrays["ft_ref_root_vel"] = arrays["ft_ref_body_vel"][:, 0, :]
-            arrays["ft_ref_root_ang_vel"] = arrays["ft_ref_body_ang_vel"][
-                :, 0, :
-            ]
 
         if self._progress_counter is not None:
             with self._progress_counter.get_lock():
@@ -2668,8 +2636,10 @@ class MotionClipBatchCache:
     ) -> None:
         """Enable regex-based weighted-bin sampling over manifest motion keys.
 
-        The configuration must provide a list under ``bin_regex_patterns`` (or the
-        legacy name ``bin_regrex_patterns``), where each element is a mapping with:
+        Prefer ``dataset_ratios`` to classify clips by their manifest's
+        ``train_*``/``eval_*`` directory. ``bin_regex_patterns`` (or the legacy
+        name ``bin_regrex_patterns``) remains available for clip-level matching.
+        Each generated or explicit pattern provides:
 
         - ``regex`` (or ``regrex``): Python regular expression applied to the
           manifest clip key (e.g., ``AMASS_.*``, ``VR_pico_.*``).
@@ -2701,7 +2671,10 @@ class MotionClipBatchCache:
                     motion_key = full_key.split("__start_", 1)[0]
                 else:
                     motion_key = full_key
-            window_keys.append(motion_key)
+            clip_metadata = dataset.clips.get(motion_key, {})
+            window_keys.append(
+                _weighted_bin_motion_key(motion_key, clip_metadata)
+            )
 
         bin_indices, all_ratios, specs = _configure_weighted_bins(
             keys=window_keys,

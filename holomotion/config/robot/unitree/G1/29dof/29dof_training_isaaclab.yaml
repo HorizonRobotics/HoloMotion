@@ -307,8 +307,6 @@ robot:
 
   actuators:
     actuator_type: unitree_erfi # implicit, unitree, or unitree_erfi
-    ema_filter_enabled: false
-    ema_filter_alpha: 1.0
     all_joints:
       joint_names_expr:
         - ".*_hip_yaw_joint"
@@ -522,12 +520,6 @@ robot:
       timeout: 600
 
     fk_robot_file_path: ${robot.asset.urdf_file}
-    fk_vel_smoothing_sigma: 2.0
-
-    online_filter:
-      enabled: false
-      butter_order: 4
-      butter_cutoff_hz_pool: []
 
     cache:
       batch_progress_bar: false
@@ -536,4 +528,3 @@ robot:
       swap_interval_steps: ${robot.motion.max_frame_length} # Swap cache every N steps
       allowed_prefixes:
         - "ref_"
-        - "ft_ref_"

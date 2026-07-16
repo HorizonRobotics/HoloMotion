@@ -16,43 +16,43 @@ domain_rand:
 
   obs_noise:
     actor_ref_gravity_projection_cur:
-      n_min: -0.1
-      n_max: 0.1
+      n_min: 0.0
+      n_max: 0.0
     actor_ref_gravity_projection_fut:
-      n_min: -0.1
-      n_max: 0.1
+      n_min: 0.0
+      n_max: 0.0
     actor_ref_base_linvel_cur:
-      n_min: -0.1
-      n_max: 0.1
-      n_min_z: -0.05
-      n_max_z: 0.05
+      n_min: 0.0
+      n_max: 0.0
+      n_min_z: 0.0
+      n_max_z: 0.0
     actor_ref_base_linvel_fut:
-      n_min: -0.1
-      n_max: 0.1
-      n_min_z: -0.05
-      n_max_z: 0.05
+      n_min: 0.0
+      n_max: 0.0
+      n_min_z: 0.0
+      n_max_z: 0.0
     actor_ref_base_angvel_cur:
-      n_min: -0.1
-      n_max: 0.1
-      n_min_z: -0.1
-      n_max_z: 0.1
+      n_min: 0.0
+      n_max: 0.0
+      n_min_z: 0.0
+      n_max_z: 0.0
     actor_ref_base_angvel_fut:
-      n_min: -0.1
-      n_max: 0.1
-      n_min_z: -0.1
-      n_max_z: 0.1
+      n_min: 0.0
+      n_max: 0.0
+      n_min_z: 0.0
+      n_max_z: 0.0
     actor_ref_dof_pos_cur:
-      n_min: -0.05
-      n_max: 0.05
+      n_min: 0.0
+      n_max: 0.0
     actor_ref_dof_pos_fut:
-      n_min: -0.05
-      n_max: 0.05
+      n_min: 0.0
+      n_max: 0.0
     actor_ref_root_height_cur:
-      n_min: -0.1
-      n_max: 0.1
+      n_min: 0.0
+      n_max: 0.0
     actor_ref_root_height_fut:
-      n_min: -0.1
-      n_max: 0.1
+      n_min: 0.0
+      n_max: 0.0
     actor_ref_keybody_rel_pos_cur:
       n_min: -0.1
       n_max: 0.1

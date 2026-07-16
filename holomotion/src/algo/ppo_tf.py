@@ -121,15 +121,6 @@ class PPOTF(PPO):
         self.aux_state_pred_w_robot_keybody_rel_pos = float(
             aux_cfg.get("w_robot_keybody_rel_pos", 0.0)
         )
-        self.aux_state_pred_w_denoise_ref_root_lin_vel = float(
-            aux_cfg.get("w_denoise_ref_root_lin_vel", 0.0)
-        )
-        self.aux_state_pred_w_denoise_ref_root_ang_vel = float(
-            aux_cfg.get("w_denoise_ref_root_ang_vel", 0.0)
-        )
-        self.aux_state_pred_w_denoise_ref_dof_pos = float(
-            aux_cfg.get("w_denoise_ref_dof_pos", 0.0)
-        )
         self.aux_state_pred_keybody_contact_names = [
             str(name) for name in aux_cfg.get("keybody_contact_names", [])
         ]
@@ -145,23 +136,8 @@ class PPOTF(PPO):
         self.use_aux_root_height = bool(
             self.use_aux_state_pred and self.aux_state_pred_w_root_height > 0.0
         )
-        self.use_aux_denoise_ref_root_lin_vel = bool(
-            self.use_aux_state_pred
-            and self.aux_state_pred_w_denoise_ref_root_lin_vel > 0.0
-        )
-        self.use_aux_denoise_ref_root_ang_vel = bool(
-            self.use_aux_state_pred
-            and self.aux_state_pred_w_denoise_ref_root_ang_vel > 0.0
-        )
-        self.use_aux_denoise_ref_dof_pos = bool(
-            self.use_aux_state_pred
-            and self.aux_state_pred_w_denoise_ref_dof_pos > 0.0
-        )
         self.aux_state_pred_min_std = float(aux_cfg.get("min_std", 1.0e-3))
         self.aux_state_pred_max_std = float(aux_cfg.get("max_std", 5.0))
-        self.aux_denoise_residual_huber_beta = float(
-            aux_cfg.get("denoise_residual_huber_beta", 0.1)
-        )
         self.aux_state_pred_raycast_z_offset = float(
             aux_cfg.get("raycast_z_offset", 1.0)
         )
@@ -173,10 +149,6 @@ class PPOTF(PPO):
         if self.aux_state_pred_max_std <= self.aux_state_pred_min_std:
             raise ValueError(
                 "aux_state_pred.max_std must be > aux_state_pred.min_std."
-            )
-        if self.aux_denoise_residual_huber_beta <= 0.0:
-            raise ValueError(
-                "aux_state_pred.denoise_residual_huber_beta must be > 0."
             )
         if self.aux_state_pred_w_base_lin_vel < 0.0:
             raise ValueError("aux_state_pred.w_base_lin_vel must be >= 0.")
@@ -191,18 +163,6 @@ class PPOTF(PPO):
         if self.aux_state_pred_w_robot_keybody_rel_pos < 0.0:
             raise ValueError(
                 "aux_state_pred.w_robot_keybody_rel_pos must be >= 0."
-            )
-        if self.aux_state_pred_w_denoise_ref_root_lin_vel < 0.0:
-            raise ValueError(
-                "aux_state_pred.w_denoise_ref_root_lin_vel must be >= 0."
-            )
-        if self.aux_state_pred_w_denoise_ref_root_ang_vel < 0.0:
-            raise ValueError(
-                "aux_state_pred.w_denoise_ref_root_ang_vel must be >= 0."
-            )
-        if self.aux_state_pred_w_denoise_ref_dof_pos < 0.0:
-            raise ValueError(
-                "aux_state_pred.w_denoise_ref_dof_pos must be >= 0."
             )
         if self.use_aux_root_height:
             if self.aux_state_pred_raycast_max_dist <= 0.0:
@@ -279,6 +239,41 @@ class PPOTF(PPO):
         self.aux_router_future_recon_huber_beta = float(
             aux_router_future_cfg.get("huber_beta", 1.0)
         )
+        action_butterworth_cfg = self.config.get(
+            "aux_action_mean_butterworth", {}
+        )
+        self.use_aux_action_mean_butterworth = bool(
+            action_butterworth_cfg.get("enabled", False)
+        )
+        self.aux_action_mean_butterworth_weight = float(
+            action_butterworth_cfg.get("weight", 0.0)
+        )
+        self.aux_action_mean_butterworth_sample_hz = float(
+            action_butterworth_cfg.get("sample_hz", 50.0)
+        )
+        self.aux_action_mean_butterworth_cutoff_hz = float(
+            action_butterworth_cfg.get("cutoff_hz", 3.0)
+        )
+        action_butterworth_order = action_butterworth_cfg.get("order", 4)
+        if (
+            isinstance(action_butterworth_order, bool)
+            or int(action_butterworth_order) != action_butterworth_order
+        ):
+            raise ValueError(
+                "aux_action_mean_butterworth.order must be a positive integer."
+            )
+        self.aux_action_mean_butterworth_order = int(
+            action_butterworth_order
+        )
+        self.aux_action_mean_butterworth_sos = (
+            self._design_butterworth_highpass_sos(
+                sample_hz=self.aux_action_mean_butterworth_sample_hz,
+                cutoff_hz=self.aux_action_mean_butterworth_cutoff_hz,
+                order=self.aux_action_mean_butterworth_order,
+            )
+            if self.use_aux_action_mean_butterworth
+            else ()
+        )
         load_balance_cfg = self.config.get("moe_load_balance", {})
         self.use_moe_load_balance = bool(
             load_balance_cfg.get("enabled", False)
@@ -334,6 +329,10 @@ class PPOTF(PPO):
             raise ValueError("aux_router_command_recon.weight must be >= 0.")
         if self.aux_router_future_recon_weight < 0.0:
             raise ValueError("aux_router_future_recon.weight must be >= 0.")
+        if self.aux_action_mean_butterworth_weight < 0.0:
+            raise ValueError(
+                "aux_action_mean_butterworth.weight must be >= 0."
+            )
         if self.aux_router_switch_penalty_weight < 0.0:
             raise ValueError("aux_router_switch_penalty.weight must be >= 0.")
         if self.moe_load_balance_weight < 0.0:
@@ -423,6 +422,14 @@ class PPOTF(PPO):
                 "future reconstruction loss will have no effect."
             )
         if (
+            self.use_aux_action_mean_butterworth
+            and self.aux_action_mean_butterworth_weight == 0.0
+        ):
+            logger.warning(
+                "aux_action_mean_butterworth.enabled=True but weight=0.0; "
+                "action-mean smoothing loss will have no effect."
+            )
+        if (
             self.use_aux_router_command_recon
             or self.use_aux_router_switch_penalty
             or self.use_aux_router_future_recon
@@ -450,9 +457,6 @@ class PPOTF(PPO):
                 )
             unsupported_aux_weights = {
                 "w_root_height": self.aux_state_pred_w_root_height,
-                "w_denoise_ref_root_lin_vel": self.aux_state_pred_w_denoise_ref_root_lin_vel,
-                "w_denoise_ref_root_ang_vel": self.aux_state_pred_w_denoise_ref_root_ang_vel,
-                "w_denoise_ref_dof_pos": self.aux_state_pred_w_denoise_ref_dof_pos,
             }
             enabled_unsupported = [
                 name
@@ -571,6 +575,120 @@ class PPOTF(PPO):
             )
         valid_count = valid_tok.sum().clamp_min(1.0)
         return (per_token_mse * valid_tok).sum() / valid_count
+
+    @staticmethod
+    def _design_butterworth_highpass_sos(
+        *, sample_hz: float, cutoff_hz: float, order: int
+    ) -> tuple[tuple[float, ...], ...]:
+        if sample_hz <= 0.0:
+            raise ValueError(
+                "aux_action_mean_butterworth.sample_hz must be positive."
+            )
+        if cutoff_hz <= 0.0 or cutoff_hz >= 0.5 * sample_hz:
+            raise ValueError(
+                "aux_action_mean_butterworth.cutoff_hz must be between zero "
+                "and the Nyquist frequency."
+            )
+        if isinstance(order, bool) or order <= 0 or int(order) != order:
+            raise ValueError(
+                "aux_action_mean_butterworth.order must be a positive integer."
+            )
+
+        from scipy.signal import butter
+
+        sos = butter(
+            int(order),
+            cutoff_hz / (0.5 * sample_hz),
+            btype="highpass",
+            output="sos",
+        )
+        sos[:, :3] /= sos[:, 3:4]
+        sos[:, 4:] /= sos[:, 3:4]
+        sos[:, 3] = 1.0
+        return tuple(tuple(float(value) for value in row) for row in sos)
+
+    @staticmethod
+    def _action_mean_butterworth_loss(
+        *,
+        action_mean: torch.Tensor,
+        dones: torch.Tensor,
+        valid_tok: torch.Tensor,
+        sos: tuple[tuple[float, ...], ...],
+    ) -> torch.Tensor:
+        """Filter continuous policy means and average high-frequency energy."""
+        if action_mean.ndim != 3:
+            raise ValueError(
+                "action_mean must have shape [B, T, A], got "
+                f"{tuple(action_mean.shape)}."
+            )
+        if dones.shape != (*action_mean.shape[:2], 1):
+            raise ValueError(
+                "dones must have shape [B, T, 1], got "
+                f"{tuple(dones.shape)}."
+            )
+        if valid_tok.shape != action_mean.shape[:2]:
+            raise ValueError(
+                "valid_tok must have shape [B, T], got "
+                f"{tuple(valid_tok.shape)}."
+            )
+        if len(sos) == 0:
+            raise ValueError("Butterworth SOS coefficients must be non-empty.")
+
+        signal = action_mean.float()
+        batch_size, sequence_length, action_dim = signal.shape
+        sos_tensor = signal.new_tensor(sos)
+        num_sections = int(sos_tensor.shape[0])
+        z1 = [
+            signal.new_zeros(batch_size, action_dim)
+            for _ in range(num_sections)
+        ]
+        z2 = [
+            signal.new_zeros(batch_size, action_dim)
+            for _ in range(num_sections)
+        ]
+
+        episode_start = torch.zeros(
+            batch_size,
+            sequence_length,
+            device=signal.device,
+            dtype=torch.bool,
+        )
+        episode_start[:, 0] = True
+        if sequence_length > 1:
+            episode_start[:, 1:] = dones[:, :-1, 0].to(torch.bool)
+
+        penalties: list[torch.Tensor] = []
+        for time_idx in range(sequence_length):
+            reset = episode_start[:, time_idx, None]
+            section_input = signal[:, time_idx]
+            next_z1: list[torch.Tensor] = []
+            next_z2: list[torch.Tensor] = []
+            for section_idx in range(num_sections):
+                b0, b1, b2, _, a1, a2 = sos_tensor[section_idx].unbind()
+                dc_gain = (b0 + b1 + b2) / (1.0 + a1 + a2)
+                steady_output = dc_gain * section_input
+                steady_z1 = steady_output - b0 * section_input
+                steady_z2 = b2 * section_input - a2 * steady_output
+                current_z1 = torch.where(reset, steady_z1, z1[section_idx])
+                current_z2 = torch.where(reset, steady_z2, z2[section_idx])
+                section_output = b0 * section_input + current_z1
+                next_z1.append(
+                    b1 * section_input - a1 * section_output + current_z2
+                )
+                next_z2.append(
+                    b2 * section_input - a2 * section_output
+                )
+                section_input = section_output
+            z1 = next_z1
+            z2 = next_z2
+            penalties.append(section_input.square().mean(dim=-1))
+
+        per_token_penalty = torch.stack(penalties, dim=1)
+        loss_mask = valid_tok.to(per_token_penalty.dtype) * (
+            ~episode_start
+        ).to(per_token_penalty.dtype)
+        valid_count = loss_mask.sum().clamp_min(1.0)
+        return (per_token_penalty * loss_mask).sum() / valid_count
 
     @staticmethod
     def _masked_adjacent_router_js(
@@ -1349,58 +1467,6 @@ class PPOTF(PPO):
             gt_robot_keybody_rel_pos = torch.zeros(
                 self.num_envs, 0, 3, device=self.device, dtype=torch.float32
             )
-        gt_denoise_ref_root_lin_vel = torch.zeros(
-            self.num_envs, 3, device=self.device, dtype=torch.float32
-        )
-        gt_denoise_ref_root_ang_vel = torch.zeros(
-            self.num_envs, 3, device=self.device, dtype=torch.float32
-        )
-        gt_denoise_ref_dof_pos = torch.zeros(
-            self.num_envs,
-            actions.shape[-1],
-            device=self.device,
-            dtype=torch.float32,
-        )
-        if (
-            self.use_aux_denoise_ref_root_lin_vel
-            or self.use_aux_denoise_ref_root_ang_vel
-            or self.use_aux_denoise_ref_dof_pos
-        ):
-            try:
-                if self.use_aux_denoise_ref_root_lin_vel:
-                    gt_denoise_ref_root_lin_vel = (
-                        command.get_ref_motion_base_linvel_cur(
-                            prefix="ft_ref_"
-                        )
-                        - command.get_ref_motion_base_linvel_cur(prefix="ref_")
-                    )
-                if self.use_aux_denoise_ref_root_ang_vel:
-                    gt_denoise_ref_root_ang_vel = (
-                        command.get_ref_motion_base_angvel_cur(
-                            prefix="ft_ref_"
-                        )
-                        - command.get_ref_motion_base_angvel_cur(prefix="ref_")
-                    )
-                if self.use_aux_denoise_ref_dof_pos:
-                    gt_denoise_ref_dof_pos = (
-                        command.get_ref_motion_dof_pos_cur(prefix="ft_ref_")
-                        - command.get_ref_motion_dof_pos_cur(prefix="ref_")
-                    )
-                    expected_shape = (self.num_envs, actions.shape[-1])
-                    if tuple(gt_denoise_ref_dof_pos.shape) != expected_shape:
-                        raise ValueError(
-                            "gt_denoise_ref_dof_pos must match the action-aligned "
-                            "DoF shape "
-                            f"{expected_shape}, got "
-                            f"{tuple(gt_denoise_ref_dof_pos.shape)}."
-                        )
-            except KeyError as exc:
-                raise RuntimeError(
-                    "Filtered reference tensors are unavailable for "
-                    "aux_denoise_* targets. Enable online filtering or "
-                    "materialize ft_ref_* tensors in the motion cache."
-                ) from exc
-
         return self.transition_cls(
             obs=obs_td,
             actions=actions.detach(),
@@ -1418,9 +1484,6 @@ class PPOTF(PPO):
             gt_keybody_contacts=gt_keybody_contacts.detach(),
             gt_ref_keybody_rel_pos=gt_ref_keybody_rel_pos.detach(),
             gt_robot_keybody_rel_pos=gt_robot_keybody_rel_pos.detach(),
-            gt_denoise_ref_root_lin_vel=gt_denoise_ref_root_lin_vel.detach(),
-            gt_denoise_ref_root_ang_vel=gt_denoise_ref_root_ang_vel.detach(),
-            gt_denoise_ref_dof_pos=gt_denoise_ref_dof_pos.detach(),
             batch_size=[self.num_envs],
             device=self.device,
         )
@@ -1618,9 +1681,6 @@ class PPOTF(PPO):
         gt_keybody_contact_seq = None
         gt_ref_keybody_rel_pos_seq = None
         gt_robot_keybody_rel_pos_seq = None
-        gt_denoise_ref_root_lin_vel_seq = None
-        gt_denoise_ref_root_ang_vel_seq = None
-        gt_denoise_ref_dof_pos_seq = None
         if self.use_aux_state_pred:
             gt_base_lin_vel_seq = data["gt_base_lin_vel_b"].transpose(0, 1)
             gt_root_height_seq = data["gt_root_height_rel_terrain"].transpose(
@@ -1634,15 +1694,6 @@ class PPOTF(PPO):
             ].transpose(0, 1)
             gt_robot_keybody_rel_pos_seq = data[
                 "gt_robot_keybody_rel_pos"
-            ].transpose(0, 1)
-            gt_denoise_ref_root_lin_vel_seq = data[
-                "gt_denoise_ref_root_lin_vel"
-            ].transpose(0, 1)
-            gt_denoise_ref_root_ang_vel_seq = data[
-                "gt_denoise_ref_root_ang_vel"
-            ].transpose(0, 1)
-            gt_denoise_ref_dof_pos_seq = data[
-                "gt_denoise_ref_dof_pos"
             ].transpose(0, 1)
 
         num_envs = int(actions_seq.shape[0])
@@ -1699,21 +1750,6 @@ class PPOTF(PPO):
                     if gt_robot_keybody_rel_pos_seq is not None
                     else None
                 )
-                gt_denoise_ref_root_lin_vel_b = (
-                    gt_denoise_ref_root_lin_vel_seq[idx]
-                    if gt_denoise_ref_root_lin_vel_seq is not None
-                    else None
-                )
-                gt_denoise_ref_root_ang_vel_b = (
-                    gt_denoise_ref_root_ang_vel_seq[idx]
-                    if gt_denoise_ref_root_ang_vel_seq is not None
-                    else None
-                )
-                gt_denoise_ref_dof_pos_b = (
-                    gt_denoise_ref_dof_pos_seq[idx]
-                    if gt_denoise_ref_dof_pos_seq is not None
-                    else None
-                )
                 attn_mask = self._build_episode_causal_mask(dones_b)
                 yield (
                     obs_b,
@@ -1725,15 +1761,13 @@ class PPOTF(PPO):
                     old_logp_b,
                     old_mu_b,
                     old_sigma_b,
+                    dones_b,
                     attn_mask,
                     gt_base_lin_vel_b,
                     gt_root_height_b,
                     gt_keybody_contact_b,
                     gt_ref_keybody_rel_pos_b,
                     gt_robot_keybody_rel_pos_b,
-                    gt_denoise_ref_root_lin_vel_b,
-                    gt_denoise_ref_root_ang_vel_b,
-                    gt_denoise_ref_dof_pos_b,
                 )
 
     def update(self):
@@ -1758,12 +1792,10 @@ class PPOTF(PPO):
         mean_aux_keybody_contact_acc = 0.0
         mean_aux_ref_keybody_rel_pos_mse = 0.0
         mean_aux_robot_keybody_rel_pos_mse = 0.0
-        mean_aux_denoise_ref_root_lin_vel_huber = 0.0
-        mean_aux_denoise_ref_root_ang_vel_huber = 0.0
-        mean_aux_denoise_ref_dof_pos_huber = 0.0
         mean_aux_router_command_recon_mse = 0.0
         mean_aux_router_future_recon_huber = 0.0
         mean_aux_router_switch_penalty_js = 0.0
+        mean_aux_action_mean_butterworth = 0.0
         mean_moe_load_balance_loss = 0.0
         mean_inactive_expert_margin_to_topk_loss = 0.0
         mean_router_expert_orthogonal_loss = 0.0
@@ -1835,15 +1867,13 @@ class PPOTF(PPO):
             old_logp_b,
             old_mu_b,
             old_sigma_b,
+            dones_b,
             attn_mask_b,
             gt_base_lin_vel_b,
             gt_root_height_b,
             gt_keybody_contact_b,
             gt_ref_keybody_rel_pos_b,
             gt_robot_keybody_rel_pos_b,
-            gt_denoise_ref_root_lin_vel_b,
-            gt_denoise_ref_root_ang_vel_b,
-            gt_denoise_ref_dof_pos_b,
         ) in generator:
             valid_tok = attn_mask_b.diagonal(dim1=1, dim2=2).to(torch.float32)
             valid_count = valid_tok.sum().clamp_min(1.0)
@@ -1968,12 +1998,10 @@ class PPOTF(PPO):
             aux_keybody_contact_acc = None
             aux_ref_keybody_rel_pos_loss = None
             aux_robot_keybody_rel_pos_loss = None
-            aux_denoise_ref_root_lin_vel_loss = None
-            aux_denoise_ref_root_ang_vel_loss = None
-            aux_denoise_ref_dof_pos_loss = None
             aux_router_command_recon_loss = None
             aux_router_future_recon_loss = None
             aux_router_switch_penalty_loss = None
+            aux_action_mean_butterworth_loss = None
             moe_load_balance_loss = None
             inactive_expert_margin_to_topk_loss = None
             router_expert_orthogonal_loss = None
@@ -2110,51 +2138,6 @@ class PPOTF(PPO):
                     actor_loss = (
                         actor_loss + 0.0 * aux_robot_keybody_rel_pos.sum()
                     )
-                if self.use_aux_denoise_ref_root_lin_vel:
-                    aux_denoise_ref_root_lin_vel_residual = actor_out.get(
-                        "aux_denoise_ref_root_lin_vel_residual"
-                    )
-                    aux_denoise_ref_root_lin_vel_loss = self._masked_aux_huber(
-                        pred=aux_denoise_ref_root_lin_vel_residual,
-                        target=gt_denoise_ref_root_lin_vel_b,
-                        valid_tok=valid_tok,
-                        beta=self.aux_denoise_residual_huber_beta,
-                    )
-                    actor_loss = (
-                        actor_loss
-                        + self.aux_state_pred_w_denoise_ref_root_lin_vel
-                        * aux_denoise_ref_root_lin_vel_loss
-                    )
-                if self.use_aux_denoise_ref_root_ang_vel:
-                    aux_denoise_ref_root_ang_vel_residual = actor_out.get(
-                        "aux_denoise_ref_root_ang_vel_residual"
-                    )
-                    aux_denoise_ref_root_ang_vel_loss = self._masked_aux_huber(
-                        pred=aux_denoise_ref_root_ang_vel_residual,
-                        target=gt_denoise_ref_root_ang_vel_b,
-                        valid_tok=valid_tok,
-                        beta=self.aux_denoise_residual_huber_beta,
-                    )
-                    actor_loss = (
-                        actor_loss
-                        + self.aux_state_pred_w_denoise_ref_root_ang_vel
-                        * aux_denoise_ref_root_ang_vel_loss
-                    )
-                if self.use_aux_denoise_ref_dof_pos:
-                    aux_denoise_ref_dof_pos_residual = actor_out.get(
-                        "aux_denoise_ref_dof_pos_residual"
-                    )
-                    aux_denoise_ref_dof_pos_loss = self._masked_aux_huber(
-                        pred=aux_denoise_ref_dof_pos_residual,
-                        target=gt_denoise_ref_dof_pos_b,
-                        valid_tok=valid_tok,
-                        beta=self.aux_denoise_residual_huber_beta,
-                    )
-                    actor_loss = (
-                        actor_loss
-                        + self.aux_state_pred_w_denoise_ref_dof_pos
-                        * aux_denoise_ref_dof_pos_loss
-                    )
             if self.use_aux_router_command_recon:
                 if self.aux_router_command_recon_assembler is None:
                     raise ValueError(
@@ -2220,6 +2203,20 @@ class PPOTF(PPO):
                     actor_loss
                     + self.aux_router_switch_penalty_weight
                     * aux_router_switch_penalty_loss
+                )
+            if self.use_aux_action_mean_butterworth:
+                aux_action_mean_butterworth_loss = (
+                    self._action_mean_butterworth_loss(
+                        action_mean=mu_b,
+                        dones=dones_b,
+                        valid_tok=valid_tok,
+                        sos=self.aux_action_mean_butterworth_sos,
+                    )
+                )
+                actor_loss = (
+                    actor_loss
+                    + self.aux_action_mean_butterworth_weight
+                    * aux_action_mean_butterworth_loss
                 )
             if self.use_moe_load_balance and len(moe_layers) > 0:
                 load_balance_losses = [
@@ -2368,18 +2365,6 @@ class PPOTF(PPO):
                 mean_aux_robot_keybody_rel_pos_mse += float(
                     aux_robot_keybody_rel_pos_loss.item()
                 )
-            if aux_denoise_ref_root_lin_vel_loss is not None:
-                mean_aux_denoise_ref_root_lin_vel_huber += float(
-                    aux_denoise_ref_root_lin_vel_loss.item()
-                )
-            if aux_denoise_ref_root_ang_vel_loss is not None:
-                mean_aux_denoise_ref_root_ang_vel_huber += float(
-                    aux_denoise_ref_root_ang_vel_loss.item()
-                )
-            if aux_denoise_ref_dof_pos_loss is not None:
-                mean_aux_denoise_ref_dof_pos_huber += float(
-                    aux_denoise_ref_dof_pos_loss.item()
-                )
             if aux_router_command_recon_loss is not None:
                 mean_aux_router_command_recon_mse += float(
                     aux_router_command_recon_loss.item()
@@ -2391,6 +2376,10 @@ class PPOTF(PPO):
             if aux_router_switch_penalty_loss is not None:
                 mean_aux_router_switch_penalty_js += float(
                     aux_router_switch_penalty_loss.item()
+                )
+            if aux_action_mean_butterworth_loss is not None:
+                mean_aux_action_mean_butterworth += float(
+                    aux_action_mean_butterworth_loss.item()
                 )
             if moe_load_balance_loss is not None:
                 mean_moe_load_balance_loss += float(
@@ -2428,12 +2417,10 @@ class PPOTF(PPO):
         mean_aux_keybody_contact_acc /= denom
         mean_aux_ref_keybody_rel_pos_mse /= denom
         mean_aux_robot_keybody_rel_pos_mse /= denom
-        mean_aux_denoise_ref_root_lin_vel_huber /= denom
-        mean_aux_denoise_ref_root_ang_vel_huber /= denom
-        mean_aux_denoise_ref_dof_pos_huber /= denom
         mean_aux_router_command_recon_mse /= denom
         mean_aux_router_future_recon_huber /= denom
         mean_aux_router_switch_penalty_js /= denom
+        mean_aux_action_mean_butterworth /= denom
         mean_moe_load_balance_loss /= denom
         mean_inactive_expert_margin_to_topk_loss /= denom
         mean_router_expert_orthogonal_loss /= denom
@@ -2499,21 +2486,19 @@ class PPOTF(PPO):
             "aux_robot_keybody_rel_pos_mse": (
                 mean_aux_robot_keybody_rel_pos_mse
             ),
-            "aux_denoise_ref_root_lin_vel_huber": (
-                mean_aux_denoise_ref_root_lin_vel_huber
-            ),
-            "aux_denoise_ref_root_ang_vel_huber": (
-                mean_aux_denoise_ref_root_ang_vel_huber
-            ),
-            "aux_denoise_ref_dof_pos_huber": (
-                mean_aux_denoise_ref_dof_pos_huber
-            ),
             "aux_router_command_recon_mse": mean_aux_router_command_recon_mse,
             "aux_router_future_recon_huber": (
                 mean_aux_router_future_recon_huber
             ),
             "aux_router_switch_penalty_js": (
                 mean_aux_router_switch_penalty_js
+            ),
+            "aux_action_mean_butterworth_raw": (
+                mean_aux_action_mean_butterworth
+            ),
+            "aux_action_mean_butterworth_weighted": (
+                self.aux_action_mean_butterworth_weight
+                * mean_aux_action_mean_butterworth
             ),
             "moe_load_balance": mean_moe_load_balance_loss,
             "inactive_expert_margin_to_topk": (

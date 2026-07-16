@@ -32,7 +32,6 @@ from io import BytesIO
 
 import numpy as np
 import open3d as o3d
-import scipy.ndimage.filters as filters
 import smpl_sim.poselib.core.rotation3d as poselib_rotation3d
 import smpl_sim.utils.rotation_conversions as torch_rotation_conversions
 import torch
@@ -485,19 +484,12 @@ class HumanoidBatch:
         return positions_world, rotations_world
 
     @staticmethod
-    def _compute_velocity(p, time_delta, guassian_filter=True):
+    def _compute_velocity(p, time_delta):
         velocity = np.gradient(p.numpy(), axis=-3) / time_delta
-        if guassian_filter:
-            velocity = torch.from_numpy(
-                filters.gaussian_filter1d(velocity, 2, axis=-3, mode="nearest")
-            ).to(p)
-        else:
-            velocity = torch.from_numpy(velocity).to(p)
-
-        return velocity
+        return torch.from_numpy(velocity).to(p)
 
     @staticmethod
-    def _compute_angular_velocity(r, time_delta: float, guassian_filter=True):
+    def _compute_angular_velocity(r, time_delta: float):
         # assume the second last dimension is the time axis
         diff_quat_data = poselib_rotation3d.quat_identity_like(r).to(r)
         diff_quat_data[..., :-1, :, :] = poselib_rotation3d.quat_mul_norm(
@@ -508,12 +500,6 @@ class HumanoidBatch:
             diff_quat_data
         )
         angular_velocity = diff_axis * diff_angle.unsqueeze(-1) / time_delta
-        if guassian_filter:
-            angular_velocity = torch.from_numpy(
-                filters.gaussian_filter1d(
-                    angular_velocity.numpy(), 2, axis=-3, mode="nearest"
-                ),
-            )
         return angular_velocity
 
     def load_mesh(self):

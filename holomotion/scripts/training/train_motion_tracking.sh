@@ -25,10 +25,9 @@ else
 fi
 
 
-config_name="train_g1_29dof_motion_tracking_mlp"
-# config_name="train_g1_29dof_motion_tracking_tf-moe"
+config_name="${CONFIG_NAME:-motion_tracking_v1_4_0}"
 
-num_envs=4096
+num_envs="${NUM_ENVS:-4096}"
 
 COMMON_ARGS=(
     "holomotion/src/training/train.py"

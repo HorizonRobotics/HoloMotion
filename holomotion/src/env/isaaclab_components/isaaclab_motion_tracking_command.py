@@ -57,6 +57,16 @@ from holomotion.src.training.h5_dataloader import (
     Hdf5RootDofDataset,
     MotionClipBatchCache,
     build_motion_datasets_from_cfg,
+    normalize_hdf5_root_entries,
+    weighted_bin_cfg_from_motion_cfg,
+)
+from holomotion.src.motion_tracking.reference_observation import (
+    ReferenceKinematics,
+    derive_reference_kinematics_torch,
+)
+from holomotion.src.motion_tracking.actor_observation import (
+    MotionActorObservationInput,
+    derive_motion_actor_terms_torch,
 )
 import os
 from isaaclab.markers.config import SPHERE_MARKER_CFG
@@ -236,7 +246,9 @@ class RefMotionCommand(CommandTerm):
             val_hdf5_roots = mcfg.get("val_hdf5_roots", None)
 
             if train_hdf5_roots:
-                train_roots = [str(r) for r in train_hdf5_roots]
+                train_roots, _ = normalize_hdf5_root_entries(
+                    train_hdf5_roots
+                )
             else:
                 hdf5_root = mcfg.get("hdf5_root")
                 if hdf5_root is None:
@@ -245,7 +257,7 @@ class RefMotionCommand(CommandTerm):
 
             val_hdf5_root = mcfg.get("val_hdf5_root", None)
             if val_hdf5_roots:
-                val_roots = [str(r) for r in val_hdf5_roots]
+                val_roots, _ = normalize_hdf5_root_entries(val_hdf5_roots)
             elif val_hdf5_root is not None and str(val_hdf5_root) != str(
                 train_roots[0]
             ):
@@ -273,7 +285,7 @@ class RefMotionCommand(CommandTerm):
             cache_cfg = mcfg.get("cache", {})
             allowed_prefixes = cache_cfg.get(
                 "allowed_prefixes",
-                ["ref_", "ft_ref_"],
+                ["ref_"],
             )
 
             if len(train_manifest_paths) == 1:
@@ -487,12 +499,14 @@ class RefMotionCommand(CommandTerm):
             cache_cfg = mcfg.get("cache", {})
             allowed_prefixes = cache_cfg.get(
                 "allowed_prefixes",
-                ["ref_", "ft_ref_"],
+                ["ref_"],
             )
 
             train_hdf5_roots = mcfg.get("train_hdf5_roots", None)
             if train_hdf5_roots:
-                train_roots = [str(r) for r in train_hdf5_roots]
+                train_roots, _ = normalize_hdf5_root_entries(
+                    train_hdf5_roots
+                )
             else:
                 hdf5_root = mcfg.get("hdf5_root", None)
                 train_roots = [str(hdf5_root)] if hdf5_root is not None else []
@@ -658,9 +672,9 @@ class RefMotionCommand(CommandTerm):
         else:
             sampling_strategy = str(sampling_strategy_cfg).lower()
         if sampling_strategy == "weighted_bin":
-            weighted_bin_cfg = mcfg.get("weighted_bin", {})
+            weighted_bin_cfg = weighted_bin_cfg_from_motion_cfg(mcfg)
             self._motion_cache.enable_weighted_bin_sampling(
-                cfg=dict(weighted_bin_cfg or {})
+                cfg=weighted_bin_cfg
             )
         elif sampling_strategy == "curriculum":
             curriculum_cfg = dict(mcfg.get("curriculum", {}) or {})
@@ -1382,12 +1396,20 @@ class RefMotionCommand(CommandTerm):
 
         Args:
             base_key: Base key in the motion cache (e.g. \"dof_pos\", \"root_pos\").
-            prefix: Optional logical prefix (e.g. \"\", \"ref_\", \"ft_ref_\", \"robot_\").
+            prefix: Optional logical prefix (e.g. \"\", \"ref_\", \"robot_\").
 
         Returns:
             Tensor of shape ``[num_envs, 1 + n_fut_frames, ...]`` gathered for
             the envs' current clip/frame assignments.
         """
+        if base_key in {"dof_vel", "root_vel", "root_ang_vel"} and prefix == "ref_":
+            kinematics = self._get_reference_observation_kinematics(prefix)
+            return {
+                "dof_vel": kinematics.dof_vel,
+                "root_vel": kinematics.root_linvel_world,
+                "root_ang_vel": kinematics.root_angvel_world,
+            }[base_key]
+
         batch_tensors = self._motion_cache.current_batch.tensors
         tensor_key = resolve_reference_tensor_key(
             batch_tensors=batch_tensors,
@@ -1401,17 +1423,111 @@ class RefMotionCommand(CommandTerm):
             n_future_frames=self.cfg.n_fut_frames,
         )
 
-    def get_ref_motion_filter_cutoff_hz_cur(self) -> torch.Tensor:
-        try:
-            base = self._get_ref_state_array("filter_cutoff_hz", prefix="")
-        except KeyError:
-            # Older/local datasets may not carry per-clip filter metadata.
-            # Keep the observation available with a neutral default instead of
-            # failing during env construction.
-            return torch.zeros(
-                self.num_envs, 1, device=self.device, dtype=torch.float32
+    def _get_reference_observation_kinematics(
+        self, prefix: str
+    ) -> ReferenceKinematics:
+        cache = getattr(self, "_reference_observation_cache", None)
+        if cache is None:
+            cache = {}
+            self._reference_observation_cache = cache
+        cached = cache.get(prefix)
+        if cached is not None:
+            return cached
+
+        reference_qpos = self._get_reference_qpos_with_context(prefix)
+        full = derive_reference_kinematics_torch(
+            reference_qpos,
+            fps=float(self.cfg.target_fps),
+        )
+        end = 2 + int(self.cfg.n_fut_frames)
+        result = full.sliced((slice(None), slice(1, end)))
+        cache[prefix] = result
+        return result
+
+    def _get_reference_qpos_with_context(self, prefix: str) -> torch.Tensor:
+        cache = getattr(self, "_reference_observation_cache", None)
+        if cache is None:
+            cache = {}
+            self._reference_observation_cache = cache
+        cache_key = f"qpos:{prefix}"
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        batch_tensors = self._motion_cache.current_batch.tensors
+        keys = {
+            name: resolve_reference_tensor_key(
+                batch_tensors=batch_tensors,
+                base_key=name,
+                prefix=prefix,
             )
-        return base[:, 0, ...]
+            for name in ("dof_pos", "root_pos", "root_rot")
+        }
+        past_frames = torch.clamp(self._frame_indices - 1, min=0)
+        extra_future = int(self.cfg.n_fut_frames) + 1
+
+        def gather_with_past(name: str) -> torch.Tensor:
+            past = self._motion_cache.gather_tensor(
+                keys[name],
+                clip_indices=self._clip_indices,
+                frame_indices=past_frames,
+                n_future_frames=0,
+            )
+            current_future = self._motion_cache.gather_tensor(
+                keys[name],
+                clip_indices=self._clip_indices,
+                frame_indices=self._frame_indices,
+                n_future_frames=extra_future,
+            )
+            return torch.cat([past, current_future], dim=1)
+
+        reference_qpos = torch.cat(
+            [
+                gather_with_past("root_pos"),
+                gather_with_past("root_rot")[..., [3, 0, 1, 2]],
+                gather_with_past("dof_pos"),
+            ],
+            dim=-1,
+        ).contiguous()
+        cache[cache_key] = reference_qpos
+        return reference_qpos
+
+    def get_motion_actor_observation_term(
+        self,
+        name: str,
+        prefix: str = "ref_",
+    ) -> torch.Tensor:
+        cache = getattr(self, "_reference_observation_cache", None)
+        if cache is None:
+            cache = {}
+            self._reference_observation_cache = cache
+        cache_key = f"actor_terms:{prefix}"
+        terms = cache.get(cache_key)
+        if terms is None:
+            reference_indices = torch.as_tensor(
+                self.urdf2sim_dof_idx,
+                device=self.device,
+                dtype=torch.int32,
+            )
+            terms = derive_motion_actor_terms_torch(
+                MotionActorObservationInput(
+                    reference_qpos=self._get_reference_qpos_with_context(prefix),
+                    robot_root_quat_wxyz=self.robot.data.root_quat_w,
+                    robot_root_angvel_local=self.robot.data.root_ang_vel_b,
+                    robot_dof_pos=self.robot.data.joint_pos,
+                    robot_dof_vel=self.robot.data.joint_vel,
+                    last_action=self._env.action_manager.action,
+                    default_dof_pos=self.robot.data.default_joint_pos,
+                    reference_dof_indices=reference_indices,
+                ),
+                fps=float(self.cfg.target_fps),
+                current_index=1,
+                num_future_frames=int(self.cfg.n_fut_frames),
+            )
+            cache[cache_key] = terms
+        if name not in terms:
+            raise KeyError(f"Unsupported shared motion actor term: {name}")
+        return terms[name]
 
     def _uniform_sample_ref_start_frames(self, env_ids: torch.Tensor):
         """Uniformly sample start frames within cached windows for env_ids.
@@ -1991,135 +2107,78 @@ class RefMotionCommand(CommandTerm):
         prefix: str = "ref_",
     ) -> torch.Tensor:
         """Current reference gravity projected into reference root frame."""
-        g_w = self.robot.data.GRAVITY_VEC_W  # [B, 3]
-        ref_root_rot_wxyz = self.get_ref_motion_root_global_rot_quat_wxyz_cur(
-            prefix=prefix
-        )  # [B, 4]
-        return isaaclab_math.quat_apply_inverse(ref_root_rot_wxyz, g_w)
+        return self._get_reference_observation_kinematics(
+            prefix
+        ).projected_gravity[:, 0]
 
     def get_ref_motion_gravity_projection_immediate_next(
         self,
         prefix: str = "ref_",
     ) -> torch.Tensor:
-        g_w = self.robot.data.GRAVITY_VEC_W  # [B, 3]
-        ref_root_rot_wxyz = (
-            self.get_ref_motion_root_global_rot_quat_wxyz_immediate_next(
-                prefix=prefix
-            )
-        )
-        return isaaclab_math.quat_apply_inverse(ref_root_rot_wxyz, g_w)
+        return self._get_reference_observation_kinematics(
+            prefix
+        ).projected_gravity[:, 1]
 
     def get_ref_motion_gravity_projection_fut(
         self,
         prefix: str = "ref_",
     ) -> torch.Tensor:
         """Future reference gravity projected into reference root frame."""
-        g_w = self.robot.data.GRAVITY_VEC_W  # [B, 3]
-        ref_root_rot_wxyz_fut = (
-            self.get_ref_motion_root_global_rot_quat_wxyz_fut(prefix=prefix)
-        )  # [B, T, 4]
-        gravity_fut = g_w[:, None, :].expand(
-            -1, ref_root_rot_wxyz_fut.shape[1], -1
-        )  # [B, T, 3]
-        return isaaclab_math.quat_apply_inverse(
-            ref_root_rot_wxyz_fut, gravity_fut
-        )  # [B, T, 3]
+        return self._get_reference_observation_kinematics(
+            prefix
+        ).projected_gravity[:, 1:]
 
     def get_ref_motion_base_linvel_cur(
         self,
         prefix: str = "ref_",
     ) -> torch.Tensor:
         """Current reference base linear velocity in reference root frame."""
-        ref_root_lin_vel_w = self.get_ref_motion_root_global_lin_vel_cur(
-            prefix=prefix
-        )  # [B, 3]
-        ref_root_rot_wxyz = self.get_ref_motion_root_global_rot_quat_wxyz_cur(
-            prefix=prefix
-        )  # [B, 4]
-        return isaaclab_math.quat_apply_inverse(
-            ref_root_rot_wxyz, ref_root_lin_vel_w
-        )  # [B, 3]
+        return self._get_reference_observation_kinematics(
+            prefix
+        ).root_linvel_local[:, 0]
 
     def get_ref_motion_base_linvel_immediate_next(
         self,
         prefix: str = "ref_",
     ) -> torch.Tensor:
-        ref_root_lin_vel_w = (
-            self.get_ref_motion_root_global_lin_vel_immediate_next(
-                prefix=prefix
-            )
-        )
-        ref_root_rot_wxyz = (
-            self.get_ref_motion_root_global_rot_quat_wxyz_immediate_next(
-                prefix=prefix
-            )
-        )
-        return isaaclab_math.quat_apply_inverse(
-            ref_root_rot_wxyz, ref_root_lin_vel_w
-        )
+        return self._get_reference_observation_kinematics(
+            prefix
+        ).root_linvel_local[:, 1]
 
     def get_ref_motion_base_linvel_fut(
         self,
         prefix: str = "ref_",
     ) -> torch.Tensor:
         """Future reference base linear velocity in reference root frame."""
-        ref_root_lin_vel_w_fut = self.get_ref_motion_root_global_lin_vel_fut(
-            prefix=prefix
-        )  # [B, T, 3]
-        ref_root_rot_wxyz_fut = (
-            self.get_ref_motion_root_global_rot_quat_wxyz_fut(prefix=prefix)
-        )  # [B, T, 4]
-        return isaaclab_math.quat_apply_inverse(
-            ref_root_rot_wxyz_fut, ref_root_lin_vel_w_fut
-        )  # [B, T, 3]
+        return self._get_reference_observation_kinematics(
+            prefix
+        ).root_linvel_local[:, 1:]
 
     def get_ref_motion_base_angvel_cur(
         self,
         prefix: str = "ref_",
     ) -> torch.Tensor:
         """Current reference base angular velocity in reference root frame."""
-        ref_root_ang_vel_w = self.get_ref_motion_root_global_ang_vel_cur(
-            prefix=prefix
-        )  # [B, 3]
-        ref_root_rot_wxyz = self.get_ref_motion_root_global_rot_quat_wxyz_cur(
-            prefix=prefix
-        )  # [B, 4]
-        return isaaclab_math.quat_apply_inverse(
-            ref_root_rot_wxyz, ref_root_ang_vel_w
-        )  # [B, 3]
+        return self._get_reference_observation_kinematics(
+            prefix
+        ).root_angvel_local[:, 0]
 
     def get_ref_motion_base_angvel_immediate_next(
         self,
         prefix: str = "ref_",
     ) -> torch.Tensor:
-        ref_root_ang_vel_w = (
-            self.get_ref_motion_root_global_ang_vel_immediate_next(
-                prefix=prefix
-            )
-        )
-        ref_root_rot_wxyz = (
-            self.get_ref_motion_root_global_rot_quat_wxyz_immediate_next(
-                prefix=prefix
-            )
-        )
-        return isaaclab_math.quat_apply_inverse(
-            ref_root_rot_wxyz, ref_root_ang_vel_w
-        )
+        return self._get_reference_observation_kinematics(
+            prefix
+        ).root_angvel_local[:, 1]
 
     def get_ref_motion_base_angvel_fut(
         self,
         prefix: str = "ref_",
     ) -> torch.Tensor:
         """Future reference base angular velocity in reference root frame."""
-        ref_root_ang_vel_w_fut = self.get_ref_motion_root_global_ang_vel_fut(
-            prefix=prefix
-        )  # [B, T, 3]
-        ref_root_rot_wxyz_fut = (
-            self.get_ref_motion_root_global_rot_quat_wxyz_fut(prefix=prefix)
-        )  # [B, T, 4]
-        return isaaclab_math.quat_apply_inverse(
-            ref_root_rot_wxyz_fut, ref_root_ang_vel_w_fut
-        )  # [B, T, 3]
+        return self._get_reference_observation_kinematics(
+            prefix
+        ).root_angvel_local[:, 1:]
 
     def get_ref_motion_bodylink_global_pos_cur(
         self,
@@ -2252,7 +2311,7 @@ class RefMotionCommand(CommandTerm):
         return base[:, 0, ...]
 
     def _build_amp_obs_from_ref_state(
-        self, frame_idx: int, prefix: str = "ft_ref_"
+        self, frame_idx: int, prefix: str = "ref_"
     ) -> torch.Tensor:
         if (
             not self._amp_left_arm_urdf_dof_idx
@@ -2347,7 +2406,7 @@ class RefMotionCommand(CommandTerm):
         )
 
     def get_ref_motion_amp_obs_cur(
-        self, prefix: str = "ft_ref_"
+        self, prefix: str = "ref_"
     ) -> torch.Tensor:
         """AMP observation aligned with RSL reference (current frame)."""
         return self._build_amp_obs_from_ref_state(0, prefix=prefix)
@@ -2851,6 +2910,7 @@ class RefMotionCommand(CommandTerm):
         self.force_realign_dof_state_to_ref_no_perturb(env_ids)
 
     def _update_command(self):
+        self._reference_observation_cache = {}
         all_ids = torch.arange(
             self.num_envs, dtype=torch.long, device=self.device
         )

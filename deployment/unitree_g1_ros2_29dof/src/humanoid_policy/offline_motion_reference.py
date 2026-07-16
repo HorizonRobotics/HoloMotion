@@ -76,7 +76,7 @@ def quat_rotate_inv_wxyz(q_wxyz: np.ndarray, v: np.ndarray) -> np.ndarray:
 class OfflineMotionReference:
     """Active offline motion clip reference calculations.
 
-    The class owns only offline reference computations. VR latest_obs queues and
+    The class owns only offline reference computations. Live reference queues and
     FK-derived references stay in the policy node until the separate VR phase.
     """
 

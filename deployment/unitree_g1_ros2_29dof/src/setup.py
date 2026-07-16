@@ -31,13 +31,13 @@ if os.path.exists(launch_profiles_dir):
 
 setup(
     name=package_name,
-    version="0.0.1",
+    version="1.4.0",
     packages=find_packages(),
     data_files=data_files,
     install_requires=["setuptools"],
     zip_safe=True,
     maintainer="Horizon Robotics",
-    maintainer_email="",
+    maintainer_email="yucheng.wang@horizon.auto",
     description="Humanoid locomotion control package from Horizon Robotics",
     license="Apache License 2.0",
     tests_require=["pytest"],

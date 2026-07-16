@@ -4,9 +4,15 @@ runtime:
   ros_setup: "/opt/ros/humble/setup.sh"
   unitree_setup: "/root/unitree_ros2/setup.sh"
   deploy_env: "../../deploy.env"
+  cuda_home: "/usr/local/cuda-12.2"
   build_before_launch: true
   cyclonedds_home: "/root/cyclonedds/install"
+  pico_service_command: "/opt/apps/roboticsservice/runService.sh"
+  pico_service_log: "/tmp/holomotion_pico_service.log"
+  pico_service_startup_sec: 1.0
   extra_ld_library_paths:
+    - "/usr/local/cuda-12.2/compat"
+    - "/usr/local/cuda-12.2/lib64"
     - "/host_gpu"
     - "/cuda_base"
     - "/usr/lib/aarch64-linux-gnu/tegra"
@@ -28,22 +34,34 @@ recording:
     - "/humanoid/action"
 
 policy:
-  # For VR teleoperation, change enable_teleop_reference to true.
-  # When enabled, motion mode always waits for live VR data.
-  # Runtime/deployment policy fields are owned by this launch profile.
-  latest_obs_zmq_uri: "tcp://192.168.124.29:6001"
-  latest_obs_zmq_topic: "obs65"
-  latest_obs_zmq_mode: "connect"
-  latest_obs_zmq_conflate: true
+  # pico_local keeps Pico input, Retarget, Observation and Tracking on Orin.
+  reference_source: "pico_local"
+  reference_zmq_uri: "tcp://192.168.124.29:6001"
+  reference_zmq_topic: "reference_qpos"
+  reference_zmq_mode: "connect"
+  reference_zmq_conflate: true
   zmq_jitter_delay_frames: 0
   max_data_age: 0.6
-  enable_teleop_reference: false
+  enable_teleop_reference: true
+  local_retarget_asset_root: ""
+  # Optional visualization only. It is rate-limited, non-blocking and may drop
+  # any frame or disable itself without affecting the control path.
+  reference_telemetry_enabled: true
+  reference_telemetry_uri: "tcp://*:6002"
+  reference_telemetry_topic: "reference_qpos"
+  reference_telemetry_mode: "bind"
+  reference_telemetry_hz: 50.0
+  reference_telemetry_min_slack_ms: 2.0
+  reference_telemetry_deadline_pause_sec: 5.0
+  cpu_affinity_reference_telemetry: ""
   # inference_backend: onnx keeps the current ONNX Runtime CUDA path.
   # Change to tensorrt to use the strict TensorRTExecutionProvider path.
   inference_backend: "tensorrt"
-  # 0 = read from motion ONNX metadata. Set a positive value only as an explicit
-  # override for legacy artifacts.
-  motion_rope_max_seq_len: 0
+  # auto benchmarks/uses the available GPU path; cpu remains a safe fallback.
+  # torch and warp select explicit GPU staging implementations for Orin tests.
+  motion_observation_backend: "auto"
+  # The deployed legacy motion ONNX predates rope_max_seq_len metadata.
+  motion_rope_max_seq_len: 8192
   motion_rope_reset_margin: 64
   timing_debug_enabled: false
   timing_debug_log_interval_sec: 5.0

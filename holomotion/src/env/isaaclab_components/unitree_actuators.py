@@ -21,9 +21,6 @@
 
 from __future__ import annotations
 
-import json
-import os
-from pathlib import Path
 import torch
 from dataclasses import MISSING
 from typing import Sequence
@@ -31,9 +28,6 @@ from typing import Sequence
 from isaaclab.actuators import DelayedPDActuator, DelayedPDActuatorCfg
 from isaaclab.utils import configclass
 from isaaclab.utils.types import ArticulationActions
-
-from loguru import logger
-
 
 class UnitreeActuator(DelayedPDActuator):
     """Unitree actuator class that implements a torque-speed curve for the actuators.
@@ -136,25 +130,6 @@ class UnitreeErfiActuator(UnitreeActuator):
 
     def __init__(self, cfg: UnitreeErfiActuatorCfg, *args, **kwargs):
         super().__init__(cfg, *args, **kwargs)
-        self._ema_filter_alpha = float(cfg.ema_filter_alpha)
-        if not 0.0 <= self._ema_filter_alpha <= 1.0:
-            raise ValueError(
-                "ema_filter_alpha must be within [0, 1], "
-                f"got {self._ema_filter_alpha}."
-            )
-        self._ema_filter_debug_dump_path = (
-            cfg.ema_filter_debug_dump_path
-            or os.environ.get("HOLOMOTION_EMA_FILTER_DEBUG_DUMP_PATH")
-        )
-        self._ema_filter_debug_stop_after_dump = self._parse_bool_env(
-            "HOLOMOTION_EMA_FILTER_DEBUG_STOP_AFTER_DUMP",
-            cfg.ema_filter_debug_stop_after_dump,
-        )
-        self._ema_filter_debug_dumped = False
-        self._ema_filter_state = torch.zeros_like(self.computed_effort)
-        self._ema_filter_initialized = torch.zeros(
-            self._num_envs, dtype=torch.bool, device=self._device
-        )
         self._mode_is_rfi = torch.zeros(
             self._num_envs, dtype=torch.bool, device=self._device
         )
@@ -166,10 +141,6 @@ class UnitreeErfiActuator(UnitreeActuator):
         env_ids_tensor = self._env_ids_to_tensor(env_ids)
         if env_ids_tensor.numel() == 0:
             return
-        if self.cfg.ema_filter_enabled:
-            self._ema_filter_state[env_ids_tensor] = 0.0
-            self._ema_filter_initialized[env_ids_tensor] = False
-
         if not self.cfg.erfi_enabled:
             self._mode_is_rfi[env_ids_tensor] = False
             self._rfi_lim_scale[env_ids_tensor] = 1.0
@@ -207,7 +178,6 @@ class UnitreeErfiActuator(UnitreeActuator):
         joint_pos: torch.Tensor,
         joint_vel: torch.Tensor,
     ) -> ArticulationActions:
-        control_action = self._filter_joint_position_action(control_action)
         if not self.cfg.erfi_enabled:
             return super().compute(control_action, joint_pos, joint_vel)
 
@@ -232,140 +202,6 @@ class UnitreeErfiActuator(UnitreeActuator):
         )
 
         return super().compute(control_action_with_erfi, joint_pos, joint_vel)
-
-    def _filter_joint_position_action(
-        self, control_action: ArticulationActions
-    ) -> ArticulationActions:
-        if not self.cfg.ema_filter_enabled:
-            self._maybe_dump_ema_filter_debug_skip("ema_filter_disabled")
-            return control_action
-        if control_action.joint_positions is None:
-            self._maybe_dump_ema_filter_debug_skip("joint_positions_none")
-            return control_action
-
-        raw_joint_positions = control_action.joint_positions
-        previous_filtered_joint_positions = self._ema_filter_state.clone()
-        needs_init = ~self._ema_filter_initialized
-        filtered_joint_positions = raw_joint_positions.clone()
-        if torch.any(~needs_init):
-            filtered_joint_positions = torch.where(
-                needs_init.unsqueeze(-1),
-                raw_joint_positions,
-                self._ema_filter_alpha * raw_joint_positions
-                + (1.0 - self._ema_filter_alpha) * self._ema_filter_state,
-            )
-        self._maybe_dump_ema_filter_debug_verification(
-            raw_joint_positions=raw_joint_positions,
-            filtered_joint_positions=filtered_joint_positions,
-            previous_filtered_joint_positions=previous_filtered_joint_positions,
-            needs_init=needs_init,
-        )
-        self._ema_filter_state[:] = filtered_joint_positions
-        self._ema_filter_initialized[:] = True
-
-        return ArticulationActions(
-            joint_positions=filtered_joint_positions,
-            joint_velocities=control_action.joint_velocities,
-            joint_efforts=control_action.joint_efforts,
-            joint_indices=control_action.joint_indices,
-        )
-
-    def _maybe_dump_ema_filter_debug_verification(
-        self,
-        raw_joint_positions: torch.Tensor,
-        filtered_joint_positions: torch.Tensor,
-        previous_filtered_joint_positions: torch.Tensor,
-        needs_init: torch.Tensor,
-    ) -> None:
-        if (
-            self._ema_filter_debug_dumped
-            or not self._ema_filter_debug_dump_path
-        ):
-            return
-        rank = os.environ.get("RANK")
-        if rank is not None and rank != "0":
-            return
-        initialized_env_ids = torch.nonzero(
-            ~needs_init, as_tuple=False
-        ).flatten()
-        if initialized_env_ids.numel() == 0:
-            return
-
-        env_idx = int(initialized_env_ids[0].item())
-        raw = raw_joint_positions[env_idx].detach().cpu()
-        prev = previous_filtered_joint_positions[env_idx].detach().cpu()
-        actual = filtered_joint_positions[env_idx].detach().cpu()
-        expected = (
-            self._ema_filter_alpha * raw
-            + (1.0 - self._ema_filter_alpha) * prev
-        )
-        matched = torch.allclose(actual, expected, atol=1.0e-6, rtol=1.0e-6)
-
-        dump_path = Path(self._ema_filter_debug_dump_path)
-        dump_path.parent.mkdir(parents=True, exist_ok=True)
-        dump_path.write_text(
-            json.dumps(
-                {
-                    "alpha": self._ema_filter_alpha,
-                    "env_index": env_idx,
-                    "matched": bool(matched),
-                    "raw_joint_positions": raw.tolist(),
-                    "previous_filtered_joint_positions": prev.tolist(),
-                    "expected_filtered_joint_positions": expected.tolist(),
-                    "actual_filtered_joint_positions": actual.tolist(),
-                    "pid": os.getpid(),
-                    "rank": rank or "0",
-                },
-                indent=2,
-            )
-        )
-        self._ema_filter_debug_dumped = True
-        logger.info("Wrote EMA verification dump to {}", dump_path)
-        if self._ema_filter_debug_stop_after_dump:
-            raise RuntimeError(f"EMA verification dump written to {dump_path}")
-
-    def _maybe_dump_ema_filter_debug_skip(self, reason: str) -> None:
-        self._maybe_dump_ema_filter_debug_payload(
-            {
-                "applied": False,
-                "reason": reason,
-            }
-        )
-
-    def _maybe_dump_ema_filter_debug_payload(self, payload: dict) -> None:
-        if (
-            self._ema_filter_debug_dumped
-            or not self._ema_filter_debug_dump_path
-        ):
-            return
-        rank = os.environ.get("RANK")
-        if rank is not None and rank != "0":
-            return
-
-        dump_path = Path(self._ema_filter_debug_dump_path)
-        dump_path.parent.mkdir(parents=True, exist_ok=True)
-        dump_path.write_text(
-            json.dumps(
-                {
-                    **payload,
-                    "alpha": self._ema_filter_alpha,
-                    "pid": os.getpid(),
-                    "rank": rank or "0",
-                },
-                indent=2,
-            )
-        )
-        self._ema_filter_debug_dumped = True
-        logger.info("Wrote EMA verification dump to {}", dump_path)
-        if self._ema_filter_debug_stop_after_dump:
-            raise RuntimeError(f"EMA verification dump written to {dump_path}")
-
-    @staticmethod
-    def _parse_bool_env(name: str, default: bool) -> bool:
-        raw_value = os.environ.get(name)
-        if raw_value is None:
-            return bool(default)
-        return raw_value.strip().lower() in {"1", "true", "yes", "on"}
 
     def _env_ids_to_tensor(
         self, env_ids: Sequence[int] | slice | None
@@ -420,18 +256,6 @@ class UnitreeErfiActuatorCfg(UnitreeActuatorCfg):
 
     erfi_enabled: bool = False
     """Whether ERFI perturbations are enabled for this actuator."""
-
-    ema_filter_enabled: bool = False
-    """Whether to apply EMA filtering to incoming joint-position actions."""
-
-    ema_filter_alpha: float = 1.0
-    """EMA mixing factor using filtered = alpha * raw + (1 - alpha) * prev."""
-
-    ema_filter_debug_dump_path: str | None = None
-    """Optional JSON path for a one-shot EMA verification dump during runtime."""
-
-    ema_filter_debug_stop_after_dump: bool = False
-    """Whether to stop execution after writing the EMA verification dump."""
 
     rfi_probability: float = 0.5
     """Probability of assigning RFI to an environment on reset."""

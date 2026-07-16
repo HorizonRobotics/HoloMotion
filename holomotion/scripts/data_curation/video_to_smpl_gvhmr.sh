@@ -1,15 +1,22 @@
-export CONDA_BASE=$(conda info --base)
-export Train_CONDA_PREFIX="$CONDA_BASE/envs/gvhmr"
+#!/usr/bin/env bash
 
-video_folder_root="holomotion_abs_path/data/video_data"
-npz_data_root="holomotion_abs_path/data/gvhmr_converted/gvhmr_result"
-out_dir="holomotion_abs_path/data/gvhmr_converted/collected_smpl"
+set -euo pipefail
 
-cd thirdparties/GVHMR/
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../../.." && pwd)"
 
-$Train_CONDA_PREFIX/bin/python ../../holomotion/src/data_curation/video_to_smpl_gvhmr.py \
-    --folder=${video_folder_root} \
-    --output_root=${npz_data_root} \
+CONDA_BASE="$(conda info --base)"
+Train_CONDA_PREFIX="${GVHMR_CONDA_PREFIX:-${CONDA_BASE}/envs/gvhmr}"
+
+video_folder_root="${VIDEO_FOLDER_ROOT:-${REPO_ROOT}/data/video_data}"
+npz_data_root="${NPZ_DATA_ROOT:-${REPO_ROOT}/data/gvhmr_converted/gvhmr_result}"
+out_dir="${SMPL_OUTPUT_ROOT:-${REPO_ROOT}/data/gvhmr_converted/collected_smpl}"
+
+cd "${REPO_ROOT}/thirdparties/GVHMR"
+
+"${Train_CONDA_PREFIX}/bin/python" "${REPO_ROOT}/holomotion/src/data_curation/video_to_smpl_gvhmr.py" \
+    --folder="${video_folder_root}" \
+    --output_root="${npz_data_root}" \
     -s
 
 mkdir -p "${out_dir}"

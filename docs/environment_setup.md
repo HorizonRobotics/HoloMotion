@@ -50,29 +50,40 @@ After completing the above steps, your file structure should look like this:
 
 ```shell
 thirdparties/
+├── GVHMR
 ├── HoloMotion_assets
-├── GMR
-├── smplx
+├── SMPLSim
+├── cyclonedds
 ├── joints2smpl
 ├── omomo_release
 ├── smpl_models
-├── SMPLSim
+├── smplx
 ├── unitree_ros
-└── unitree_ros2
+├── unitree_ros2
+├── unitree_sdk2
+└── unitree_sdk2_python
 ```
 
 ## Step 3: Create the Conda Environment
 
-Create the conda environment named `holomotion_train` and `holomotion_deploy`:
+Create the `holomotion_train` Conda environment. The files under `environments/` are the supported dependency installation entry points for v1.4.0. The project does not support installing runtime dependencies directly from `pyproject.toml`; its editable installation only registers the repository source after the Conda environment has been created.
+
+Robot-side deployment uses the Docker workflow documented in [Real-World Deployment](./realworld_deployment.md).
 
 ```shell
 conda env create -f environments/environment_train_isaaclab_cu118.yaml
-# for newer GPUs like RTX 5090, use environment_train_isaaclab_cu128.yaml
-conda env create -f environments/environment_deploy.yaml
+
+# For newer GPUs like RTX 5090, create the cu128 environment first, then
+# apply the project-validated Torch override as a separate pip operation.
+conda env create -f environments/environment_train_isaaclab_cu128.yaml
+conda run -n holomotion_train \
+  python -m pip install -r environments/requirements_torch_cu128.txt
 ```
 
+The separate override is required because Isaac Sim and the project-validated cu128 stack specify different exact Torch versions; requesting both in one pip operation would fail dependency resolution. The v1.4.0 cu128 environment uses Torch 2.9.1, torchvision 0.24.1, and torchaudio 2.9.1. Isaac Sim 5.0 declares exact dependencies on Torch 2.7.0, torchvision 0.22.0, and torchaudio 2.7.0, so `pip check` reports those three known version conflicts. Do not treat additional dependency conflicts as expected.
 
-Install smplx and GMR into the conda environment:
+
+Install `smplx` into the conda environment:
 
 ```shell
 cd thirdparties
@@ -80,19 +91,14 @@ cd thirdparties
 conda activate holomotion_train
 
 pip install -e ./smplx
-
-# use --no-deps to avoid pulling GMR's dependencies
-pip install -e ./GMR --no-deps
 ```
 
-## Step 4: Configure the Environment Variables
+## Step 4: Configure the Training Environment Variables
 
-HoloMotion uses `train.env` and `deploy.env` files to export environment variables in the shell entry scripts. Please make sure the `Train_CONDA_PREFIX` and the `Deploy_CONDA_PREFIX` variables in `train.env` and `deploy.env` are correctly setup. You can manually source these files and check the output in the shell.
-
-Take the `train.env` for example:
+HoloMotion uses `train.env` to export the training environment variables used by shell entry scripts. Source it to verify that `Train_CONDA_PREFIX` points to the Conda environment created above:
 
 ```shell
 source train.env
 ```
 
-These `.env` files will be sourced in the shell scripts (in `holomotion/scripts`) to correctly find and utilize your conda environments.
+The scripts under `holomotion/scripts` source this file to locate the training environment. Do not create or configure a host-side deployment Conda environment. Robot deployment is Docker-only; the deployment image provides its own environment as described in [Real-World Deployment](./realworld_deployment.md).

@@ -1,10 +1,8 @@
 import importlib.util
-import json
 import sys
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
-import pytest
 import torch
 
 
@@ -165,10 +163,6 @@ def _make_erfi_actuator(module, *, cfg_kwargs=None, num_envs=4, num_joints=3):
         "Y1": 100.0,
         "Y2": 120.0,
         "erfi_enabled": True,
-        "ema_filter_enabled": False,
-        "ema_filter_alpha": 1.0,
-        "ema_filter_debug_dump_path": None,
-        "ema_filter_debug_stop_after_dump": False,
         "rfi_probability": 0.5,
         "rfi_lim": 0.1,
         "randomize_rfi_lim": True,
@@ -355,246 +349,6 @@ def test_unitree_erfi_disabled_matches_plain_unitree(monkeypatch):
     )
 
 
-def test_unitree_erfi_ema_filters_joint_positions(monkeypatch):
-    module = _load_unitree_actuator_module(monkeypatch)
-    actuator = _make_erfi_actuator(
-        module,
-        cfg_kwargs={
-            "erfi_enabled": False,
-            "ema_filter_enabled": True,
-            "ema_filter_alpha": 0.25,
-        },
-        num_envs=2,
-        num_joints=2,
-    )
-    first_action = _DummyArticulationActions(
-        joint_positions=torch.tensor(
-            [[1.0, -1.0], [0.5, -0.5]], dtype=torch.float32
-        ),
-        joint_velocities=torch.zeros_like(actuator.computed_effort),
-        joint_efforts=torch.zeros_like(actuator.computed_effort),
-    )
-    second_action = _DummyArticulationActions(
-        joint_positions=torch.tensor(
-            [[3.0, 1.0], [1.5, 0.5]], dtype=torch.float32
-        ),
-        joint_velocities=torch.zeros_like(actuator.computed_effort),
-        joint_efforts=torch.zeros_like(actuator.computed_effort),
-    )
-
-    actuator.compute(
-        first_action,
-        joint_pos=torch.zeros_like(actuator.computed_effort),
-        joint_vel=torch.zeros_like(actuator.computed_effort),
-    )
-    actuator.compute(
-        second_action,
-        joint_pos=torch.zeros_like(actuator.computed_effort),
-        joint_vel=torch.zeros_like(actuator.computed_effort),
-    )
-
-    assert torch.allclose(
-        actuator.super_compute_joint_positions[0],
-        first_action.joint_positions,
-    )
-    expected_second = (
-        0.25 * second_action.joint_positions
-        + 0.75 * first_action.joint_positions
-    )
-    assert torch.allclose(
-        actuator.super_compute_joint_positions[1], expected_second
-    )
-
-
-def test_unitree_erfi_ema_reset_clears_only_selected_envs(monkeypatch):
-    module = _load_unitree_actuator_module(monkeypatch)
-    actuator = _make_erfi_actuator(
-        module,
-        cfg_kwargs={
-            "erfi_enabled": False,
-            "ema_filter_enabled": True,
-            "ema_filter_alpha": 0.5,
-        },
-        num_envs=2,
-        num_joints=1,
-    )
-    one_action = _DummyArticulationActions(
-        joint_positions=torch.tensor([[1.0], [1.0]], dtype=torch.float32),
-        joint_velocities=torch.zeros_like(actuator.computed_effort),
-        joint_efforts=torch.zeros_like(actuator.computed_effort),
-    )
-    two_action = _DummyArticulationActions(
-        joint_positions=torch.tensor([[2.0], [2.0]], dtype=torch.float32),
-        joint_velocities=torch.zeros_like(actuator.computed_effort),
-        joint_efforts=torch.zeros_like(actuator.computed_effort),
-    )
-    zero_action = _DummyArticulationActions(
-        joint_positions=torch.zeros_like(actuator.computed_effort),
-        joint_velocities=torch.zeros_like(actuator.computed_effort),
-        joint_efforts=torch.zeros_like(actuator.computed_effort),
-    )
-
-    actuator.compute(
-        one_action,
-        joint_pos=torch.zeros_like(actuator.computed_effort),
-        joint_vel=torch.zeros_like(actuator.computed_effort),
-    )
-    actuator.compute(
-        two_action,
-        joint_pos=torch.zeros_like(actuator.computed_effort),
-        joint_vel=torch.zeros_like(actuator.computed_effort),
-    )
-    actuator.reset(torch.tensor([1], dtype=torch.long))
-    actuator.compute(
-        zero_action,
-        joint_pos=torch.zeros_like(actuator.computed_effort),
-        joint_vel=torch.zeros_like(actuator.computed_effort),
-    )
-
-    assert torch.allclose(
-        actuator.super_compute_joint_positions[1],
-        torch.tensor([[1.5], [1.5]], dtype=torch.float32),
-    )
-    assert torch.allclose(
-        actuator.super_compute_joint_positions[2],
-        torch.tensor([[0.75], [0.0]], dtype=torch.float32),
-    )
-
-
-def test_unitree_erfi_ema_debug_dump_records_formula(monkeypatch, tmp_path):
-    module = _load_unitree_actuator_module(monkeypatch)
-    dump_path = tmp_path / "ema_verify.json"
-    actuator = _make_erfi_actuator(
-        module,
-        cfg_kwargs={
-            "erfi_enabled": False,
-            "ema_filter_enabled": True,
-            "ema_filter_alpha": 0.25,
-            "ema_filter_debug_dump_path": str(dump_path),
-        },
-        num_envs=2,
-        num_joints=2,
-    )
-    first_action = _DummyArticulationActions(
-        joint_positions=torch.tensor(
-            [[1.0, -1.0], [0.5, -0.5]], dtype=torch.float32
-        ),
-        joint_velocities=torch.zeros_like(actuator.computed_effort),
-        joint_efforts=torch.zeros_like(actuator.computed_effort),
-    )
-    second_action = _DummyArticulationActions(
-        joint_positions=torch.tensor(
-            [[3.0, 1.0], [1.5, 0.5]], dtype=torch.float32
-        ),
-        joint_velocities=torch.zeros_like(actuator.computed_effort),
-        joint_efforts=torch.zeros_like(actuator.computed_effort),
-    )
-
-    actuator.compute(
-        first_action,
-        joint_pos=torch.zeros_like(actuator.computed_effort),
-        joint_vel=torch.zeros_like(actuator.computed_effort),
-    )
-    actuator.compute(
-        second_action,
-        joint_pos=torch.zeros_like(actuator.computed_effort),
-        joint_vel=torch.zeros_like(actuator.computed_effort),
-    )
-
-    assert dump_path.is_file()
-    payload = json.loads(dump_path.read_text())
-    expected_second = (
-        0.25 * second_action.joint_positions[0]
-        + 0.75 * first_action.joint_positions[0]
-    )
-    assert payload["alpha"] == 0.25
-    assert payload["matched"] is True
-    assert payload["env_index"] == 0
-    assert payload["raw_joint_positions"] == [3.0, 1.0]
-    assert payload["previous_filtered_joint_positions"] == [1.0, -1.0]
-    assert payload["expected_filtered_joint_positions"] == pytest.approx(
-        expected_second.tolist()
-    )
-    assert payload["actual_filtered_joint_positions"] == pytest.approx(
-        expected_second.tolist()
-    )
-
-
-def test_unitree_erfi_ema_debug_stop_after_dump(monkeypatch, tmp_path):
-    module = _load_unitree_actuator_module(monkeypatch)
-    dump_path = tmp_path / "ema_verify.json"
-    actuator = _make_erfi_actuator(
-        module,
-        cfg_kwargs={
-            "erfi_enabled": False,
-            "ema_filter_enabled": True,
-            "ema_filter_alpha": 0.5,
-            "ema_filter_debug_dump_path": str(dump_path),
-            "ema_filter_debug_stop_after_dump": True,
-        },
-        num_envs=1,
-        num_joints=1,
-    )
-    first_action = _DummyArticulationActions(
-        joint_positions=torch.tensor([[1.0]], dtype=torch.float32),
-        joint_velocities=torch.zeros_like(actuator.computed_effort),
-        joint_efforts=torch.zeros_like(actuator.computed_effort),
-    )
-    second_action = _DummyArticulationActions(
-        joint_positions=torch.tensor([[3.0]], dtype=torch.float32),
-        joint_velocities=torch.zeros_like(actuator.computed_effort),
-        joint_efforts=torch.zeros_like(actuator.computed_effort),
-    )
-
-    actuator.compute(
-        first_action,
-        joint_pos=torch.zeros_like(actuator.computed_effort),
-        joint_vel=torch.zeros_like(actuator.computed_effort),
-    )
-    with pytest.raises(RuntimeError, match="EMA verification dump written"):
-        actuator.compute(
-            second_action,
-            joint_pos=torch.zeros_like(actuator.computed_effort),
-            joint_vel=torch.zeros_like(actuator.computed_effort),
-        )
-
-    assert dump_path.is_file()
-
-
-def test_unitree_erfi_ema_debug_dump_records_skip_reason(
-    monkeypatch, tmp_path
-):
-    module = _load_unitree_actuator_module(monkeypatch)
-    dump_path = tmp_path / "ema_verify_skip.json"
-    actuator = _make_erfi_actuator(
-        module,
-        cfg_kwargs={
-            "erfi_enabled": False,
-            "ema_filter_enabled": True,
-            "ema_filter_debug_dump_path": str(dump_path),
-            "ema_filter_debug_stop_after_dump": True,
-        },
-        num_envs=1,
-        num_joints=1,
-    )
-    action = _DummyArticulationActions(
-        joint_positions=None,
-        joint_velocities=torch.zeros_like(actuator.computed_effort),
-        joint_efforts=torch.zeros_like(actuator.computed_effort),
-    )
-
-    with pytest.raises(RuntimeError, match="EMA verification dump written"):
-        actuator.compute(
-            action,
-            joint_pos=torch.zeros_like(actuator.computed_effort),
-            joint_vel=torch.zeros_like(actuator.computed_effort),
-        )
-
-    payload = json.loads(dump_path.read_text())
-    assert payload["applied"] is False
-    assert payload["reason"] == "joint_positions_none"
-
-
 def _load_scene_module(monkeypatch):
     actuator_module = _load_unitree_actuator_module(monkeypatch)
 
@@ -759,24 +513,6 @@ def test_scene_builder_applies_domain_rand_action_delay_to_unitree_erfi(
     assert isinstance(actuators["all_joints"], module.UnitreeErfiActuatorCfg)
     assert actuators["all_joints"].min_delay == 2
     assert actuators["all_joints"].max_delay == 4
-
-
-def test_scene_builder_applies_erfi_ema_filter_config(monkeypatch):
-    module = _load_scene_module(monkeypatch)
-
-    actuators = module._build_unitree_actuator_cfg(
-        {
-            "actuator_type": "unitree_erfi",
-            "ema_filter_enabled": True,
-            "ema_filter_alpha": 0.37,
-        },
-        {"erfi": {"enabled": True}},
-    )
-
-    assert isinstance(actuators["all_joints"], module.UnitreeErfiActuatorCfg)
-    assert actuators["all_joints"].class_type.__name__ == "UnitreeErfiActuator"
-    assert actuators["all_joints"].ema_filter_enabled is True
-    assert actuators["all_joints"].ema_filter_alpha == 0.37
 
 
 def test_scene_builder_disables_action_delay_when_domain_rand_missing(

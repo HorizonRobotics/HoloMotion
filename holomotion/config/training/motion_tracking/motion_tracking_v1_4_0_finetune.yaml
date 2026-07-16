@@ -1,0 +1,21 @@
+# @package _global_
+
+defaults:
+  - /training/motion_tracking/motion_tracking_v1_4_0
+  - _self_
+
+# The checkpoint file requires the sibling model_14000/actor and
+# model_14000/critic directories from the published model package.
+checkpoint: ${oc.env:HOLOMOTION_FINETUNE_CHECKPOINT,checkpoints/holomotion_v1.4/model_14000.pt}
+
+algo:
+  config:
+    num_learning_iterations: 10000
+
+mujoco_eval:
+  ckpt_onnx_names:
+    - model_16000.onnx
+    - model_18000.onnx
+    - model_20000.onnx
+    - model_22000.onnx
+    - model_24000.onnx

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "holomotion"
-version = "1.2.0"
+version = "1.4.0"
 description = "HoloMotion"
 authors = [
     {name = "Horizon Robotics"},
@@ -12,16 +12,18 @@ authors = [
 readme = "README.md"
 requires-python = ">=3.10"
 
+# Runtime dependencies are installed from environments/*.yaml. The editable
+# package install only registers the repository source in that environment.
 dependencies = []
 
 
 [project.urls]
-Homepage = "https://horizonrobotics.github.io/robot_lab/holomotion/ "
-Repository = "https://github.com/"
+Homepage = "https://horizonrobotics.github.io/robot_lab/holomotion/"
+Repository = "https://github.com/HorizonRobotics/HoloMotion"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["holomotion*"]
+include = ["holomotion*", "holoretarget*", "holosmpl*"]
 
 
 [tool.ruff]

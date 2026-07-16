@@ -423,6 +423,21 @@ def _make_action_acc_env(action: torch.Tensor):
     )
 
 
+def _make_joint_pos_env(joint_pos: torch.Tensor):
+    class _Scene(dict):
+        pass
+
+    asset = SimpleNamespace(data=SimpleNamespace(joint_pos=joint_pos.clone()))
+    return SimpleNamespace(
+        scene=_Scene(robot=asset),
+        num_envs=joint_pos.shape[0],
+        device=joint_pos.device,
+        episode_length_buf=torch.zeros(
+            joint_pos.shape[0], dtype=torch.long, device=joint_pos.device
+        ),
+    )
+
+
 def test_root_rel_keybody_pos_reward_uses_true_root_frame(monkeypatch):
     rewards = _load_rewards_module(monkeypatch)
     env = _make_env()
@@ -904,6 +919,144 @@ def test_build_rewards_config_exposes_action_acc_term(monkeypatch):
     assert rewards_cfg.action_acc.func is rewards.action_acc
     assert rewards_cfg.action_acc.weight == -2.5
     assert rewards_cfg.action_acc.params == {}
+
+
+def test_joint_pos_butterworth_matches_scipy_causal_highpass(monkeypatch):
+    from scipy.signal import butter, sosfilt, sosfilt_zi
+
+    rewards = _load_rewards_module(monkeypatch)
+    sequence = torch.tensor(
+        [
+            [0.4, -0.2],
+            [0.8, 0.1],
+            [-0.3, 0.7],
+            [1.0, -0.9],
+            [0.2, 0.3],
+        ],
+        dtype=torch.float64,
+    )
+    env = _make_joint_pos_env(sequence[0].unsqueeze(0))
+    term = rewards.joint_pos_butterworth_high_freq_l2(
+        _DummyConfig(params={}), env
+    )
+
+    actual = []
+    for step, action in enumerate(sequence):
+        env.episode_length_buf[:] = step
+        env.scene["robot"].data.joint_pos = action.unsqueeze(0)
+        actual.append(term(env)[0])
+
+    sos = butter(4, 3.0 / 25.0, btype="highpass", output="sos")
+    filtered = []
+    for action_idx in range(sequence.shape[1]):
+        values = sequence[:, action_idx].numpy()
+        initial_state = sosfilt_zi(sos) * values[0]
+        output, _ = sosfilt(sos, values, zi=initial_state)
+        filtered.append(torch.from_numpy(output))
+    filtered_tensor = torch.stack(filtered, dim=1)
+    expected = torch.mean(filtered_tensor.square(), dim=1)
+    expected[0] = 0.0
+
+    assert torch.allclose(torch.stack(actual), expected, atol=1.0e-12)
+
+
+def test_joint_pos_butterworth_reset_reseeds_at_current_position(monkeypatch):
+    rewards = _load_rewards_module(monkeypatch)
+    env = _make_joint_pos_env(torch.zeros(2, 3, dtype=torch.float32))
+    term = rewards.joint_pos_butterworth_high_freq_l2(
+        _DummyConfig(params={}), env
+    )
+
+    assert torch.allclose(term(env), torch.zeros(2))
+    env.episode_length_buf[:] = 1
+    env.scene["robot"].data.joint_pos = torch.ones(2, 3)
+    assert torch.all(term(env) > 0.0)
+
+    term.reset(env_ids=[1])
+    env.episode_length_buf[:] = 2
+    env.scene["robot"].data.joint_pos[1] = 7.0
+    penalty = term(env)
+
+    assert penalty[0] > 0.0
+    assert penalty[1] == 0.0
+    assert term._filter_state.device == env.scene["robot"].data.joint_pos.device
+
+
+def test_joint_pos_butterworth_runs_on_joint_cuda_device(monkeypatch):
+    if not torch.cuda.is_available():
+        return
+
+    rewards = _load_rewards_module(monkeypatch)
+    action = torch.zeros(4096, 29, device="cuda", dtype=torch.float32)
+    env = _make_joint_pos_env(action)
+    term = rewards.joint_pos_butterworth_high_freq_l2(
+        _DummyConfig(params={}), env
+    )
+
+    first = term(env)
+    env.episode_length_buf[:] = 1
+    env.scene["robot"].data.joint_pos.normal_()
+    second = term(env)
+
+    assert first.is_cuda
+    assert second.is_cuda
+    assert term._sos.is_cuda
+    assert term._filter_state.is_cuda
+    assert torch.all(torch.isfinite(second))
+
+
+def test_joint_pos_butterworth_respects_selected_joints(monkeypatch):
+    rewards = _load_rewards_module(monkeypatch)
+    initial_joint_pos = torch.tensor([[0.2, 10.0, -0.4]], dtype=torch.float64)
+    joint_env = _make_joint_pos_env(initial_joint_pos)
+    joint_term = rewards.joint_pos_butterworth_high_freq_l2(
+        _DummyConfig(params={}), joint_env
+    )
+    selected_env = _make_joint_pos_env(initial_joint_pos[:, [0, 2]])
+    selected_term = rewards.joint_pos_butterworth_high_freq_l2(
+        _DummyConfig(params={}), selected_env
+    )
+    asset_cfg = SimpleNamespace(
+        name="robot", joint_ids=torch.tensor([0, 2], dtype=torch.long)
+    )
+
+    assert torch.allclose(
+        joint_term(joint_env, asset_cfg), selected_term(selected_env)
+    )
+
+    joint_env.episode_length_buf[:] = 1
+    selected_env.episode_length_buf[:] = 1
+    joint_env.scene["robot"].data.joint_pos = torch.tensor(
+        [[0.8, -100.0, 0.5]], dtype=torch.float64
+    )
+    selected_env.scene["robot"].data.joint_pos = torch.tensor(
+        [[0.8, 0.5]], dtype=torch.float64
+    )
+
+    assert torch.allclose(
+        joint_term(joint_env, asset_cfg), selected_term(selected_env)
+    )
+
+
+def test_build_rewards_config_exposes_joint_pos_butterworth_term(monkeypatch):
+    rewards = _load_rewards_module(monkeypatch)
+    params = {"sample_hz": 50.0, "cutoff_hz": 3.0, "order": 4}
+
+    rewards_cfg = rewards.build_rewards_config(
+        {
+            "joint_pos_butterworth_high_freq_l2": {
+                "weight": -10.0,
+                "params": params,
+            }
+        }
+    )
+
+    assert (
+        rewards_cfg.joint_pos_butterworth_high_freq_l2.func
+        is rewards.joint_pos_butterworth_high_freq_l2
+    )
+    assert rewards_cfg.joint_pos_butterworth_high_freq_l2.weight == -10.0
+    assert rewards_cfg.joint_pos_butterworth_high_freq_l2.params == params
 
 
 def test_motion_tracking_logs_normed_torque_rate_metric(monkeypatch):

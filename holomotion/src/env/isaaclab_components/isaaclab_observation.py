@@ -157,6 +157,33 @@ class MirrorFunctions:
 
 
 class ObservationFunctions:
+    @staticmethod
+    def _get_shared_motion_actor_term(
+        env: ManagerBasedRLEnv,
+        name: str,
+        ref_motion_command_name: str = "ref_motion",
+        ref_prefix: str = "ref_",
+    ) -> torch.Tensor | None:
+        try:
+            command = env.command_manager.get_term(ref_motion_command_name)
+        except (AttributeError, KeyError):
+            return None
+        getter = getattr(command, "get_motion_actor_observation_term", None)
+        if not callable(getter):
+            return None
+        return getter(name, prefix=ref_prefix)
+
+    @staticmethod
+    def _get_command_shared_motion_actor_term(
+        command,
+        name: str,
+        ref_prefix: str,
+    ) -> torch.Tensor | None:
+        getter = getattr(command, "get_motion_actor_observation_term", None)
+        if not callable(getter):
+            return None
+        return getter(name, prefix=ref_prefix)
+
     """Atomic observation functions.
 
     The most foundamental observation functions are defined here, aiming to
@@ -495,6 +522,11 @@ class ObservationFunctions:
     @staticmethod
     def _get_obs_rel_robot_root_ang_vel(env: ManagerBasedRLEnv):
         """Relative root angular velocity in the root frame."""
+        shared = ObservationFunctions._get_shared_motion_actor_term(
+            env, "actor_rel_robot_root_ang_vel"
+        )
+        if shared is not None:
+            return shared
         return isaaclab_mdp.base_ang_vel(env)  # [num_envs, 3]
 
     @staticmethod
@@ -541,7 +573,10 @@ class ObservationFunctions:
             root_quat_wxyz, g_w
         )  # [num_envs, 3]
 
-        return projected_gravity
+        shared = ObservationFunctions._get_shared_motion_actor_term(
+            env, "actor_projected_gravity"
+        )
+        return projected_gravity if shared is None else shared
 
     @staticmethod
     def _get_obs_global_robot_root_yaw(
@@ -1042,17 +1077,36 @@ class ObservationFunctions:
     @staticmethod
     def _get_obs_dof_pos(env: ManagerBasedRLEnv):
         """Joint positions relative to the default joint angles."""
+        shared = ObservationFunctions._get_shared_motion_actor_term(
+            env, "actor_dof_pos"
+        )
+        if shared is not None:
+            return shared
         return isaaclab_mdp.joint_pos_rel(env)  # [num_envs, num_dofs]
 
     @staticmethod
     def _get_obs_dof_vel(env: ManagerBasedRLEnv):
         """Joint velocities."""
+        shared = ObservationFunctions._get_shared_motion_actor_term(
+            env, "actor_dof_vel"
+        )
+        if shared is not None:
+            return shared
         return isaaclab_mdp.joint_vel_rel(env)  # [num_envs, num_dofs]
 
     @staticmethod
     def _get_obs_last_actions(env: ManagerBasedRLEnv):
         """Last action output by the policy."""
+        shared = ObservationFunctions._get_shared_motion_actor_term(
+            env, "actor_last_action"
+        )
+        if shared is not None:
+            return shared
         return isaaclab_mdp.last_action(env)  # [num_envs, num_actions]
+
+    @staticmethod
+    def _get_obs_last_action(env: ManagerBasedRLEnv):
+        return ObservationFunctions._get_obs_last_actions(env)
 
     # ------- Reference Motion States -------
     @staticmethod
@@ -1106,6 +1160,13 @@ class ObservationFunctions:
     ) -> torch.Tensor:  # [num_envs, num_dofs]
         """Reference current DoF positions in simulator DoF order."""
         command = env.command_manager.get_term(ref_motion_command_name)
+        shared = ObservationFunctions._get_command_shared_motion_actor_term(
+            command,
+            "actor_ref_dof_pos_cur",
+            ref_prefix=ref_prefix,
+        )
+        if shared is not None:
+            return shared
         return command.get_ref_motion_dof_pos_cur(prefix=ref_prefix)
 
     @staticmethod
@@ -1187,9 +1248,15 @@ class ObservationFunctions:
     ) -> torch.Tensor:  # [num_envs, T, 2]
         """Future reference yaw deltas as sin/cos pairs."""
         command = env.command_manager.get_term(ref_motion_command_name)
-        yaw_delta = command.get_ref_motion_future_yaw_delta_sin_cos(
-            prefix=ref_prefix
+        yaw_delta = ObservationFunctions._get_command_shared_motion_actor_term(
+            command,
+            "actor_ref_future_yaw_delta_sin_cos",
+            ref_prefix=ref_prefix,
         )
+        if yaw_delta is None:
+            yaw_delta = command.get_ref_motion_future_yaw_delta_sin_cos(
+                prefix=ref_prefix
+            )
         return ObservationFunctions._slice_future_frames(
             yaw_delta,
             num_frames=num_frames,
@@ -1204,6 +1271,13 @@ class ObservationFunctions:
     ) -> torch.Tensor:  # [num_envs, 2]
         """Current reference-vs-robot yaw error as a sin/cos pair."""
         command = env.command_manager.get_term(ref_motion_command_name)
+        shared = ObservationFunctions._get_command_shared_motion_actor_term(
+            command,
+            "actor_ref_robot_yaw_error_sin_cos",
+            ref_prefix=ref_prefix,
+        )
+        if shared is not None:
+            return shared
         return command.get_ref_robot_yaw_error_sin_cos(prefix=ref_prefix)
 
     @staticmethod
@@ -1215,9 +1289,15 @@ class ObservationFunctions:
     ) -> torch.Tensor:  # [num_envs, T, 6]
         """Future reference root orientation in current robot frame."""
         command = env.command_manager.get_term(ref_motion_command_name)
-        root_rot6d = command.get_ref_future_root_ori_robot_frame_6d(
-            prefix=ref_prefix
+        root_rot6d = ObservationFunctions._get_command_shared_motion_actor_term(
+            command,
+            "actor_ref_future_root_ori_robot_frame_6d",
+            ref_prefix=ref_prefix,
         )
+        if root_rot6d is None:
+            root_rot6d = command.get_ref_future_root_ori_robot_frame_6d(
+                prefix=ref_prefix
+            )
         return ObservationFunctions._slice_future_frames(
             root_rot6d,
             num_frames=num_frames,
@@ -1295,15 +1375,6 @@ class ObservationFunctions:
         return command.get_ref_motion_dof_vel_cur(prefix=ref_prefix)
 
     @staticmethod
-    def _get_obs_ref_motion_filter_cutoff_hz(
-        env: ManagerBasedRLEnv,
-        ref_motion_command_name: str = "ref_motion",
-    ) -> torch.Tensor:
-        """Return clip-level filter metadata; this is prefix-independent."""
-        command = env.command_manager.get_term(ref_motion_command_name)
-        return command.get_ref_motion_filter_cutoff_hz_cur()
-
-    @staticmethod
     def _get_obs_ref_root_height_cur(
         env: ManagerBasedRLEnv,
         ref_motion_command_name: str = "ref_motion",
@@ -1311,13 +1382,15 @@ class ObservationFunctions:
     ) -> torch.Tensor:  # [num_envs, 1]
         """Reference current root height: world z minus env-origin z."""
         command = env.command_manager.get_term(ref_motion_command_name)
-        world_pos = command.get_ref_motion_root_global_pos_cur(
-            prefix=ref_prefix
-        )  # [B, 3]
-        height = (world_pos[..., 2] - env.scene.env_origins[..., 2]).unsqueeze(
-            -1
-        )  # [B,1]
-        return height
+        shared = ObservationFunctions._get_command_shared_motion_actor_term(
+            command,
+            "actor_ref_root_height_cur",
+            ref_prefix=ref_prefix,
+        )
+        if shared is not None:
+            return shared
+        world_pos = command.get_ref_motion_root_global_pos_cur(prefix=ref_prefix)
+        return (world_pos[..., 2] - env.scene.env_origins[..., 2]).unsqueeze(-1)
 
     @staticmethod
     def _get_obs_ref_dof_pos_fut(
@@ -1328,9 +1401,13 @@ class ObservationFunctions:
     ) -> torch.Tensor:  # [num_envs, n_fut_frames * num_dofs]
         """Future reference DoF positions (flattened over time) in simulator DoF order."""
         command = env.command_manager.get_term(ref_motion_command_name)
-        dof_pos_fut = command.get_ref_motion_dof_pos_fut(
-            prefix=ref_prefix
-        )  # [B, T, D(sim)]
+        dof_pos_fut = ObservationFunctions._get_command_shared_motion_actor_term(
+            command,
+            "actor_ref_dof_pos_fut",
+            ref_prefix=ref_prefix,
+        )
+        if dof_pos_fut is None:
+            dof_pos_fut = command.get_ref_motion_dof_pos_fut(prefix=ref_prefix)
         dof_pos_fut = ObservationFunctions._slice_future_frames(
             dof_pos_fut,
             num_frames=num_frames,
@@ -1346,10 +1423,14 @@ class ObservationFunctions:
     ) -> torch.Tensor:  # [num_envs, 3]
         """Reference gravity projection."""
         command = env.command_manager.get_term(ref_motion_command_name)
-        gravity_projection = command.get_ref_motion_gravity_projection_cur(
-            prefix=ref_prefix
+        shared = ObservationFunctions._get_command_shared_motion_actor_term(
+            command,
+            "actor_ref_gravity_projection_cur",
+            ref_prefix=ref_prefix,
         )
-        return gravity_projection
+        if shared is not None:
+            return shared
+        return command.get_ref_motion_gravity_projection_cur(prefix=ref_prefix)
 
     @staticmethod
     def _get_obs_ref_gravity_projection_fut(
@@ -1360,9 +1441,15 @@ class ObservationFunctions:
     ) -> torch.Tensor:  # [num_envs, T, 3]
         """Future reference gravity projection."""
         command = env.command_manager.get_term(ref_motion_command_name)
-        gravity_projection = command.get_ref_motion_gravity_projection_fut(
-            prefix=ref_prefix
+        gravity_projection = ObservationFunctions._get_command_shared_motion_actor_term(
+            command,
+            "actor_ref_gravity_projection_fut",
+            ref_prefix=ref_prefix,
         )
+        if gravity_projection is None:
+            gravity_projection = command.get_ref_motion_gravity_projection_fut(
+                prefix=ref_prefix
+            )
         gravity_projection = ObservationFunctions._slice_future_frames(
             gravity_projection,
             num_frames=num_frames,
@@ -1378,8 +1465,14 @@ class ObservationFunctions:
     ) -> torch.Tensor:  # [num_envs, 3]
         """Reference base linear velocity."""
         command = env.command_manager.get_term(ref_motion_command_name)
-        base_linvel = command.get_ref_motion_base_linvel_cur(prefix=ref_prefix)
-        return base_linvel
+        shared = ObservationFunctions._get_command_shared_motion_actor_term(
+            command,
+            "actor_ref_base_linvel_cur",
+            ref_prefix=ref_prefix,
+        )
+        if shared is not None:
+            return shared
+        return command.get_ref_motion_base_linvel_cur(prefix=ref_prefix)
 
     @staticmethod
     def _get_obs_ref_base_linvel_fut(
@@ -1390,7 +1483,13 @@ class ObservationFunctions:
     ) -> torch.Tensor:  # [num_envs, T, 3]
         """Future reference base linear velocity."""
         command = env.command_manager.get_term(ref_motion_command_name)
-        base_linvel = command.get_ref_motion_base_linvel_fut(prefix=ref_prefix)
+        base_linvel = ObservationFunctions._get_command_shared_motion_actor_term(
+            command,
+            "actor_ref_base_linvel_fut",
+            ref_prefix=ref_prefix,
+        )
+        if base_linvel is None:
+            base_linvel = command.get_ref_motion_base_linvel_fut(prefix=ref_prefix)
         base_linvel = ObservationFunctions._slice_future_frames(
             base_linvel,
             num_frames=num_frames,
@@ -1406,8 +1505,14 @@ class ObservationFunctions:
     ) -> torch.Tensor:  # [num_envs, 3]
         """Reference base angular velocity."""
         command = env.command_manager.get_term(ref_motion_command_name)
-        base_angvel = command.get_ref_motion_base_angvel_cur(prefix=ref_prefix)
-        return base_angvel
+        shared = ObservationFunctions._get_command_shared_motion_actor_term(
+            command,
+            "actor_ref_base_angvel_cur",
+            ref_prefix=ref_prefix,
+        )
+        if shared is not None:
+            return shared
+        return command.get_ref_motion_base_angvel_cur(prefix=ref_prefix)
 
     @staticmethod
     def _get_obs_ref_keybody_rel_pos_cur(
@@ -1468,7 +1573,13 @@ class ObservationFunctions:
     ) -> torch.Tensor:  # [num_envs, T, 3]
         """Future reference base angular velocity."""
         command = env.command_manager.get_term(ref_motion_command_name)
-        base_angvel = command.get_ref_motion_base_angvel_fut(prefix=ref_prefix)
+        base_angvel = ObservationFunctions._get_command_shared_motion_actor_term(
+            command,
+            "actor_ref_base_angvel_fut",
+            ref_prefix=ref_prefix,
+        )
+        if base_angvel is None:
+            base_angvel = command.get_ref_motion_base_angvel_fut(prefix=ref_prefix)
         base_angvel = ObservationFunctions._slice_future_frames(
             base_angvel,
             num_frames=num_frames,
@@ -1505,18 +1616,21 @@ class ObservationFunctions:
     ) -> torch.Tensor:  # [num_envs, n_fut_frames]
         """Future reference root heights per frame: world z minus env-origin z."""
         command = env.command_manager.get_term(ref_motion_command_name)
-        world_pos = command.get_ref_motion_root_global_pos_fut(
-            prefix=ref_prefix
-        )  # [B, T, 3]
-        world_pos = ObservationFunctions._slice_future_frames(
-            world_pos,
+        heights = ObservationFunctions._get_command_shared_motion_actor_term(
+            command,
+            "actor_ref_root_height_fut",
+            ref_prefix=ref_prefix,
+        )
+        if heights is None:
+            world_pos = command.get_ref_motion_root_global_pos_fut(
+                prefix=ref_prefix
+            )
+            heights = world_pos[..., 2:3] - env.scene.env_origins[:, None, 2:3]
+        return ObservationFunctions._slice_future_frames(
+            heights,
             num_frames=num_frames,
             obs_name="ref_root_height_fut",
         )
-        heights = (
-            world_pos[..., 2] - env.scene.env_origins[:, None, 2]
-        )  # [B, T]
-        return heights[..., None]
 
     # @torch.compile
     @staticmethod

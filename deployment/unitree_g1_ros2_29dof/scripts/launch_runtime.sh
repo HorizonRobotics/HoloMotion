@@ -14,6 +14,8 @@ DISPLAY_COMMAND="$4"
 shift 4
 
 cd "$SCRIPT_DIR"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+export PYTHONPATH="$REPO_ROOT:${PYTHONPATH:-}"
 
 PROFILE_PATH="$DEFAULT_PROFILE"
 PROFILE_OVERRIDE=""
@@ -95,6 +97,37 @@ clean_workspace() {
     rm -rf build/ install/ log/ 2>/dev/null || sudo rm -rf build/ install/ log/
 }
 
+PICO_SERVICE_PID=""
+
+stop_runtime_services() {
+    if [[ -n "$PICO_SERVICE_PID" ]] && kill -0 "$PICO_SERVICE_PID" 2>/dev/null; then
+        kill "$PICO_SERVICE_PID" 2>/dev/null || true
+        wait "$PICO_SERVICE_PID" 2>/dev/null || true
+    fi
+}
+
+start_pico_service() {
+    if [[ "$HLM_POLICY_REFERENCE_SOURCE" != "pico_local" ]]; then
+        return
+    fi
+    if [[ ! -x "$HLM_RUNTIME_PICO_SERVICE_COMMAND" ]]; then
+        echo "Pico service is required for reference_source=pico_local but is not executable: $HLM_RUNTIME_PICO_SERVICE_COMMAND"
+        exit 1
+    fi
+
+    mkdir -p "$(dirname "$HLM_RUNTIME_PICO_SERVICE_LOG")"
+    echo "Starting Pico service: $HLM_RUNTIME_PICO_SERVICE_COMMAND"
+    "$HLM_RUNTIME_PICO_SERVICE_COMMAND" >"$HLM_RUNTIME_PICO_SERVICE_LOG" 2>&1 &
+    PICO_SERVICE_PID=$!
+    sleep "$HLM_RUNTIME_PICO_SERVICE_STARTUP_SEC"
+    if ! kill -0 "$PICO_SERVICE_PID" 2>/dev/null; then
+        echo "Pico service exited during startup. Log: $HLM_RUNTIME_PICO_SERVICE_LOG"
+        tail -80 "$HLM_RUNTIME_PICO_SERVICE_LOG" 2>/dev/null || true
+        exit 1
+    fi
+    echo "Pico service ready (pid=$PICO_SERVICE_PID, log=$HLM_RUNTIME_PICO_SERVICE_LOG)"
+}
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --profile)
@@ -142,6 +175,7 @@ fi
 echo "Starting $LAUNCH_LABEL..."
 echo "Launch profile: $PROFILE_PATH"
 echo "Profile override: ${PROFILE_OVERRIDE:-<none>}"
+echo "Repository Python path: $REPO_ROOT"
 
 RUNTIME_EXPORTS="$("$PROFILE_PYTHON" "$PROFILE_READER" runtime-shell \
     --profile "$PROFILE_PATH" \
@@ -175,9 +209,17 @@ fi
 export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
 export LIBRARY_PATH="${LIBRARY_PATH:-}"
 source_runtime_file "Deploy env" "$HLM_RUNTIME_DEPLOY_ENV"
+if [[ -n "$HLM_RUNTIME_CUDA_HOME" ]]; then
+    export CUDA_HOME="$HLM_RUNTIME_CUDA_HOME"
+    export WARP_CUDA_PATH="$HLM_RUNTIME_CUDA_HOME"
+    export PATH="$HLM_RUNTIME_CUDA_HOME/bin:$PATH"
+fi
 if [[ -n "$HLM_RUNTIME_EXTRA_LD_LIBRARY_PATHS" ]]; then
     export LD_LIBRARY_PATH="$HLM_RUNTIME_EXTRA_LD_LIBRARY_PATHS:$LD_LIBRARY_PATH"
 fi
+
+trap stop_runtime_services EXIT INT TERM
+start_pico_service
 
 LAUNCH_ARGS=("launch_profile:=$PROFILE_PATH")
 if [[ -n "$PROFILE_OVERRIDE" ]]; then

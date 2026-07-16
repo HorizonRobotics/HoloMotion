@@ -9,6 +9,7 @@ from typing import Any
 import numpy as np
 
 from humanoid_policy.motion_clip_library import select_motion_clip_index
+from humanoid_policy.onnx_policy import run_with_cuda_observation
 from humanoid_policy.utils.remote_controller_filter import KeyMap
 
 
@@ -46,30 +47,26 @@ class PolicyRuntimeState:
     target_dof_pos_real_buffers: list[np.ndarray] = field(init=False)
     target_dof_pos_real_buffer: np.ndarray = field(init=False)
     target_dof_pos_real_buffer_idx: int = field(init=False)
-    motion_filtered_actions_onnx: np.ndarray | None = None
     last_button_states: dict[int, int] = field(default_factory=_default_button_states)
     last_vr_status_log_time: float | None = None
     vr_queue_ready_logged: bool = False
-    vr_fk_started_logged: bool = False
+    vr_reference_started_logged: bool = False
     vr_cold_start_logged: bool = False
     policy_slow_count: int = 0
+    tracking_rate_window_start: float | None = None
+    tracking_completed_in_window: int = 0
 
     def __post_init__(self) -> None:
         self.resize_actions(self.num_actions)
 
     @property
-    def latest_obs_flag(self) -> bool:
-        """Compatibility alias for old node code.
-
-        In Phase 3D this means "motion mode uses live VR reference"; it no longer
-        means that the VR queue has merely become ready while still in velocity
-        mode.
-        """
+    def reference_stream_active(self) -> bool:
+        """Whether motion mode currently consumes the live reference stream."""
 
         return bool(self.motion_uses_vr_reference)
 
-    @latest_obs_flag.setter
-    def latest_obs_flag(self, value: bool) -> None:
+    @reference_stream_active.setter
+    def reference_stream_active(self, value: bool) -> None:
         self.motion_uses_vr_reference = bool(value)
 
     def resize_actions(self, num_actions: int) -> None:
@@ -83,7 +80,6 @@ class PolicyRuntimeState:
         self.target_dof_pos_real_buffer_idx = 0
         self.target_dof_pos_real_buffer = self.target_dof_pos_real_buffers[0]
         self.target_dof_pos_real = self.target_dof_pos_real_buffer
-        self.motion_filtered_actions_onnx = None
 
 
 class PolicyRuntime:
@@ -107,8 +103,23 @@ class PolicyRuntime:
     def set_robot_state(self, robot_state: str) -> None:
         if robot_state == "MOVE_TO_DEFAULT":
             self.state.robot_state_ready = True
-        elif robot_state in {"ZERO_TORQUE", "EMERGENCY_STOP"}:
+        elif robot_state == "ZERO_TORQUE":
             self.state.robot_state_ready = False
+        elif robot_state == "EMERGENCY_STOP":
+            was_enabled = self.state.policy_enabled
+            self.state.robot_state_ready = False
+            self.state.policy_enabled = False
+            self.state.motion_in_progress = False
+            self.state.motion_uses_vr_reference = False
+            self.state.vx = 0.0
+            self.state.vy = 0.0
+            self.state.vyaw = 0.0
+            self.state.tracking_rate_window_start = None
+            self.state.tracking_completed_in_window = 0
+            if was_enabled:
+                self.port.get_logger().info(
+                    "Policy inference stopped after EMERGENCY_STOP"
+                )
 
     def handle_low_state(self, ls_msg: Any) -> None:
         """Process low-state input and remote-controller mode transitions."""
@@ -156,7 +167,6 @@ class PolicyRuntime:
         obs_eval = self._obs_evaluator()
         if hasattr(obs_eval, "clear_motion_yaw_alignment"):
             obs_eval.clear_motion_yaw_alignment()
-        self.reset_motion_action_ema_filter()
         self.reset_counters()
         self.state.actions_onnx = np.zeros(self.port.num_actions, dtype=np.float32)
         self.state.target_dof_pos_onnx = (
@@ -174,12 +184,7 @@ class PolicyRuntime:
         obs_eval = self._obs_evaluator()
         if hasattr(obs_eval, "clear_motion_yaw_alignment"):
             obs_eval.clear_motion_yaw_alignment()
-        if hasattr(obs_eval, "clear_vr_fk_cache"):
-            obs_eval.clear_vr_fk_cache()
-        else:
-            obs_eval._fk_vr_out = None
-            obs_eval._use_fk_vr = False
-        self.reset_motion_action_ema_filter()
+        obs_eval.clear_vr_reference_cache()
         self.reset_counters()
         self.state.actions_onnx = np.zeros(self.port.num_actions, dtype=np.float32)
         self.state.target_dof_pos_onnx = (
@@ -204,7 +209,6 @@ class PolicyRuntime:
             self.port._load_current_motion()
 
         self.state.current_policy_mode = "motion"
-        self.reset_motion_action_ema_filter()
         self.reset_counters()
         if self.port.use_kv_cache:
             self.port.get_logger().info("Motion KV-Cache reset.")
@@ -219,8 +223,13 @@ class PolicyRuntime:
         obs_eval = self._obs_evaluator()
         if hasattr(obs_eval, "begin_motion_yaw_alignment"):
             obs_eval.begin_motion_yaw_alignment()
+        live_source = (
+            "local Pico Retarget"
+            if getattr(self.port, "reference_source", "zmq") == "pico_local"
+            else "ZMQ reference_qpos"
+        )
         source_mode = (
-            "ZMQ latest_obs"
+            live_source
             if self.state.motion_uses_vr_reference
             else "offline motion"
         )
@@ -229,8 +238,9 @@ class PolicyRuntime:
             f"motion clip index: {self.state.current_motion_clip_index}"
         )
         if self.state.motion_uses_vr_reference:
-            self.port.get_logger().info("[VR] Reference trajectory source: ZMQ latest_obs")
-            obs_eval._warmup_fk_for_vr()
+            self.port.get_logger().info(
+                f"[VR] Reference trajectory source: {live_source}"
+            )
         self.state.motion_in_progress = True
         return True
 
@@ -263,31 +273,13 @@ class PolicyRuntime:
             "to avoid exceeding exported RoPE cache."
         )
 
-    def reset_motion_action_ema_filter(self) -> None:
-        self.state.motion_filtered_actions_onnx = None
-
-    def apply_motion_action_ema_filter(self, raw_actions: np.ndarray) -> np.ndarray:
-        raw_actions = np.asarray(raw_actions, dtype=np.float32).reshape(-1)
-        if not self.port.motion_action_ema_filter_enabled:
-            return raw_actions.copy()
-
-        if self.state.motion_filtered_actions_onnx is None:
-            self.state.motion_filtered_actions_onnx = raw_actions.copy()
-            return self.state.motion_filtered_actions_onnx
-
-        alpha = float(self.port.motion_action_ema_filter_alpha)
-        filtered_actions = self.state.motion_filtered_actions_onnx
-        filtered_actions *= 1.0 - alpha
-        filtered_actions += alpha * raw_actions
-        return filtered_actions
-
     def mark_vr_queue_ready(self) -> None:
-        if self.state.vr_fk_started_logged:
+        if self.state.vr_reference_started_logged:
             return
         self.port.get_logger().info(
-            "[VR] ZMQ data is ready; the main thread will build the reference trajectory from live ZMQ input."
+            "[VR] Live reference is ready; the policy clock will build the reference trajectory."
         )
-        self.state.vr_fk_started_logged = True
+        self.state.vr_reference_started_logged = True
 
     def run(self) -> None:
         if not getattr(self.port, "_setup_completed", False):
@@ -296,18 +288,28 @@ class PolicyRuntime:
         t_loop_start = time.perf_counter()
         now = time.time()
         t_io = time.perf_counter()
-        self._consume_ros_latest_obs()
-        self.port._poll_zmq_latest_obs()
+        self._consume_ros_reference()
+        if getattr(self.port, "reference_source", "zmq") == "pico_local":
+            self.port._poll_local_retarget_reference()
+        else:
+            self.port._poll_zmq_reference()
         self._log_vr_status(now)
         self._log_vr_ready(now)
-        self.port._publish_latest_obs()
         io_ms = self.port._timing_ms(t_io)
 
         policy_timing = self.run_policy_step()
+        self._record_tracking_rate(
+            time.perf_counter(), completed=policy_timing is not None
+        )
         run_elapsed = 0.0
         if policy_timing is not None:
             run_elapsed = float(policy_timing.get("policy_total_ms", 0.0)) / 1000.0
         self._log_policy_latency(run_elapsed)
+
+        # Debug/telemetry publication is strictly after the action-producing path.
+        self.port._publish_reference()
+        control_elapsed = time.perf_counter() - t_loop_start
+        self.port._flush_reference_telemetry(control_elapsed=control_elapsed)
 
         if policy_timing is not None:
             sample = dict(policy_timing)
@@ -315,13 +317,34 @@ class PolicyRuntime:
             sample["loop_total_ms"] = self.port._timing_ms(t_loop_start)
             self.port._record_timing_sample(sample)
 
+    def _record_tracking_rate(self, now: float, *, completed: bool) -> None:
+        if not self.state.policy_enabled:
+            self.state.tracking_rate_window_start = None
+            self.state.tracking_completed_in_window = 0
+            return
+        if self.state.tracking_rate_window_start is None:
+            self.state.tracking_rate_window_start = now
+        if completed:
+            self.state.tracking_completed_in_window += 1
+
+        elapsed = now - self.state.tracking_rate_window_start
+        if elapsed < 5.0:
+            return
+        actual_hz = self.state.tracking_completed_in_window / elapsed
+        self.port.get_logger().info(
+            f"[Tracking] mode={self.state.current_policy_mode} "
+            f"actual={actual_hz:.1f}Hz target={1.0 / self.port.dt:.1f}Hz"
+        )
+        self.state.tracking_rate_window_start = now
+        self.state.tracking_completed_in_window = 0
+
     def run_policy_step(self) -> dict[str, float] | None:
         if self.port._lowstate_msg is None or not self.state.policy_enabled:
             return None
 
         timing_info = {
             "policy_total_ms": 0.0,
-            "fk_ms": 0.0,
+            "reference_kinematics_ms": 0.0,
             "obs_ms": 0.0,
             "onnx_ms": 0.0,
             "post_ms": 0.0,
@@ -338,10 +361,10 @@ class PolicyRuntime:
 
                 if data_age > self.port.max_data_age:
                     self.port.get_logger().warn(
-                        f"ZMQ latest_obs is stale: age={data_age*1000:.1f}ms > "
+                        f"Live reference_qpos is stale: age={data_age*1000:.1f}ms > "
                         f"{self.port.max_data_age*1000:.1f}ms; switching to velocity tracking mode for safety."
                     )
-                    self.switch_to_velocity_mode(reason="VR latest_obs stale")
+                    self.switch_to_velocity_mode(reason="VR reference_qpos stale")
                     return None
 
             if not self.state.motion_uses_vr_reference and (
@@ -360,56 +383,29 @@ class PolicyRuntime:
                 obs_eval = self._obs_evaluator()
                 try:
                     n_fut = int(getattr(self.port, "n_fut_frames", 0))
+                    gpu_builder = getattr(
+                        self.port, "gpu_motion_obs_builder", None
+                    )
                     if (
                         n_fut > 0
-                        and getattr(obs_eval, "fk", None) is not None
                         and self.port._vr_reference.has_future_sequence(n_fut)
+                        and gpu_builder is None
                     ):
-                        t_fk = time.perf_counter()
-                        cur_root_pos = obs_eval.ref_root_pos_raw.astype(np.float32)
-                        cur_root_rot = self.port._vr_reference.current_root_rot()
-                        if cur_root_rot is None:
-                            obs_eval.clear_vr_fk_cache()
-                            return None
-                        if hasattr(obs_eval, "_compute_and_cache_vr_root_fk"):
-                            obs_eval._compute_and_cache_vr_root_fk(
-                                vr_reference=self.port._vr_reference,
-                                cur_root_pos=cur_root_pos,
-                                cur_root_rot=cur_root_rot,
-                                n_fut=n_fut,
-                                fps=float(1.0 / self.port.dt),
-                            )
-                        else:
-                            cur_dof_pos = obs_eval.ref_dof_pos_raw.astype(np.float32)
-                            root_pos_tensor, root_rot_tensor, dof_pos_tensor = (
-                                obs_eval._prepare_vr_fk_tensors(
-                                    vr_reference=self.port._vr_reference,
-                                    cur_root_pos=cur_root_pos,
-                                    cur_root_rot=cur_root_rot,
-                                    cur_dof_pos=cur_dof_pos,
-                                    n_fut=n_fut,
-                                )
-                            )
-                            fk_out = obs_eval.fk(
-                                root_pos=root_pos_tensor,
-                                root_quat=root_rot_tensor,
-                                dof_pos=dof_pos_tensor,
-                                fps=float(1.0 / self.port.dt),
-                                quat_format="wxyz",
-                                vel_smoothing_sigma=0.0,
-                                compute_velocity=False,
-                            )
-                            obs_eval._fk_vr_out = {
-                                k: v.detach().cpu().numpy() for k, v in fk_out.items()
-                            }
-                        timing_info["fk_ms"] = self.port._timing_ms(t_fk)
+                        t_reference = time.perf_counter()
+                        self.port._vr_reference.update_kinematics(
+                            n_frames=n_fut,
+                            fps=float(1.0 / self.port.dt),
+                        )
+                        timing_info["reference_kinematics_ms"] = (
+                            self.port._timing_ms(t_reference)
+                        )
                     else:
-                        obs_eval.clear_vr_fk_cache()
+                        obs_eval.clear_vr_reference_cache()
                 except Exception as exc:
                     self.port.get_logger().error(
-                        f"VR FK computation failed; falling back to offline reference: {exc}"
+                        f"VR reference kinematics failed: {exc}"
                     )
-                    obs_eval.clear_vr_fk_cache()
+                    obs_eval.clear_vr_reference_cache()
 
             self.port.obs_builder = self.port.motion_obs_builder
             current_action_scale = self.port.motion_action_scale_onnx
@@ -425,18 +421,44 @@ class PolicyRuntime:
         obs_eval = self._obs_evaluator()
         if hasattr(obs_eval, "cache_lowstate"):
             obs_eval.cache_lowstate(self.port._lowstate_msg, force=True)
-        if self.state.current_policy_mode == "motion":
-            if not getattr(obs_eval, "_fk_vr_cache_ready", False):
-                obs_eval._cache_fk_vr_for_obs()
-        policy_obs_base = self.port.obs_builder.build_policy_obs()
-        if hasattr(self.port.obs_builder, "batch_view"):
-            policy_obs_np = self.port.obs_builder.batch_view()
+        gpu_builder = getattr(self.port, "gpu_motion_obs_builder", None)
+        use_gpu_motion_obs = (
+            self.state.current_policy_mode == "motion"
+            and self.state.motion_uses_vr_reference
+            and gpu_builder is not None
+            and self.port._vr_reference is not None
+        )
+        if use_gpu_motion_obs:
+            robot_pos = obs_eval._real_dof_pos_buffer[
+                obs_eval.motion_dof_real_indices_np
+            ]
+            robot_vel = obs_eval._real_dof_vel_buffer[
+                obs_eval.motion_dof_real_indices_np
+            ]
+            yaw_alignment = None
+            if getattr(obs_eval, "_motion_ref_yaw_alignment_ready", False):
+                yaw_alignment = obs_eval._motion_ref_yaw_alignment_quat_wxyz
+            policy_obs = gpu_builder.build(
+                vr_reference=self.port._vr_reference,
+                robot_root_quat_wxyz=obs_eval.robot_root_rot_quat_wxyz,
+                robot_root_angvel_local=obs_eval.robot_root_ang_vel,
+                robot_dof_pos=robot_pos,
+                robot_dof_vel=robot_vel,
+                last_action=self.state.actions_onnx,
+                reference_yaw_alignment_wxyz=yaw_alignment,
+            )
         else:
-            policy_obs_np = policy_obs_base[None, :].astype(np.float32, copy=False)
+            policy_obs_base = self.port.obs_builder.build_policy_obs()
+            if hasattr(self.port.obs_builder, "batch_view"):
+                policy_obs = self.port.obs_builder.batch_view()
+            else:
+                policy_obs = policy_obs_base[None, :].astype(
+                    np.float32, copy=False
+                )
         timing_info["obs_ms"] = self.port._timing_ms(t_obs)
 
         t_onnx = time.perf_counter()
-        onnx_output = self._run_current_policy(policy_obs_np)
+        onnx_output = self._run_current_policy(policy_obs)
         timing_info["onnx_ms"] = self.port._timing_ms(t_onnx)
 
         t_post = time.perf_counter()
@@ -464,15 +486,9 @@ class PolicyRuntime:
         onnx_to_real: Any,
         is_motion: bool,
     ) -> np.ndarray:
-        if is_motion:
-            if self.port.motion_action_ema_filter_enabled:
-                actions = self.apply_motion_action_ema_filter(raw_actions_onnx)
-            else:
-                actions = np.asarray(raw_actions_onnx, dtype=np.float32).reshape(-1)
-            np.copyto(self.state.actions_onnx, actions)
-        else:
-            actions = np.asarray(raw_actions_onnx, dtype=np.float32).reshape(-1)
-            np.copyto(self.state.actions_onnx, actions)
+        del is_motion
+        actions = np.asarray(raw_actions_onnx, dtype=np.float32).reshape(-1)
+        np.copyto(self.state.actions_onnx, actions)
 
         np.multiply(
             self.state.actions_onnx,
@@ -499,8 +515,9 @@ class PolicyRuntime:
         self.port._publish_action_target(self.state.target_dof_pos_real)
         self.state.motion_frame_idx += 1
 
-    def _run_current_policy(self, policy_obs_np: np.ndarray):
+    def _run_current_policy(self, policy_obs):
         if self.state.current_policy_mode == "velocity":
+            policy_obs_np = np.asarray(policy_obs, dtype=np.float32)
             if self._velocity_input_feed is None:
                 self._velocity_input_feed = {self.port.velocity_input_name: policy_obs_np}
             else:
@@ -524,6 +541,36 @@ class PolicyRuntime:
 
             self._maybe_reset_motion_rope_window()
 
+            if hasattr(policy_obs, "is_cuda") and bool(policy_obs.is_cuda):
+                cpu_inputs = {
+                    self.port.motion_kv_input_name: self.port.motion_kv_cache,
+                }
+                if self.port.motion_step_idx_input_name is not None:
+                    if self._motion_step_idx_array is None:
+                        self._motion_step_idx_array = np.zeros(1, dtype=np.int64)
+                    self._motion_step_idx_array[0] = self.state.motion_step_idx
+                    cpu_inputs[self.port.motion_step_idx_input_name] = (
+                        self._motion_step_idx_array
+                    )
+                if self._motion_output_names is None:
+                    self._motion_output_names = [self.port.motion_output_name]
+                    if self.port.motion_kv_output_name:
+                        self._motion_output_names.append(
+                            self.port.motion_kv_output_name
+                        )
+                onnx_output = run_with_cuda_observation(
+                    self.port.motion_policy_session,
+                    input_name=self.port.motion_input_name,
+                    observation=policy_obs,
+                    output_names=self._motion_output_names,
+                    cpu_inputs=cpu_inputs,
+                )
+                if len(onnx_output) > 1:
+                    self.port.motion_kv_cache = onnx_output[1]
+                self.state.motion_step_idx += 1
+                return onnx_output
+
+            policy_obs_np = np.asarray(policy_obs, dtype=np.float32)
             if self._motion_input_feed is None:
                 self._motion_input_feed = {
                     self.port.motion_input_name: policy_obs_np,
@@ -555,6 +602,17 @@ class PolicyRuntime:
             self.state.motion_step_idx += 1
             return onnx_output
 
+        if hasattr(policy_obs, "is_cuda") and bool(policy_obs.is_cuda):
+            if self._motion_output_names is None:
+                self._motion_output_names = [self.port.motion_output_name]
+            return run_with_cuda_observation(
+                self.port.motion_policy_session,
+                input_name=self.port.motion_input_name,
+                observation=policy_obs,
+                output_names=self._motion_output_names,
+            )
+
+        policy_obs_np = np.asarray(policy_obs, dtype=np.float32)
         if self._motion_input_feed is None:
             self._motion_input_feed = {self.port.motion_input_name: policy_obs_np}
         else:
@@ -599,18 +657,18 @@ class PolicyRuntime:
         return bool(
             self.port.enable_teleop_reference
             and self.port._vr_reference is not None
-            and self.port._vr_reference.has_latest_obs
+            and self.port._vr_reference.has_reference
         )
 
-    def _consume_ros_latest_obs(self) -> None:
-        buf = getattr(self.port, "_ros_latest_obs_buffer", None)
+    def _consume_ros_reference(self) -> None:
+        buf = getattr(self.port, "_ros_reference_buffer", None)
         if buf is None:
             return
-        self.port._ros_latest_obs_buffer = None
+        self.port._ros_reference_buffer = None
         frame_idx, obs_arr = buf
         if frame_idx is not None:
             self.port._npz_replay_frame_index = frame_idx
-        self.port._store_vr_latest_obs(obs_arr[None, :])
+        self.port._store_vr_reference(obs_arr[None, :])
 
     def _log_vr_status(self, now: float) -> None:
         if self.state.current_policy_mode != "motion":
@@ -622,27 +680,25 @@ class PolicyRuntime:
             return
 
         vr_available = bool(
-            self.port._vr_reference is not None and self.port._vr_reference.has_latest_obs
+            self.port._vr_reference is not None and self.port._vr_reference.has_reference
         )
-        queue_stats = self.port._latest_obs_buffer.get_queue_stats()
+        queue_stats = self.port._reference_buffer.get_queue_stats()
         if vr_available:
-            freq = queue_stats.get("expected_freq")
-            if freq:
-                details = (
+            if getattr(self.port, "reference_source", "zmq") != "zmq":
+                self.state.last_vr_status_log_time = now
+                return
+            freq = queue_stats.get("arrival_freq")
+            arrival = f"{freq:.1f}Hz" if freq else "unknown"
+            debug = getattr(self.port.get_logger(), "debug", None)
+            if callable(debug):
+                debug(
+                    "[VR-STATUS] ZMQ reference_qpos streaming | "
                     f"buffer_size={queue_stats['queue_size']} "
-                    f"expected_freq={freq:.1f}Hz"
+                    f"reference_arrival={arrival}"
                 )
-            else:
-                details = (
-                    f"buffer_size={queue_stats['queue_size']} "
-                    "expected_freq=unknown"
-                )
-            self.port.get_logger().info(
-                "[VR-STATUS] ZMQ latest_obs streaming | " + details
-            )
         else:
             self.port.get_logger().warn(
-                "[VR-STATUS] No new ZMQ latest_obs received in the last 5 seconds; "
+                "[VR-STATUS] No live reference_qpos received in the last 5 seconds; "
                 "using offline reference or the last buffered VR state."
             )
         self.state.last_vr_status_log_time = now

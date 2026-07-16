@@ -15,19 +15,16 @@
 # permissions and limitations under the License.
 
 import os
-from pathlib import Path
 import sys
+from pathlib import Path
 
 import hydra
+import torch
+from accelerate import Accelerator
+from accelerate.utils import ProjectConfiguration
 from hydra.utils import get_class
 from omegaconf import ListConfig, OmegaConf
 
-from accelerate import Accelerator
-from accelerate.utils import ProjectConfiguration
-from loguru import logger
-from holomotion.src.training.reference_filter_export import (
-    export_reference_filter_artifacts_from_config,
-)
 from holomotion.src.utils.config import compile_config
 
 
@@ -99,16 +96,6 @@ def _exec_mujoco_eval(eval_override_dict: dict) -> None:
     os.execv(sys.executable, argv)
 
 
-def _maybe_export_reference_filter_artifacts(config: OmegaConf) -> None:
-    debug_cfg = getattr(config, "debug_reference_filter_export", None)
-    if debug_cfg is None or not bool(debug_cfg.get("enabled", False)):
-        return
-    if not bool(getattr(config, "main_process", True)):
-        return
-    export_dir = export_reference_filter_artifacts_from_config(config)
-    logger.info(f"Exported reference filter debug artifacts to: {export_dir}")
-
-
 @hydra.main(
     config_path="../../config",
     config_name="training/train_base",
@@ -122,12 +109,18 @@ def main(config: OmegaConf):
 
     """
 
+    # Accelerate initializes NCCL before it calls set_device(). Bind the local
+    # CUDA device first so multi-node ranks cannot initialize on the wrong GPU.
+    local_rank = int(os.environ.get("LOCAL_RANK", "-1"))
+    if local_rank >= 0 and torch.cuda.is_available():
+        torch.cuda.set_device(local_rank)
+
     config = compile_config(config, accelerator=None)
     dist = None
 
-    # In distributed runs, Hydra resolves ${now:...} per process so experiment_save_dir
-    # can differ by rank (e.g. staggered startup). Use Accelerator to init the process
-    # group, then broadcast rank 0's path so all ranks write to the same directory.
+    # Hydra resolves ${now:...} independently in distributed processes, so
+    # experiment_save_dir can differ by rank. Initialize the process group and
+    # broadcast rank 0's path so every rank writes to the same directory.
     if getattr(config, "num_processes", 1) > 1:
         project_config = ProjectConfiguration(
             project_dir=config.experiment_save_dir,
@@ -143,10 +136,6 @@ def main(config: OmegaConf):
         )
         dist.broadcast_object_list(path_list, src=0)
         config.experiment_save_dir = path_list[0]
-
-    _maybe_export_reference_filter_artifacts(config)
-    if dist is not None:
-        dist.barrier()
 
     log_dir = config.experiment_save_dir
     headless = config.headless

@@ -27,7 +27,103 @@ class FakeSession:
         return self._outputs
 
 
+class FakeIoBinding:
+    def __init__(self):
+        self.input_bindings = []
+        self.cpu_inputs = {}
+        self.output_bindings = []
+        self.outputs = [np.asarray([[1.0, 2.0]], dtype=np.float32)]
+
+    def bind_input(self, **kwargs):
+        self.input_bindings.append(kwargs)
+
+    def bind_cpu_input(self, name, value):
+        self.cpu_inputs[name] = value
+
+    def bind_output(self, name, **kwargs):
+        self.output_bindings.append((name, kwargs))
+
+    def copy_outputs_to_cpu(self):
+        return self.outputs
+
+
+class FakeBindingSession:
+    def __init__(self):
+        self.binding = FakeIoBinding()
+        self.ran_with = None
+
+    def io_binding(self):
+        return self.binding
+
+    def run_with_iobinding(self, binding):
+        self.ran_with = binding
+
+
 class OnnxPolicyTest(unittest.TestCase):
+    def test_warp_cuda_observation_uses_io_binding(self):
+        class WarpObservation:
+            is_cuda = True
+            shape = (1, 12)
+            buffer_ptr = 123456
+
+            def __init__(self):
+                self.synchronized = False
+
+            def synchronize(self):
+                self.synchronized = True
+
+        session = FakeBindingSession()
+        observation = WarpObservation()
+
+        outputs = onnx_policy.run_with_cuda_observation(
+            session,
+            input_name="obs",
+            observation=observation,
+            output_names=["actions"],
+        )
+
+        self.assertTrue(observation.synchronized)
+        binding = session.binding.input_bindings[0]
+        self.assertEqual(binding["shape"], (1, 12))
+        self.assertEqual(binding["buffer_ptr"], 123456)
+        self.assertIs(outputs, session.binding.outputs)
+
+    def test_cuda_observation_uses_io_binding(self):
+        import torch
+
+        if not torch.cuda.is_available():
+            self.skipTest("CUDA is unavailable")
+
+        session = FakeBindingSession()
+        observation = torch.arange(
+            12, device="cuda:0", dtype=torch.float32
+        ).reshape(1, 12)
+        kv_cache = np.zeros((1, 2, 3), dtype=np.float16)
+
+        outputs = onnx_policy.run_with_cuda_observation(
+            session,
+            input_name="obs",
+            observation=observation,
+            output_names=["actions"],
+            cpu_inputs={"kv": kv_cache},
+        )
+
+        self.assertIs(session.ran_with, session.binding)
+        self.assertEqual(len(session.binding.input_bindings), 1)
+        binding = session.binding.input_bindings[0]
+        self.assertEqual(binding["name"], "obs")
+        self.assertEqual(binding["device_type"], "cuda")
+        self.assertEqual(binding["device_id"], 0)
+        self.assertEqual(binding["element_type"], np.float32)
+        self.assertEqual(binding["shape"], (1, 12))
+        self.assertEqual(binding["buffer_ptr"], observation.data_ptr())
+        self.assertIs(session.binding.cpu_inputs["kv"], kv_cache)
+        self.assertEqual(
+            session.binding.output_bindings,
+            [("actions", {"device_type": "cpu"})],
+        )
+        self.assertIs(outputs, session.binding.outputs)
+
     def test_build_inference_providers_defaults_to_current_onnx_cuda_path(self):
         providers = onnx_policy.build_inference_providers(
             inference_backend="onnx",

@@ -348,12 +348,6 @@ def _build_unitree_actuator_cfg(
 
     if config.get("actuator_type", "unitree") == "unitree_erfi":
         erfi_cfg = copy.deepcopy(domain_rand_config.get("erfi", {}))
-        actuator_filter_kwargs = {
-            "ema_filter_enabled": bool(
-                config.get("ema_filter_enabled", False)
-            ),
-            "ema_filter_alpha": config.get("ema_filter_alpha", 1.0),
-        }
         erfi_kwargs = {
             "erfi_enabled": bool(erfi_cfg.get("enabled", False)),
             "rfi_probability": erfi_cfg.get("rfi_probability", 0.5),
@@ -365,7 +359,6 @@ def _build_unitree_actuator_cfg(
         actuator_kwargs = {
             **base_kwargs,
             **delay_kwargs,
-            **actuator_filter_kwargs,
             **erfi_kwargs,
         }
         actuator_cfg = UnitreeErfiActuatorCfg(**actuator_kwargs)

@@ -35,21 +35,21 @@ rewards:
       ref_prefix: ${rewards._config.reward_prefix}
 
   root_lin_vel_tracking_rel_ratio_exp:
-    weight: 1.0
+    weight: 2.0
     params:
       std: 1.0
       eps: 0.1
       ref_prefix: ${rewards._config.reward_prefix}
 
   root_ang_vel_tracking_rel_ratio_exp:
-    weight: 1.0
+    weight: 2.0
     params:
       std: 1.0
       eps: 0.1
       ref_prefix: ${rewards._config.reward_prefix}
 
   local_reward_point_body_pos_tracking_exp:
-    weight: 2.0
+    weight: 5.0
     params:
       std: 0.1
       ref_prefix: ${rewards._config.reward_prefix}

@@ -7,7 +7,7 @@ action_topic: "/humanoid/action"
 # walking policy
 velocity_tracking_model_folder: "velocity_tracking_model"
 # motion policy
-motion_tracking_model_folder: "motion_tracking_model"  
+motion_tracking_model_folder: "HoloMotion_motion_tracking_model_v1.4.0"
 
 # motion data
 motion_clip_dir: "motion_data" 

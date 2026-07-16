@@ -28,12 +28,6 @@ def resolve_reference_tensor_key(
         prefixed_key = f"{prefix}{base_key}"
         if prefixed_key in batch_tensors:
             tensor_key = prefixed_key
-        elif prefix == "ft_ref_":
-            raise KeyError(
-                f"Filtered tensor '{prefixed_key}' is not present in the "
-                "current motion cache batch. Ensure online filtering is "
-                "enabled and 'ft_ref_' is materialized in allowed_prefixes."
-            )
         elif base_key not in batch_tensors:
             raise KeyError(
                 f"Neither '{prefixed_key}' nor '{base_key}' is present in "

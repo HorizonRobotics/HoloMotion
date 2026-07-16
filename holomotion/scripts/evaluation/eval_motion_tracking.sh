@@ -22,11 +22,11 @@ export CUDA_VISIBLE_DEVICES="0"
 HEADLESS=true
 CONFIG_NAME="eval_isaaclab"
 
-CKPT_PATH="logs/HoloMotionMotrackV1.2/your_log_dir/model_xxx.pt"
+CKPT_PATH="${CKPT_PATH:?Set CKPT_PATH to a trained v1.4.0 checkpoint}"
 
-eval_h5_dataset_path="['data/h5v2_datasets/lafan1']"
+eval_h5_dataset_path="${EVAL_H5_DATASET_PATH:-['data/h5v2_datasets/lafan1']}"
 
-num_envs=4
+num_envs="${NUM_ENVS:-4}"
 
 
 ${Train_CONDA_PREFIX}/bin/accelerate launch \

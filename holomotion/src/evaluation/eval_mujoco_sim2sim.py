@@ -344,7 +344,6 @@ class MujocoEvaluator:
         # Motion data
         self.ref_dof_pos = None
         self.ref_dof_vel = None
-        self.filter_cutoff_hz = None
         self.n_motion_frames = 0
         self.motion_frame_idx = 0
 
@@ -438,11 +437,6 @@ class MujocoEvaluator:
         self._prev_recorded_dof_vel_ref: np.ndarray | None = None
         self._prev_actions_onnx: np.ndarray | None = None
         (
-            self.action_ema_filter_enabled,
-            self.action_ema_filter_alpha,
-        ) = self._get_action_ema_filter_cfg()
-        self._filtered_actions_onnx: np.ndarray | None = None
-        (
             self.policy_action_delay_step,
             self.action_delay_type,
         ) = self._get_action_delay_cfg()
@@ -479,44 +473,6 @@ class MujocoEvaluator:
         self._onnx_io_output_names: list[str] = []
         self._onnx_io_inputs: dict[str, list[np.ndarray]] = {}
         self._onnx_io_outputs: dict[str, list[np.ndarray]] = {}
-
-    def _get_action_ema_filter_cfg(self) -> tuple[bool, float]:
-        actuator_cfg = self.config.get("robot", {}).get("actuators", {})
-        actuator_type = actuator_cfg.get("actuator_type", "unitree")
-        if actuator_type != "unitree_erfi":
-            return False, 1.0
-
-        enabled = _coerce_config_bool(
-            actuator_cfg.get("ema_filter_enabled", False), default=False
-        )
-        alpha = float(actuator_cfg.get("ema_filter_alpha", 1.0))
-        if not 0.0 <= alpha <= 1.0:
-            raise ValueError(
-                "robot.actuators.ema_filter_alpha must be within [0, 1], "
-                f"got {alpha}."
-            )
-        return enabled, alpha
-
-    def _reset_action_ema_filter(self) -> None:
-        self._filtered_actions_onnx = None
-
-    def _apply_action_ema_filter(self, raw_actions: np.ndarray) -> np.ndarray:
-        raw_actions = np.asarray(raw_actions, dtype=np.float32)
-        if not self.action_ema_filter_enabled:
-            return raw_actions.copy()
-
-        if self._filtered_actions_onnx is None:
-            self._filtered_actions_onnx = raw_actions.copy()
-            return self._filtered_actions_onnx.copy()
-
-        # self.action_ema_filter_alpha = 0.7
-        filtered_actions = (
-            self.action_ema_filter_alpha * raw_actions
-            + (1.0 - self.action_ema_filter_alpha)
-            * self._filtered_actions_onnx
-        ).astype(np.float32, copy=False)
-        self._filtered_actions_onnx = filtered_actions.copy()
-        return self._filtered_actions_onnx.copy()
 
     def _get_action_delay_cfg(self) -> tuple[int, str]:
         max_delay_step = int(self.config.get("policy_action_delay_step", 0))
@@ -1669,36 +1625,6 @@ class MujocoEvaluator:
             np.float32
         )
 
-    @staticmethod
-    def _normalize_filter_cutoff_hz(raw_values, num_frames: int) -> np.ndarray:
-        num_frames = max(int(num_frames), 0)
-        if num_frames == 0:
-            return np.zeros((0, 1), dtype=np.float32)
-        if raw_values is None:
-            return np.zeros((num_frames, 1), dtype=np.float32)
-
-        cutoff = np.asarray(raw_values, dtype=np.float32)
-        if cutoff.ndim == 0:
-            cutoff = np.full((num_frames, 1), float(cutoff), dtype=np.float32)
-            return cutoff
-        if cutoff.ndim == 1:
-            cutoff = cutoff[:, None]
-        else:
-            cutoff = cutoff.reshape(cutoff.shape[0], -1)[:, :1]
-
-        if cutoff.shape[0] == 0:
-            return np.zeros((num_frames, 1), dtype=np.float32)
-        if cutoff.shape[0] == 1 and num_frames > 1:
-            cutoff = np.repeat(cutoff, num_frames, axis=0)
-        elif cutoff.shape[0] < num_frames:
-            pad = np.repeat(
-                cutoff[-1:, :], num_frames - cutoff.shape[0], axis=0
-            )
-            cutoff = np.concatenate([cutoff, pad], axis=0)
-        elif cutoff.shape[0] > num_frames:
-            cutoff = cutoff[:num_frames]
-        return cutoff.astype(np.float32, copy=False)
-
     def load_motion_data(self):
         """Load motion data from npz file."""
         motion_npz_path = self.config.get("motion_npz_path", None)
@@ -1713,17 +1639,10 @@ class MujocoEvaluator:
         # Load npz file
         with np.load(motion_npz_path, allow_pickle=True) as npz:
             keys = list(npz.keys())
-            raw_filter_cutoff_hz = (
-                np.array(npz["filter_cutoff_hz"]).astype(np.float32)
-                if "filter_cutoff_hz" in npz
-                else None
-            )
-
             # Try direct arrays first (dof_pos, dof_vel or variants)
             naming_pairs = [
                 ("ref_dof_pos", "ref_dof_vel"),
                 ("dof_pos", "dof_vels"),  # backward compat
-                # ("ft_ref_pos", "ft_ref_dof_vel"),
             ]
 
             pos_key = None
@@ -1744,13 +1663,6 @@ class MujocoEvaluator:
                 if getattr(arr, "dtype", None) == object:
                     obj = arr.item() if arr.size == 1 else arr
                     if isinstance(obj, dict):
-                        if (
-                            raw_filter_cutoff_hz is None
-                            and "filter_cutoff_hz" in obj
-                        ):
-                            raw_filter_cutoff_hz = np.array(
-                                obj["filter_cutoff_hz"]
-                            ).astype(np.float32)
                         # Try to find dof_pos/dof_vel in nested dict
                         for pos_k, vel_k in naming_pairs:
                             if pos_k in obj and vel_k in obj:
@@ -1912,9 +1824,6 @@ class MujocoEvaluator:
                     self.ref_global_angular_velocity[:t_ra]
                 )
 
-        self.filter_cutoff_hz = self._normalize_filter_cutoff_hz(
-            raw_filter_cutoff_hz, self.n_motion_frames
-        )
         logger.info(
             f"Loaded motion data with {self.n_motion_frames} frames and {self.ref_dof_pos.shape[1]} DOFs"
         )
@@ -2384,20 +2293,6 @@ class MujocoEvaluator:
         ref_vel_onnx = ref_vel_mu[self.ref_to_onnx].astype(np.float32)
         return ref_vel_onnx
 
-    def _get_obs_ref_motion_filter_cutoff_hz(self):
-        # cutoff = getattr(self, "filter_cutoff_hz", None)
-        cutoff = 1.0
-        if cutoff is None:
-            return np.float32(0.0)
-        cutoff_flat = np.asarray(cutoff, dtype=np.float32).reshape(-1)
-        if cutoff_flat.size == 0:
-            return np.float32(0.0)
-        frame_idx = min(
-            max(int(getattr(self, "motion_frame_idx", 0)), 0),
-            cutoff_flat.size - 1,
-        )
-        return np.float32(cutoff_flat[frame_idx])
-
     def _get_obs_ref_root_height_cur(self):
         if getattr(self, "ref_global_translation", None) is None:
             return 0.0
@@ -2834,9 +2729,6 @@ class MujocoEvaluator:
     def _get_obs_actor_ref_dof_pos_cur(self):
         return self._get_obs_ref_dof_pos_cur()
 
-    def _get_obs_actor_ref_motion_filter_cutoff_hz(self):
-        return self._get_obs_ref_motion_filter_cutoff_hz()
-
     def _get_obs_actor_ref_root_height_fut(self):
         return self._get_obs_ref_root_height_fut()
 
@@ -3267,17 +3159,8 @@ class MujocoEvaluator:
             ]
             self.ref_dof_pos = npz["ref_dof_pos"]
             self.ref_dof_vel = npz["ref_dof_vel"]
-            raw_filter_cutoff_hz = (
-                np.array(npz["filter_cutoff_hz"]).astype(np.float32)
-                if "filter_cutoff_hz" in npz
-                else None
-            )
 
         self.n_motion_frames = self.ref_global_translation.shape[0]
-        # self.filter_cutoff_hz = self._normalize_filter_cutoff_hz(
-        #     raw_filter_cutoff_hz, self.n_motion_frames
-        # )
-        self.filter_cutoff_hz = 1.0
         self._ref_to_sim_q_wxyz = np.array(
             [1.0, 0.0, 0.0, 0.0], dtype=np.float32
         )
@@ -3360,7 +3243,6 @@ class MujocoEvaluator:
         self._robot_action_rate_seq = []
         self._prev_recorded_dof_vel_ref = None
         self._prev_actions_onnx = None
-        self._reset_action_ema_filter()
         self._reset_action_delay_randomization()
         self._prev_low_level_foot_geom_centers = None
         self._robot_global_translation_seq = []
@@ -3756,8 +3638,7 @@ class MujocoEvaluator:
             torch.cuda.synchronize()
 
         raw_actions_onnx = onnx_output[0].reshape(-1)
-        filtered_actions_onnx = self._apply_action_ema_filter(raw_actions_onnx)
-        self.actions_onnx = self._apply_action_delay(filtered_actions_onnx)
+        self.actions_onnx = self._apply_action_delay(raw_actions_onnx)
 
         if self.use_kv_cache and len(onnx_output) > 1:
             new_cache = onnx_output[1]

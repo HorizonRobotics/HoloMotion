@@ -111,9 +111,6 @@ obs:
                 n_min: ${domain_rand.obs_noise.actor_ref_dof_pos_fut.n_min}
                 n_max: ${domain_rand.obs_noise.actor_ref_dof_pos_fut.n_max}
 
-        - actor_ref_motion_filter_cutoff_hz:
-            func: ref_motion_filter_cutoff_hz
-
         - actor_ref_root_height_cur:
             func: ref_root_height_cur
             history_length: ${obs.context_length}
@@ -136,47 +133,6 @@ obs:
               params:
                 n_min: ${domain_rand.obs_noise.actor_ref_root_height_fut.n_min}
                 n_max: ${domain_rand.obs_noise.actor_ref_root_height_fut.n_max}
-
-        - actor_ref_keybody_rel_pos_cur:
-            func: ref_keybody_rel_pos_cur
-            history_length: ${obs.context_length}
-            flatten_history_dim: false
-            params:
-              ref_prefix: ${obs.actor_obs_prefix}
-              keybody_names:
-                - "left_knee_link"
-                - "right_knee_link"
-                - "left_ankle_roll_link"
-                - "right_ankle_roll_link"
-                - "left_elbow_link"
-                - "right_elbow_link"
-                - "left_wrist_yaw_link"
-                - "right_wrist_yaw_link"
-            noise:
-              type: AdditiveUniformNoiseCfg
-              params:
-                n_min: ${domain_rand.obs_noise.actor_ref_keybody_rel_pos_cur.n_min}
-                n_max: ${domain_rand.obs_noise.actor_ref_keybody_rel_pos_cur.n_max}
-
-        - actor_ref_keybody_rel_pos_fut:
-            func: ref_keybody_rel_pos_fut
-            params:
-              ref_prefix: ${obs.actor_obs_prefix}
-              num_frames: ${obs.n_fut_frames}
-              keybody_names:
-                - "left_knee_link"
-                - "right_knee_link"
-                - "left_ankle_roll_link"
-                - "right_ankle_roll_link"
-                - "left_elbow_link"
-                - "right_elbow_link"
-                - "left_wrist_yaw_link"
-                - "right_wrist_yaw_link"
-            noise:
-              type: AdditiveUniformNoiseCfg
-              params:
-                n_min: ${domain_rand.obs_noise.actor_ref_keybody_rel_pos_fut.n_min}
-                n_max: ${domain_rand.obs_noise.actor_ref_keybody_rel_pos_fut.n_max}
 
         - actor_projected_gravity:
             func: projected_gravity

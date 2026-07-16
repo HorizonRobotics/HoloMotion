@@ -95,14 +95,16 @@ class DeploymentConfig:
     """Runtime/deployment fields supplied by launch profile ROS parameters."""
 
     robot_config_path: Path
-    latest_obs_zmq_uri: str = "tcp://192.168.124.29:6001"
-    latest_obs_zmq_topic: str = "obs65"
-    latest_obs_zmq_mode: str = "connect"
-    latest_obs_zmq_conflate: bool = True
+    reference_source: str = "zmq"
+    reference_zmq_uri: str = "tcp://192.168.124.29:6001"
+    reference_zmq_topic: str = "reference_qpos"
+    reference_zmq_mode: str = "connect"
+    reference_zmq_conflate: bool = True
     zmq_jitter_delay_frames: int = 5
     max_data_age: float = 0.6
     enable_teleop_reference: bool = False
     inference_backend: str = "onnx"
+    motion_observation_backend: str = "auto"
     motion_rope_max_seq_len: int = 0
     motion_rope_reset_margin: int = 64
     timing_debug_enabled: bool = False
@@ -110,6 +112,15 @@ class DeploymentConfig:
     timing_debug_log_per_loop: bool = False
     cpu_affinity_main: str = ""
     cpu_affinity_zmq_sub: str = ""
+    local_retarget_asset_root: str = ""
+    reference_telemetry_enabled: bool = False
+    reference_telemetry_uri: str = "tcp://*:6002"
+    reference_telemetry_topic: str = "reference_qpos"
+    reference_telemetry_mode: str = "bind"
+    reference_telemetry_hz: float = 50.0
+    reference_telemetry_min_slack_ms: float = 2.0
+    reference_telemetry_deadline_pause_sec: float = 5.0
+    cpu_affinity_reference_telemetry: str = ""
 
     @classmethod
     def from_node(cls, node) -> "DeploymentConfig":
@@ -122,22 +133,25 @@ class DeploymentConfig:
 
         config = cls(
             robot_config_path=Path(config_path).expanduser(),
-            latest_obs_zmq_uri=str(
-                _declare_value(node, "latest_obs_zmq_uri", cls.latest_obs_zmq_uri)
+            reference_source=str(
+                _declare_value(node, "reference_source", cls.reference_source)
             ),
-            latest_obs_zmq_topic=str(
-                _declare_value(node, "latest_obs_zmq_topic", cls.latest_obs_zmq_topic)
+            reference_zmq_uri=str(
+                _declare_value(node, "reference_zmq_uri", cls.reference_zmq_uri)
             ),
-            latest_obs_zmq_mode=str(
-                _declare_value(node, "latest_obs_zmq_mode", cls.latest_obs_zmq_mode)
+            reference_zmq_topic=str(
+                _declare_value(node, "reference_zmq_topic", cls.reference_zmq_topic)
             ),
-            latest_obs_zmq_conflate=_as_bool(
+            reference_zmq_mode=str(
+                _declare_value(node, "reference_zmq_mode", cls.reference_zmq_mode)
+            ),
+            reference_zmq_conflate=_as_bool(
                 _declare_value(
                     node,
-                    "latest_obs_zmq_conflate",
-                    cls.latest_obs_zmq_conflate,
+                    "reference_zmq_conflate",
+                    cls.reference_zmq_conflate,
                 ),
-                cls.latest_obs_zmq_conflate,
+                cls.reference_zmq_conflate,
             ),
             zmq_jitter_delay_frames=int(
                 _declare_value(
@@ -157,6 +171,13 @@ class DeploymentConfig:
             ),
             inference_backend=str(
                 _declare_value(node, "inference_backend", cls.inference_backend)
+            ),
+            motion_observation_backend=str(
+                _declare_value(
+                    node,
+                    "motion_observation_backend",
+                    cls.motion_observation_backend,
+                )
             ),
             motion_rope_max_seq_len=int(
                 _declare_value(
@@ -206,20 +227,98 @@ class DeploymentConfig:
                 )
                 or ""
             ),
+            local_retarget_asset_root=str(
+                _declare_value(
+                    node,
+                    "local_retarget_asset_root",
+                    cls.local_retarget_asset_root,
+                )
+                or ""
+            ),
+            reference_telemetry_enabled=_as_bool(
+                _declare_value(
+                    node,
+                    "reference_telemetry_enabled",
+                    cls.reference_telemetry_enabled,
+                ),
+                cls.reference_telemetry_enabled,
+            ),
+            reference_telemetry_uri=str(
+                _declare_value(
+                    node,
+                    "reference_telemetry_uri",
+                    cls.reference_telemetry_uri,
+                )
+            ),
+            reference_telemetry_topic=str(
+                _declare_value(
+                    node,
+                    "reference_telemetry_topic",
+                    cls.reference_telemetry_topic,
+                )
+            ),
+            reference_telemetry_mode=str(
+                _declare_value(
+                    node,
+                    "reference_telemetry_mode",
+                    cls.reference_telemetry_mode,
+                )
+            ),
+            reference_telemetry_hz=float(
+                _declare_value(
+                    node,
+                    "reference_telemetry_hz",
+                    cls.reference_telemetry_hz,
+                )
+            ),
+            reference_telemetry_min_slack_ms=float(
+                _declare_value(
+                    node,
+                    "reference_telemetry_min_slack_ms",
+                    cls.reference_telemetry_min_slack_ms,
+                )
+            ),
+            reference_telemetry_deadline_pause_sec=float(
+                _declare_value(
+                    node,
+                    "reference_telemetry_deadline_pause_sec",
+                    cls.reference_telemetry_deadline_pause_sec,
+                )
+            ),
+            cpu_affinity_reference_telemetry=str(
+                _declare_value(
+                    node,
+                    "cpu_affinity_reference_telemetry",
+                    cls.cpu_affinity_reference_telemetry,
+                )
+                or ""
+            ),
         )
         config.validate()
         return config
 
     def validate(self) -> None:
-        mode = self.latest_obs_zmq_mode.strip().lower()
+        source = self.reference_source.strip().lower()
+        if source not in {"zmq", "pico_local"}:
+            raise ValueError("reference_source must be 'zmq' or 'pico_local'")
+        mode = self.reference_zmq_mode.strip().lower()
         if mode not in {"bind", "connect"}:
-            raise ValueError("latest_obs_zmq_mode must be 'bind' or 'connect'")
+            raise ValueError("reference_zmq_mode must be 'bind' or 'connect'")
         if self.zmq_jitter_delay_frames < 0:
             raise ValueError("zmq_jitter_delay_frames must be >= 0")
         if self.max_data_age <= 0.0:
             raise ValueError("max_data_age must be > 0")
         if self.inference_backend.strip().lower() not in {"onnx", "tensorrt"}:
             raise ValueError("inference_backend must be 'onnx' or 'tensorrt'")
+        if self.motion_observation_backend.strip().lower() not in {
+            "auto",
+            "cpu",
+            "torch",
+            "warp",
+        }:
+            raise ValueError(
+                "motion_observation_backend must be auto, cpu, torch, or warp"
+            )
         if self.motion_rope_max_seq_len < 0:
             raise ValueError("motion_rope_max_seq_len must be >= 0")
         if self.motion_rope_reset_margin < 0:
@@ -233,18 +332,33 @@ class DeploymentConfig:
             )
         if self.timing_debug_log_interval_sec <= 0.0:
             raise ValueError("timing_debug_log_interval_sec must be > 0")
+        telemetry_mode = self.reference_telemetry_mode.strip().lower()
+        if telemetry_mode not in {"bind", "connect"}:
+            raise ValueError(
+                "reference_telemetry_mode must be 'bind' or 'connect'"
+            )
+        if self.reference_telemetry_hz <= 0.0:
+            raise ValueError("reference_telemetry_hz must be > 0")
+        if self.reference_telemetry_min_slack_ms < 0.0:
+            raise ValueError("reference_telemetry_min_slack_ms must be >= 0")
+        if self.reference_telemetry_deadline_pause_sec < 0.0:
+            raise ValueError(
+                "reference_telemetry_deadline_pause_sec must be >= 0"
+            )
 
     def to_log_dict(self) -> dict[str, Any]:
         return {
             "robot_config_path": str(self.robot_config_path),
-            "latest_obs_zmq_uri": self.latest_obs_zmq_uri,
-            "latest_obs_zmq_topic": self.latest_obs_zmq_topic,
-            "latest_obs_zmq_mode": self.latest_obs_zmq_mode,
-            "latest_obs_zmq_conflate": self.latest_obs_zmq_conflate,
+            "reference_source": self.reference_source,
+            "reference_zmq_uri": self.reference_zmq_uri,
+            "reference_zmq_topic": self.reference_zmq_topic,
+            "reference_zmq_mode": self.reference_zmq_mode,
+            "reference_zmq_conflate": self.reference_zmq_conflate,
             "zmq_jitter_delay_frames": self.zmq_jitter_delay_frames,
             "max_data_age": self.max_data_age,
             "enable_teleop_reference": self.enable_teleop_reference,
             "inference_backend": self.inference_backend,
+            "motion_observation_backend": self.motion_observation_backend,
             "motion_rope_max_seq_len": self.motion_rope_max_seq_len,
             "motion_rope_reset_margin": self.motion_rope_reset_margin,
             "timing_debug_enabled": self.timing_debug_enabled,
@@ -252,6 +366,21 @@ class DeploymentConfig:
             "timing_debug_log_per_loop": self.timing_debug_log_per_loop,
             "cpu_affinity_main": self.cpu_affinity_main,
             "cpu_affinity_zmq_sub": self.cpu_affinity_zmq_sub,
+            "local_retarget_asset_root": self.local_retarget_asset_root,
+            "reference_telemetry_enabled": self.reference_telemetry_enabled,
+            "reference_telemetry_uri": self.reference_telemetry_uri,
+            "reference_telemetry_topic": self.reference_telemetry_topic,
+            "reference_telemetry_mode": self.reference_telemetry_mode,
+            "reference_telemetry_hz": self.reference_telemetry_hz,
+            "reference_telemetry_min_slack_ms": (
+                self.reference_telemetry_min_slack_ms
+            ),
+            "reference_telemetry_deadline_pause_sec": (
+                self.reference_telemetry_deadline_pause_sec
+            ),
+            "cpu_affinity_reference_telemetry": (
+                self.cpu_affinity_reference_telemetry
+            ),
         }
 
 

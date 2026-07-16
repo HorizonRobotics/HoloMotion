@@ -1,41 +1,30 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# One-click setup script for the holomotion teleoperation environment.
+# One-click setup for the HoloMotion teleoperation environment.
 #
-# This script automates the manually verified workflow:
-# 1. create/activate conda env
-# 2. clone/install GMR
-# 3. clone/build/install XRoboToolkit pybind SDK
-# 4. clone/install SMPLSim
-# 5. install runtime Python dependencies
+# Runtime path:
+#   XRoboToolkit body_poses[24, 7] -> HoloRetarget -> reference_qpos[36] ZMQ
 #
 # Usage:
-#   bash setup_gmr_holomotion_teleop_ubuntu2204.sh
+#   bash setup_holomotion_teleop_x86_ubuntu2204.sh
 #
 # Optional env vars:
 #   ENV_NAME=holomotion_teleop
-#   PYTHON_VERSION=3.10
-#   INSTALL_APT_DEPS=0             # default disabled; set to 1 only if you need apt
+#   PYTHON_VERSION=3.12
+#   INSTALL_APT_DEPS=0
 #   THIRD_PARTY_DIR=/path/to/third_party
-#   GMR_SOURCE_DIR=/path/to/GMR
-#   SMPLSIM_SOURCE_DIR=/path/to/SMPLSim
 #   XRT_PYBIND_REPO_DIR=/path/to/XRoboToolkit-PC-Service-Pybind
 
 ENV_NAME="${ENV_NAME:-holomotion_teleop}"
-PYTHON_VERSION="${PYTHON_VERSION:-3.10}"
+PYTHON_VERSION="${PYTHON_VERSION:-3.12}"
 INSTALL_APT_DEPS="${INSTALL_APT_DEPS:-0}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="${SCRIPT_DIR}"
-THIRD_PARTY_DIR="${THIRD_PARTY_DIR:-$PROJECT_ROOT/third_party}"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+THIRD_PARTY_DIR="${THIRD_PARTY_DIR:-$REPO_ROOT/third_party}"
 
-GMR_REPO_URL="${GMR_REPO_URL:-https://github.com/YanjieZe/GMR.git}"
-SMPLSIM_REPO_URL="${SMPLSIM_REPO_URL:-https://github.com/ZhengyiLuo/SMPLSim.git}"
 XRT_PYBIND_REPO_URL="${XRT_PYBIND_REPO_URL:-https://github.com/YanjieZe/XRoboToolkit-PC-Service-Pybind.git}"
 XRT_PC_SERVICE_REPO_URL="${XRT_PC_SERVICE_REPO_URL:-https://github.com/XR-Robotics/XRoboToolkit-PC-Service.git}"
-
-GMR_SOURCE_DIR="${GMR_SOURCE_DIR:-$THIRD_PARTY_DIR/GMR}"
-SMPLSIM_SOURCE_DIR="${SMPLSIM_SOURCE_DIR:-$THIRD_PARTY_DIR/SMPLSim}"
 XRT_PYBIND_REPO_DIR="${XRT_PYBIND_REPO_DIR:-$THIRD_PARTY_DIR/XRoboToolkit-PC-Service-Pybind}"
 
 info() {
@@ -64,8 +53,6 @@ require_command() {
 }
 
 run_conda_relaxed() {
-  # Some conda activation/deactivation hooks are not compatible with `set -u`
-  # and may reference unset variables such as SETVARS_CALL.
   set +u
   "$@"
   local status=$?
@@ -74,13 +61,12 @@ run_conda_relaxed() {
 }
 
 show_env_summary() {
-  info "project root: $PROJECT_ROOT"
+  info "repo root: $REPO_ROOT"
+  info "teleop dir: $SCRIPT_DIR"
   info "env name: $ENV_NAME"
   info "python version: $PYTHON_VERSION"
   info "install apt deps: $INSTALL_APT_DEPS"
   info "third party dir: $THIRD_PARTY_DIR"
-  info "gmr source dir: $GMR_SOURCE_DIR"
-  info "smplsim source dir: $SMPLSIM_SOURCE_DIR"
   info "xrt pybind dir: $XRT_PYBIND_REPO_DIR"
 }
 
@@ -99,21 +85,10 @@ check_platform() {
   fi
 }
 
-apt_deps_missing() {
-  local missing=0
-  command -v gcc >/dev/null 2>&1 || missing=1
-  command -v g++ >/dev/null 2>&1 || missing=1
-  command -v make >/dev/null 2>&1 || missing=1
-  command -v git >/dev/null 2>&1 || missing=1
-  command -v cmake >/dev/null 2>&1 || missing=1
-  return "$missing"
-}
-
 install_apt_deps_if_needed() {
   case "$INSTALL_APT_DEPS" in
     0|false|False|FALSE|no|NO)
       info "Skipping apt dependency installation because INSTALL_APT_DEPS=$INSTALL_APT_DEPS"
-      info "This matches the manually verified workflow and avoids unrelated apt source failures"
       return
       ;;
     1|true|True|TRUE|yes|YES)
@@ -125,23 +100,8 @@ install_apt_deps_if_needed() {
 
   require_command sudo "Install sudo or run the equivalent apt commands manually."
   require_command apt-get "This script needs apt-get to install build tools."
-
-  info "Installing apt packages needed for build"
-  if ! sudo apt-get update; then
-    error "apt-get update failed. Common causes: broken apt sources, third-party repository timeouts, or proxy/network issues."
-  fi
-
-  if ! sudo apt-get install -y build-essential git cmake; then
-    cat >&2 <<'EOF'
-[ERROR] apt package installation failed.
-
-Try one of the following:
-  1. sudo apt --fix-broken install
-  2. disable broken third-party apt repositories temporarily
-  3. rerun with INSTALL_APT_DEPS=0 if gcc/g++/make/git/cmake already exist
-EOF
-    exit 1
-  fi
+  sudo apt-get update
+  sudo apt-get install -y build-essential git cmake
 }
 
 setup_conda_env() {
@@ -173,10 +133,18 @@ clone_repo_if_missing() {
   fi
 }
 
-install_gmr() {
-  clone_repo_if_missing "$GMR_SOURCE_DIR" "$GMR_REPO_URL" "GMR"
-  info "Installing GMR in editable mode"
-  python -m pip install -e "$GMR_SOURCE_DIR"
+ensure_holoretarget_assets() {
+  local asset_root="$REPO_ROOT/holoretarget/assets"
+  local required_config="$asset_root/target_configs/smplx_to_g1.json"
+  local required_mjcf="$asset_root/unitree_g1/g1_mocap_29dof.xml"
+
+  if [[ -f "$required_config" && -f "$required_mjcf" ]]; then
+    info "HoloRetarget assets are ready: $asset_root"
+    return
+  fi
+
+  [[ -f "$required_config" ]] || error "Missing required HoloRetarget config: $required_config"
+  [[ -f "$required_mjcf" ]] || error "Missing required HoloRetarget MJCF: $required_mjcf"
 }
 
 build_xrt_python_sdk() {
@@ -200,33 +168,24 @@ build_xrt_python_sdk() {
   info "Installing pybind11 into conda env"
   run_conda_relaxed conda install -y -c conda-forge pybind11
 
-  info "Reinstalling xrobotoolkit_sdk"
+  info "Installing xrobotoolkit_sdk"
   python -m pip uninstall -y xrobotoolkit_sdk || true
   python setup.py install
 
   popd >/dev/null
 }
 
-install_smplsim() {
-  clone_repo_if_missing "$SMPLSIM_SOURCE_DIR" "$SMPLSIM_REPO_URL" "SMPLSim"
-  info "Installing SMPLSim in editable mode"
-  python -m pip install -e "$SMPLSIM_SOURCE_DIR"
-}
-
 install_runtime_python_deps() {
   info "Upgrading pip toolchain"
   python -m pip install --upgrade pip setuptools wheel
 
-  info "Installing runtime Python packages"
-  python -m pip install pyzmq
-  python -m pip install open3d
-}
+  info "Installing HoloRetarget runtime dependencies"
+  python -m pip install --upgrade numpy pyzmq typing_extensions mujoco
+  python -m pip install --upgrade "newton==1.0.0"
+  python -m pip install --upgrade --extra-index-url https://pypi.nvidia.com "warp-lang==1.12.0"
 
-install_compat_python_deps() {
-  info "Installing compatibility packages"
-  python -m pip install chumpy
-  info "Pinning numpy for chumpy compatibility"
-  python -m pip install --upgrade "numpy==1.23.5"
+  info "Installing repository package in editable mode"
+  python -m pip install -e "$REPO_ROOT"
 }
 
 print_next_steps() {
@@ -241,7 +200,7 @@ print_next_steps() {
   echo "  conda activate $ENV_NAME"
   echo
   info "Example command:"
-  echo "  python \"$PROJECT_ROOT/holomotion_teleop_node.py\" \\"
+  echo "  python \"$SCRIPT_DIR/holomotion_teleop_node.py\" \\"
   echo "    --robot-zmq-uri tcp://*:6001 \\"
   echo "    --robot-zmq-mode bind \\"
   echo "    --hz 50 \\"
@@ -253,13 +212,10 @@ main() {
   show_env_summary
   install_apt_deps_if_needed
   setup_conda_env
-  install_gmr
+  ensure_holoretarget_assets
   build_xrt_python_sdk
   install_runtime_python_deps
-  install_smplsim
-  install_compat_python_deps
   print_next_steps
 }
 
 main "$@"
-

@@ -1261,21 +1261,6 @@ class PPOTFActor(PPOActor):
                         "aux_robot_keybody_rel_pos",
                         aux_preds["robot_keybody_rel_pos"],
                     )
-                    if "denoise_ref_root_lin_vel_residual" in aux_preds:
-                        td.set(
-                            "aux_denoise_ref_root_lin_vel_residual",
-                            aux_preds["denoise_ref_root_lin_vel_residual"],
-                        )
-                    if "denoise_ref_root_ang_vel_residual" in aux_preds:
-                        td.set(
-                            "aux_denoise_ref_root_ang_vel_residual",
-                            aux_preds["denoise_ref_root_ang_vel_residual"],
-                        )
-                    if "denoise_ref_dof_pos_residual" in aux_preds:
-                        td.set(
-                            "aux_denoise_ref_dof_pos_residual",
-                            aux_preds["denoise_ref_dof_pos_residual"],
-                        )
                 if "router_command_recon" in aux_preds:
                     td.set(
                         "aux_router_command_recon",
@@ -2419,21 +2404,6 @@ class PPOCondTFActor(PPOTFActor):
                         "aux_robot_keybody_rel_pos",
                         aux_preds["robot_keybody_rel_pos"],
                     )
-                    if "denoise_ref_root_lin_vel_residual" in aux_preds:
-                        td.set(
-                            "aux_denoise_ref_root_lin_vel_residual",
-                            aux_preds["denoise_ref_root_lin_vel_residual"],
-                        )
-                    if "denoise_ref_root_ang_vel_residual" in aux_preds:
-                        td.set(
-                            "aux_denoise_ref_root_ang_vel_residual",
-                            aux_preds["denoise_ref_root_ang_vel_residual"],
-                        )
-                    if "denoise_ref_dof_pos_residual" in aux_preds:
-                        td.set(
-                            "aux_denoise_ref_dof_pos_residual",
-                            aux_preds["denoise_ref_dof_pos_residual"],
-                        )
                 if "router_command_recon" in aux_preds:
                     td.set(
                         "aux_router_command_recon",

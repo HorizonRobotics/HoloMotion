@@ -2,10 +2,10 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>humanoid_control</name>
-  <version>0.0.0</version>
+  <version>1.4.0</version>
   <description>Humanoid locomotion control package from Horizon Robotics</description>
-  <maintainer email="unitree@todo.todo">unitree</maintainer>
-  <license>TODO: License declaration</license>
+  <maintainer email="yucheng.wang@horizon.auto">Horizon Robotics</maintainer>
+  <license>Apache-2.0</license>
 
   <!-- Build tool dependencies -->
   <buildtool_depend>ament_cmake</buildtool_depend>

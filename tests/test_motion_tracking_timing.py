@@ -3,7 +3,6 @@ import sys
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
-import pytest
 import torch
 
 MODULE_PATH = (
@@ -100,6 +99,12 @@ def _install_fake_motion_command_deps(monkeypatch):
     h5_dataloader.Hdf5RootDofDataset = object
     h5_dataloader.MotionClipBatchCache = object
     h5_dataloader.build_motion_datasets_from_cfg = lambda *args, **kwargs: None
+    h5_dataloader.normalize_hdf5_root_entries = (
+        lambda roots: ([str(root) for root in roots], {})
+    )
+    h5_dataloader.weighted_bin_cfg_from_motion_cfg = (
+        lambda cfg: dict(cfg.get("weighted_bin", {}))
+    )
 
     rotations = ModuleType("holomotion.src.utils.isaac_utils.rotations")
     rotations.calc_heading_quat_inv = lambda *args, **kwargs: None
@@ -218,6 +223,60 @@ def test_immediate_next_reference_getters_use_slot_one(monkeypatch):
     assert torch.allclose(
         body_lin_vel,
         torch.tensor([[[3.0, 3.0, 3.0], [2.0, 2.0, 2.0]]]),
+    )
+
+
+def test_policy_observation_getters_use_shared_reference_kinematics(
+    monkeypatch,
+):
+    module = _load_motion_command_module(monkeypatch)
+    command = module.RefMotionCommand.__new__(module.RefMotionCommand)
+    values = torch.arange(9, dtype=torch.float32).reshape(1, 3, 3)
+    kinematics = module.ReferenceKinematics(
+        dof_vel=torch.zeros(1, 3, 29),
+        root_linvel_world=torch.zeros(1, 3, 3),
+        root_angvel_world=torch.zeros(1, 3, 3),
+        root_linvel_local=values + 10.0,
+        root_angvel_local=values + 20.0,
+        projected_gravity=values + 30.0,
+    )
+    command._get_reference_observation_kinematics = lambda prefix: kinematics
+
+    assert torch.equal(
+        command.get_ref_motion_gravity_projection_cur(),
+        kinematics.projected_gravity[:, 0],
+    )
+    assert torch.equal(
+        command.get_ref_motion_gravity_projection_immediate_next(),
+        kinematics.projected_gravity[:, 1],
+    )
+    assert torch.equal(
+        command.get_ref_motion_gravity_projection_fut(),
+        kinematics.projected_gravity[:, 1:],
+    )
+    assert torch.equal(
+        command.get_ref_motion_base_linvel_cur(),
+        kinematics.root_linvel_local[:, 0],
+    )
+    assert torch.equal(
+        command.get_ref_motion_base_linvel_immediate_next(),
+        kinematics.root_linvel_local[:, 1],
+    )
+    assert torch.equal(
+        command.get_ref_motion_base_linvel_fut(),
+        kinematics.root_linvel_local[:, 1:],
+    )
+    assert torch.equal(
+        command.get_ref_motion_base_angvel_cur(),
+        kinematics.root_angvel_local[:, 0],
+    )
+    assert torch.equal(
+        command.get_ref_motion_base_angvel_immediate_next(),
+        kinematics.root_angvel_local[:, 1],
+    )
+    assert torch.equal(
+        command.get_ref_motion_base_angvel_fut(),
+        kinematics.root_angvel_local[:, 1:],
     )
 
 

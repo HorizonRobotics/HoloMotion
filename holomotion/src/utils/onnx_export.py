@@ -103,11 +103,13 @@ def export_policy_to_onnx(
             export_kwargs["use_kv_cache"] = bool(use_kv_cache)
 
         onnx_path_str = actor_for_export.export_onnx(**export_kwargs)
-        attach_onnx_metadata_holomotion(
-            algo.env._env,
-            onnx_path=onnx_path_str,
-            actor_module=getattr(actor_for_export, "actor_module", actor_for_export),
-        )
+        metadata_signature = inspect.signature(attach_onnx_metadata_holomotion)
+        metadata_kwargs = {"onnx_path": onnx_path_str}
+        if "actor_module" in metadata_signature.parameters:
+            metadata_kwargs["actor_module"] = getattr(
+                actor_for_export, "actor_module", actor_for_export
+            )
+        attach_onnx_metadata_holomotion(algo.env._env, **metadata_kwargs)
         logger.info(
             f"Successfully exported minimal policy to: {onnx_path_str}"
         )

@@ -31,7 +31,7 @@ termcolor
 rich
 pytorch-tcn
 einops
-onnxruntime-gpu
+onnxruntime-gpu==1.23.2
 onnx
 pre-commit
 ruff
@@ -47,6 +47,9 @@ pyvirtualdisplay
 pynput
 xxhash
 h5py>=3.8
+newton==1.0.0
+--extra-index-url https://pypi.nvidia.com
+warp-lang==1.12.0
 pygame
 tensordict==0.11.0
 pytorch_kinematics

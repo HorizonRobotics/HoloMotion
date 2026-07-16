@@ -28,11 +28,13 @@ class C,D,E,F,G normal
 
 ### 1 Offline Evaluation
 
-```bash
-bash ./holomotion/scripts/evaluation/eval_motion_tracking.sh
-```
+Set the checkpoint path and, optionally, the evaluation HDF5 root through environment variables:
 
-Update the evaluation script by setting `checkpoint_path` (e.g., `logs/Holomotion/model_1000.pt`) and `eval_h5_dataset_path`.
+```bash
+CKPT_PATH="logs/<project_name>/<run_name>/model_1000.pt" \
+EVAL_H5_DATASET_PATH="['data/h5v2_datasets/lafan1']" \
+  bash ./holomotion/scripts/evaluation/eval_motion_tracking.sh
+```
 
 ### 2 Calculate Metrics
 
@@ -62,7 +64,7 @@ To deploy our policy to real world robots, we need to convert the pytorch module
 After running the evaluation script, the `.onnx` file will be generated and saved to the checkpoint directory:
 
 ```
-logs/HoloMotion/your_checkpoint_dir/
+logs/<project_name>/<run_name>/
 ├── config.yaml
 ├── exported
 │   └── model_10000.onnx

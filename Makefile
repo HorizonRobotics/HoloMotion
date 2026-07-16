@@ -1,14 +1,18 @@
 # Variables
 PY_SRC := holomotion/  # Your Python code directory
 RUFF := ruff  # Assumes Ruff is installed locally
-PYTEST := pytest -v
-TESTS := holomotion/tests/
+PYTHON ?= python
+PYTEST := $(PYTHON) -m pytest -v
+TRAIN_TESTS := tests/
+UNITREE_TESTS := deployment/unitree_g1_ros2_29dof/tests/
+UNITREE_SRC := deployment/unitree_g1_ros2_29dof/src
+TELEOP_TESTS := deployment/holomotion_teleop/tests/
 COV := --cov=holomotion/src --cov-report=term-missing
 
 # Directory to lint/format - can be overridden with DIR=path
 DIR ?= holomotion/src
 
-.PHONY: lint format check lint-dir format-dir
+.PHONY: lint format check lint-dir format-dir test
 
 # Run Ruff linter on default directory
 lint:
@@ -38,4 +42,7 @@ check:
 
 # Run all tests
 test:
-	$(PYTEST) $(TESTS)
+	OMNI_KIT_ACCEPT_EULA=YES $(PYTEST) $(TRAIN_TESTS)
+	PYTHONPATH=$(UNITREE_SRC):$${PYTHONPATH} \
+		OMNI_KIT_ACCEPT_EULA=YES $(PYTEST) $(UNITREE_TESTS)
+	OMNI_KIT_ACCEPT_EULA=YES $(PYTEST) $(TELEOP_TESTS)

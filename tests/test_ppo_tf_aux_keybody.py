@@ -1,6 +1,5 @@
 import copy
-import sys
-from types import ModuleType, SimpleNamespace
+from types import SimpleNamespace
 from unittest import mock
 
 import pytest
@@ -20,12 +19,7 @@ from holomotion.src.modules.network_modules import ModernTransformerBlock
 from tensordict import TensorDict
 
 
-def _make_aux_policy(
-    *,
-    denoise_root_lin_vel_weight: float = 1.0e-2,
-    denoise_root_ang_vel_weight: float = 1.0e-2,
-    denoise_dof_pos_weight: float = 1.0e-2,
-) -> GroupedMoETransformerPolicy:
+def _make_aux_policy() -> GroupedMoETransformerPolicy:
     module_config = {
         "num_fine_experts": 2,
         "num_shared_experts": 1,
@@ -48,9 +42,6 @@ def _make_aux_policy(
         "max_ctx_len": 4,
         "aux_state_pred": {
             "enabled": True,
-            "w_denoise_ref_root_lin_vel": denoise_root_lin_vel_weight,
-            "w_denoise_ref_root_ang_vel": denoise_root_ang_vel_weight,
-            "w_denoise_ref_dof_pos": denoise_dof_pos_weight,
             "keybody_contact_names": [
                 "left_knee_link",
                 "right_knee_link",
@@ -179,9 +170,6 @@ def test_rollout_storage_allocates_ref_and_robot_keybody_targets():
 
     assert storage.data["gt_ref_keybody_rel_pos"].shape == (3, 2, 8, 3)
     assert storage.data["gt_robot_keybody_rel_pos"].shape == (3, 2, 8, 3)
-    assert storage.data["gt_denoise_ref_root_lin_vel"].shape == (3, 2, 3)
-    assert storage.data["gt_denoise_ref_root_ang_vel"].shape == (3, 2, 3)
-    assert storage.data["gt_denoise_ref_dof_pos"].shape == (3, 2, 4)
 
 
 def test_grouped_moe_policy_returns_keybody_position_predictions():
@@ -197,48 +185,6 @@ def test_grouped_moe_policy_returns_keybody_position_predictions():
     assert outputs["keybody_contact_logits"].shape == (2, 3, 2)
     assert outputs["ref_keybody_rel_pos"].shape == (2, 3, 2, 3)
     assert outputs["robot_keybody_rel_pos"].shape == (2, 3, 2, 3)
-    assert outputs["denoise_ref_root_lin_vel_residual"].shape == (2, 3, 3)
-    assert outputs["denoise_ref_root_ang_vel_residual"].shape == (2, 3, 3)
-    assert outputs["denoise_ref_dof_pos_residual"].shape == (2, 3, 4)
-
-
-def test_grouped_moe_policy_omits_denoise_predictions_when_weights_zero():
-    policy = _make_aux_policy(
-        denoise_root_lin_vel_weight=0.0,
-        denoise_root_ang_vel_weight=0.0,
-        denoise_dof_pos_weight=0.0,
-    )
-    pre_moe_hidden = torch.randn(2, 3, policy.d_model)
-
-    outputs = policy.predict_aux_from_pre_moe(pre_moe_hidden)
-
-    assert "denoise_ref_root_lin_vel_residual" not in outputs
-    assert "denoise_ref_root_ang_vel_residual" not in outputs
-    assert "denoise_ref_dof_pos_residual" not in outputs
-
-
-def test_ppotf_actor_sequence_logp_emits_actor_facing_dof_denoise_keys():
-    actor = _make_aux_actor()
-    obs_td = TensorDict(
-        {"flat_obs": torch.randn(2, 3, 6, dtype=torch.float32)},
-        batch_size=[2, 3],
-    )
-    actions = torch.randn(2, 3, 4, dtype=torch.float32)
-    attn_mask = torch.tril(torch.ones(3, 3, dtype=torch.bool)).expand(
-        2, -1, -1
-    )
-
-    outputs = actor(
-        obs_td,
-        actions=actions,
-        mode="sequence_logp",
-        attn_mask=attn_mask,
-        update_obs_norm=False,
-    )
-
-    assert outputs["aux_denoise_ref_dof_pos_residual"].shape == (2, 3, 4)
-    assert "aux_denoise_ref_keybody_rel_pos_loc" not in outputs.keys()
-    assert "aux_denoise_ref_keybody_rel_pos_log_std" not in outputs.keys()
 
 
 def test_grouped_moe_policy_default_layout_keeps_dense_first_and_moe_tail():
@@ -579,33 +525,24 @@ def test_grouped_moe_block_tracks_selected_expert_margin_to_unselected():
     )
 
 
-def test_ppotf_summarize_moe_layer_stats_includes_least_utilized_metrics():
+def test_ppotf_summarize_moe_layer_stats_uses_ema_metrics():
     moe_layers = [
         SimpleNamespace(
-            last_active_expert_ratio=torch.tensor(0.75),
-            last_max_expert_frac=torch.tensor(0.50),
-            last_min_expert_frac=torch.tensor(0.00),
-            last_dead_expert_ratio=torch.tensor(0.25),
-            last_expert_count_cv=torch.tensor(1.20),
+            last_ema_dead_expert_ratio=torch.tensor(0.25),
+            last_ema_max_expert_frac=torch.tensor(0.50),
             last_selected_expert_margin_to_unselected=torch.tensor(0.30),
         ),
         SimpleNamespace(
-            last_active_expert_ratio=torch.tensor(0.50),
-            last_max_expert_frac=torch.tensor(0.30),
-            last_min_expert_frac=torch.tensor(0.05),
-            last_dead_expert_ratio=torch.tensor(0.50),
-            last_expert_count_cv=torch.tensor(0.80),
+            last_ema_dead_expert_ratio=torch.tensor(0.50),
+            last_ema_max_expert_frac=torch.tensor(0.30),
             last_selected_expert_margin_to_unselected=torch.tensor(0.10),
         ),
     ]
 
     metrics = PPOTF._summarize_moe_layer_stats(moe_layers)
 
-    assert metrics["moe_active_expert_ratio"] == pytest.approx(0.625)
-    assert metrics["moe_max_expert_frac"] == pytest.approx(0.40)
-    assert metrics["moe_least_expert_frac"] == pytest.approx(0.025)
-    assert metrics["moe_dead_expert_ratio"] == pytest.approx(0.375)
-    assert metrics["moe_expert_count_cv"] == pytest.approx(1.0)
+    assert metrics["moe_ema_dead_expert_ratio"] == pytest.approx(0.375)
+    assert metrics["moe_ema_max_expert_frac"] == pytest.approx(0.40)
     assert metrics[
         "moe_selected_expert_margin_to_unselected"
     ] == pytest.approx(0.20)
@@ -1020,171 +957,6 @@ def test_setup_configs_rejects_router_expert_orthogonal_without_inactive_margin(
     with mock.patch.object(PPO, "_setup_configs", return_value=None):
         with pytest.raises(ValueError, match="requires.*inactive_expert"):
             algo._setup_configs()
-
-
-def test_build_transition_uses_filtered_residual_targets_for_denoise_outputs():
-    algo = PPOTF.__new__(PPOTF)
-    algo.use_aux_state_pred = True
-    algo.use_aux_root_height = False
-    algo.use_aux_denoise_ref_root_lin_vel = True
-    algo.use_aux_denoise_ref_root_ang_vel = True
-    algo.use_aux_denoise_ref_dof_pos = True
-    algo.aux_state_pred_num_contact_bodies = 0
-    algo.aux_state_pred_num_keybody_bodies = 0
-    algo.command_name = "ref_motion"
-    algo.num_envs = 2
-    algo.device = torch.device("cpu")
-    algo.transition_cls = PpoAuxTransition
-
-    world_lin_vel = torch.tensor(
-        [[10.0, 20.0, 30.0], [40.0, 50.0, 60.0]], dtype=torch.float32
-    )
-    world_ang_vel = torch.tensor(
-        [[-1.0, -2.0, -3.0], [-4.0, -5.0, -6.0]], dtype=torch.float32
-    )
-    base_lin_vel = torch.tensor(
-        [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype=torch.float32
-    )
-    base_ang_vel = torch.tensor(
-        [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]], dtype=torch.float32
-    )
-    dof_pos = torch.tensor(
-        [[0.1, 0.2, 0.3, 0.4], [0.5, 0.6, 0.7, 0.8]], dtype=torch.float32
-    )
-    command = SimpleNamespace(
-        get_ref_motion_root_global_lin_vel_cur=lambda prefix="ref_": (
-            world_lin_vel if prefix == "ft_ref_" else world_lin_vel + 100.0
-        ),
-        get_ref_motion_root_global_ang_vel_cur=lambda prefix="ref_": (
-            world_ang_vel if prefix == "ft_ref_" else world_ang_vel + 100.0
-        ),
-        get_ref_motion_base_linvel_cur=lambda prefix="ref_": (
-            base_lin_vel if prefix == "ft_ref_" else base_lin_vel + 100.0
-        ),
-        get_ref_motion_base_angvel_cur=lambda prefix="ref_": (
-            base_ang_vel if prefix == "ft_ref_" else base_ang_vel + 100.0
-        ),
-        get_ref_motion_dof_pos_cur=lambda prefix="ref_": (
-            dof_pos if prefix == "ft_ref_" else dof_pos + 100.0
-        ),
-    )
-    algo.env = SimpleNamespace(
-        _env=SimpleNamespace(
-            command_manager=SimpleNamespace(get_term=lambda name: command)
-        )
-    )
-
-    obs_td = TensorDict(
-        {"flat_obs": torch.zeros(2, 5, dtype=torch.float32)},
-        batch_size=[2],
-    )
-    actor_out = TensorDict(
-        {
-            "actions": torch.zeros(2, 4, dtype=torch.float32),
-            "actions_log_prob": torch.zeros(2, dtype=torch.float32),
-            "mu": torch.zeros(2, 4, dtype=torch.float32),
-            "sigma": torch.ones(2, 4, dtype=torch.float32),
-        },
-        batch_size=[2],
-    )
-    critic_out = TensorDict(
-        {"values": torch.zeros(2, 1, dtype=torch.float32)},
-        batch_size=[2],
-    )
-
-    isaaclab_pkg = ModuleType("isaaclab")
-    isaaclab_envs = ModuleType("isaaclab.envs")
-    isaaclab_mdp = ModuleType("isaaclab.envs.mdp")
-    isaaclab_mdp.base_lin_vel = lambda env: torch.zeros(
-        2, 3, dtype=torch.float32
-    )
-    isaaclab_envs.mdp = isaaclab_mdp
-    isaaclab_pkg.envs = isaaclab_envs
-
-    with mock.patch.dict(
-        sys.modules,
-        {
-            "isaaclab": isaaclab_pkg,
-            "isaaclab.envs": isaaclab_envs,
-            "isaaclab.envs.mdp": isaaclab_mdp,
-        },
-    ):
-        transition = algo._build_transition(obs_td, actor_out, critic_out)
-
-    torch.testing.assert_close(
-        transition.gt_denoise_ref_root_lin_vel,
-        torch.full_like(base_lin_vel, -100.0),
-    )
-    torch.testing.assert_close(
-        transition.gt_denoise_ref_root_ang_vel,
-        torch.full_like(base_ang_vel, -100.0),
-    )
-    torch.testing.assert_close(
-        transition.gt_denoise_ref_dof_pos, torch.full_like(dof_pos, -100.0)
-    )
-
-
-def test_build_transition_rejects_mismatched_denoise_dof_target_shape():
-    algo = PPOTF.__new__(PPOTF)
-    algo.use_aux_state_pred = True
-    algo.use_aux_root_height = False
-    algo.use_aux_denoise_ref_root_lin_vel = False
-    algo.use_aux_denoise_ref_root_ang_vel = False
-    algo.use_aux_denoise_ref_dof_pos = True
-    algo.aux_state_pred_num_contact_bodies = 0
-    algo.aux_state_pred_num_keybody_bodies = 0
-    algo.command_name = "ref_motion"
-    algo.num_envs = 2
-    algo.device = torch.device("cpu")
-    algo.transition_cls = PpoAuxTransition
-    command = SimpleNamespace(
-        get_ref_motion_dof_pos_cur=lambda prefix="ref_": torch.zeros(
-            2, 5, dtype=torch.float32
-        )
-    )
-    algo.env = SimpleNamespace(
-        _env=SimpleNamespace(
-            command_manager=SimpleNamespace(get_term=lambda name: command)
-        )
-    )
-
-    obs_td = TensorDict(
-        {"flat_obs": torch.zeros(2, 5, dtype=torch.float32)},
-        batch_size=[2],
-    )
-    actor_out = TensorDict(
-        {
-            "actions": torch.zeros(2, 4, dtype=torch.float32),
-            "actions_log_prob": torch.zeros(2, dtype=torch.float32),
-            "mu": torch.zeros(2, 4, dtype=torch.float32),
-            "sigma": torch.ones(2, 4, dtype=torch.float32),
-        },
-        batch_size=[2],
-    )
-    critic_out = TensorDict(
-        {"values": torch.zeros(2, 1, dtype=torch.float32)},
-        batch_size=[2],
-    )
-
-    isaaclab_pkg = ModuleType("isaaclab")
-    isaaclab_envs = ModuleType("isaaclab.envs")
-    isaaclab_mdp = ModuleType("isaaclab.envs.mdp")
-    isaaclab_mdp.base_lin_vel = lambda env: torch.zeros(
-        2, 3, dtype=torch.float32
-    )
-    isaaclab_envs.mdp = isaaclab_mdp
-    isaaclab_pkg.envs = isaaclab_envs
-
-    with mock.patch.dict(
-        sys.modules,
-        {
-            "isaaclab": isaaclab_pkg,
-            "isaaclab.envs": isaaclab_envs,
-            "isaaclab.envs.mdp": isaaclab_mdp,
-        },
-    ):
-        with pytest.raises(ValueError, match="gt_denoise_ref_dof_pos"):
-            algo._build_transition(obs_td, actor_out, critic_out)
 
 
 def test_compute_aux_router_future_recon_loss_uses_normalized_future_targets():

@@ -14,17 +14,12 @@ io:
 preprocess:
   # Available stages:
   # ['filename_as_motionkey','legacy_to_ref_keys','add_legacy_keys',
-  #  'slicing','apply_butterworth_filter','add_padding','tagging']
+  #  'slicing','add_padding','tagging']
   pipeline: []  
 
 slicing:
   window_size: 500
   overlap: 50
-
-filtering:
-  type: butterworth
-  butter_cutoff_hz: 3.0
-  butter_order: 4
 
 padding:
   # Robot config path for FK and default joint angles
@@ -42,4 +37,3 @@ ray:
   enabled: true
   num_workers: 2  # 0 = use all available CPUs
   ray_address: ""  # empty = local; otherwise connect to existing Ray cluster
-

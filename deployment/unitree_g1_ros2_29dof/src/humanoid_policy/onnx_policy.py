@@ -528,6 +528,56 @@ def warmup_policy_session(
     return iterations
 
 
+def run_with_cuda_observation(
+    session,
+    *,
+    input_name: str,
+    observation,
+    output_names: list[str],
+    cpu_inputs: dict[str, np.ndarray] | None = None,
+) -> list[np.ndarray]:
+    """Bind a CUDA Torch or Warp observation directly to TensorRT."""
+
+    if hasattr(observation, "buffer_ptr"):
+        observation.synchronize()
+        buffer_ptr = int(observation.buffer_ptr)
+        shape = tuple(observation.shape)
+        device_id = 0
+    else:
+        import torch
+
+        if (
+            not isinstance(observation, torch.Tensor)
+            or not observation.is_cuda
+        ):
+            raise TypeError("observation must expose a CUDA buffer")
+        if (
+            observation.dtype != torch.float32
+            or not observation.is_contiguous()
+        ):
+            observation = observation.to(dtype=torch.float32).contiguous()
+        torch.cuda.current_stream(observation.device).synchronize()
+        buffer_ptr = int(observation.data_ptr())
+        shape = tuple(observation.shape)
+        device_id = int(observation.device.index or 0)
+
+    io_binding = session.io_binding()
+    io_binding.bind_input(
+        name=input_name,
+        device_type="cuda",
+        device_id=device_id,
+        element_type=np.float32,
+        shape=shape,
+        buffer_ptr=buffer_ptr,
+    )
+    for name, value in (cpu_inputs or {}).items():
+        io_binding.bind_cpu_input(name, np.asarray(value))
+    for name in output_names:
+        io_binding.bind_output(name, device_type="cpu")
+    session.run_with_iobinding(io_binding)
+    return io_binding.copy_outputs_to_cpu()
+
+
 def read_onnx_metadata(onnx_model_path: str) -> dict[str, Any]:
     import onnx
 

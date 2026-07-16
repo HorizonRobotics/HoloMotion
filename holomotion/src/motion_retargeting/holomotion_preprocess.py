@@ -40,9 +40,6 @@ from holomotion.src.motion_retargeting.utils.torch_humanoid_batch import (
 from holomotion.src.motion_retargeting.utils import (
     rotation_conversions as rot_conv,
 )
-from holomotion.src.motion_retargeting.reference_filtering import (
-    butterworth_filter_ref_arrays as shared_butterworth_filter_ref_arrays,
-)
 
 
 def compute_slices(
@@ -61,108 +58,6 @@ def compute_slices(
             break
         start += step
     return slices
-
-
-def _reshape_time_flat(a: np.ndarray) -> Tuple[np.ndarray, Tuple[int, ...]]:
-    shape = a.shape
-    t = shape[0]
-    return a.reshape(t, -1), shape
-
-
-def _butterworth_lowpass_smooth_time(
-    a: np.ndarray, fps: float, cutoff_hz: float, order: int
-) -> np.ndarray:
-    from scipy.signal import butter, filtfilt
-
-    t = a.shape[0]
-    if t < 3:
-        return a.astype(np.float32, copy=True)
-    if fps <= 0.0 or cutoff_hz <= 0.0:
-        return a.astype(np.float32, copy=True)
-    nyquist = 0.5 * float(fps)
-    wn = float(cutoff_hz) / nyquist
-    if wn >= 1.0:
-        wn = 0.999
-    if wn <= 0.0:
-        return a.astype(np.float32, copy=True)
-    flat, shape = _reshape_time_flat(a.astype(np.float64, copy=False))
-    b, a_coefs = butter(int(order), wn, btype="low", analog=False)
-    maxlen = max(len(b), len(a_coefs))
-    padlen_required = max(3 * (maxlen - 1), 3 * maxlen)
-    if t <= padlen_required:
-        return a.astype(np.float32, copy=True)
-    filtered = filtfilt(b, a_coefs, flat, axis=0, method="pad")
-    return filtered.reshape(shape).astype(np.float32, copy=False)
-
-
-def _quat_normalize(q: np.ndarray) -> np.ndarray:
-    norm = np.linalg.norm(q, axis=-1, keepdims=True)
-    norm = np.where(norm == 0.0, 1.0, norm)
-    return (q / norm).astype(np.float32, copy=False)
-
-
-def _quat_hemisphere_align(q: np.ndarray) -> np.ndarray:
-    if q.shape[0] == 0:
-        return q
-    aligned = q.copy()
-    prev = aligned[0]
-    for t in range(1, aligned.shape[0]):
-        dots = np.sum(prev * aligned[t], axis=-1)
-        mask = dots < 0.0
-        if np.any(mask):
-            aligned[t, mask] = -aligned[t, mask]
-        prev = aligned[t]
-    return aligned
-
-
-def _quat_conjugate(q: np.ndarray) -> np.ndarray:
-    conj = q.copy()
-    conj[..., :3] = -conj[..., :3]
-    return conj
-
-
-def _quat_multiply(a: np.ndarray, b: np.ndarray) -> np.ndarray:
-    av = a[..., :3]
-    aw = a[..., 3:4]
-    bv = b[..., :3]
-    bw = b[..., 3:4]
-    cross = np.cross(av, bv)
-    vec = aw * bv + bw * av + cross
-    scalar = aw * bw - np.sum(av * bv, axis=-1, keepdims=True)
-    return np.concatenate([vec, scalar], axis=-1)
-
-
-def _finite_difference_time(a: np.ndarray, dt: float) -> np.ndarray:
-    t = a.shape[0]
-    if t < 2 or dt <= 0.0:
-        return np.zeros_like(a, dtype=np.float32)
-    deriv = np.gradient(
-        a.astype(np.float64, copy=False),
-        dt,
-        axis=0,
-        edge_order=2 if t >= 3 else 1,
-    )
-    return deriv.astype(np.float32, copy=False)
-
-
-def _angular_velocity_from_quat(
-    q: np.ndarray, q_dot: np.ndarray
-) -> np.ndarray:
-    q_conj = _quat_conjugate(q)
-    prod = _quat_multiply(q_conj, q_dot)
-    omega = 2.0 * prod[..., :3]
-    return omega.astype(np.float32, copy=False)
-
-
-def butterworth_filter_ref_arrays(
-    arrays: Dict[str, np.ndarray], fps: float, cutoff_hz: float, order: int
-) -> Dict[str, np.ndarray]:
-    return shared_butterworth_filter_ref_arrays(
-        arrays=arrays,
-        fps=fps,
-        cutoff_hz=cutoff_hz,
-        order=order,
-    )
 
 
 def _summary(arr: np.ndarray) -> Dict[str, float]:
@@ -380,20 +275,17 @@ class HoloMotionPreprocessor:
     """
     Composable preprocessing pipeline operating on standardized HoloMotion NPZ clips.
 
-    Supports per-clip stages like slicing and Butterworth filtering,
-    plus dataset-level kinematic tagging.
+    Supports per-clip stages like slicing and dataset-level kinematic tagging.
     """
 
     def __init__(
         self,
         slicing_cfg: Optional[DictConfig] = None,
-        filtering_cfg: Optional[DictConfig] = None,
         tagging_cfg: Optional[DictConfig] = None,
         padding_cfg: Optional[DictConfig] = None,
         pipeline: Optional[List[str]] = None,
     ) -> None:
         self.slicing_cfg = slicing_cfg
-        self.filtering_cfg = filtering_cfg
         self.tagging_cfg = tagging_cfg
         self.padding_cfg = padding_cfg
         self.pipeline = self._resolve_pipeline(pipeline)
@@ -418,15 +310,6 @@ class HoloMotionPreprocessor:
                     next_clips.extend(self._apply_slicing(c))
                 clips = next_clips
                 logger.debug(f"After slicing: {len(clips)} clips")
-            elif stage in (
-                "apply_butterworth_filter",
-                "filtering",
-                "butterworth_filter",
-            ):
-                clips = [self._apply_filtering(c) for c in clips]
-                logger.debug(
-                    f"After apply_butterworth_filter: {len(clips)} clips"
-                )
             elif stage == "filename_as_motionkey":
                 clips = [self._apply_filename_as_motionkey(c) for c in clips]
                 logger.debug(
@@ -512,28 +395,6 @@ class HoloMotionPreprocessor:
                 )
             )
         return out_clips
-
-    def _apply_filtering(self, clip: ProcessedClip) -> ProcessedClip:
-        cfg = self.filtering_cfg
-        if cfg is None:
-            logger.warning(
-                "Filtering requested but filtering_cfg is None - skipping filtering"
-            )
-            return clip
-
-        fps = float(clip.metadata.get("motion_fps", 0.0))
-        cutoff = float(getattr(cfg, "butter_cutoff_hz", 0.0))
-        order = int(getattr(cfg, "butter_order", 4))
-        ft = butterworth_filter_ref_arrays(
-            clip.arrays, fps=fps, cutoff_hz=cutoff, order=order
-        )
-        arrays = dict(clip.arrays)
-        arrays.update(ft)
-        return ProcessedClip(
-            motion_key=clip.motion_key,
-            metadata=clip.metadata,
-            arrays=arrays,
-        )
 
     def _apply_filename_as_motionkey(
         self, clip: ProcessedClip
@@ -906,7 +767,6 @@ class HoloMotionPreprocessor:
         actors = [
             PreprocessorActor.remote(
                 slicing_cfg=self.slicing_cfg,
-                filtering_cfg=self.filtering_cfg,
                 tagging_cfg=self.tagging_cfg,
                 padding_cfg=self.padding_cfg,
                 pipeline=self.pipeline,
@@ -965,8 +825,6 @@ class HoloMotionPreprocessor:
                 fps = float(meta["motion_fps"])
 
                 def pick(name: str) -> np.ndarray:
-                    if f"ft_ref_{name}" in data:
-                        return np.array(data[f"ft_ref_{name}"], copy=False)
                     if f"ref_{name}" in data:
                         return np.array(data[f"ref_{name}"], copy=False)
                     return np.array([], dtype=np.float32)
@@ -1067,14 +925,12 @@ class PreprocessorActor:
     def __init__(
         self,
         slicing_cfg: Optional[DictConfig] = None,
-        filtering_cfg: Optional[DictConfig] = None,
         tagging_cfg: Optional[DictConfig] = None,
         padding_cfg: Optional[DictConfig] = None,
         pipeline: Optional[List[str]] = None,
     ) -> None:
         self.preprocessor = HoloMotionPreprocessor(
             slicing_cfg=slicing_cfg,
-            filtering_cfg=filtering_cfg,
             tagging_cfg=tagging_cfg,
             padding_cfg=padding_cfg,
             pipeline=pipeline,
@@ -1189,7 +1045,6 @@ def main(cfg: DictConfig) -> None:
 
     preprocessor = HoloMotionPreprocessor(
         slicing_cfg=cfg.slicing,
-        filtering_cfg=cfg.filtering,
         tagging_cfg=cfg.tagging,
         padding_cfg=cfg.get("padding", None),
         pipeline=per_clip_pipeline if per_clip_pipeline else None,
@@ -1200,9 +1055,6 @@ def main(cfg: DictConfig) -> None:
     )
     logger.info(
         f"  Slicing config present: {preprocessor.slicing_cfg is not None}"
-    )
-    logger.info(
-        f"  Filtering config present: {preprocessor.filtering_cfg is not None}"
     )
     logger.info(
         f"  Tagging config present: {preprocessor.tagging_cfg is not None}"

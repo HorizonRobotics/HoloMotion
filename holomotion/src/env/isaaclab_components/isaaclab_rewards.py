@@ -1826,6 +1826,211 @@ class action_acc(ManagerTermBase):
 action_acc_l2 = action_acc
 
 
+class _ButterworthHighFreqL2(ManagerTermBase):
+    """Maintain a causal Butterworth high-pass over batched signals."""
+
+    def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRLEnv):
+        super().__init__(cfg, env)
+        self._filter_signature: tuple[float, float, int] | None = None
+        self._sos: torch.Tensor | None = None
+        self._filter_state: torch.Tensor | None = None
+        self._needs_reseed = torch.ones(
+            self.num_envs, device=self.device, dtype=torch.bool
+        )
+
+    def reset(self, env_ids=None) -> None:
+        if env_ids is None:
+            self._needs_reseed[:] = True
+            return
+        if isinstance(env_ids, slice):
+            self._needs_reseed[env_ids] = True
+            return
+        env_ids_tensor = torch.as_tensor(
+            env_ids, device=self._needs_reseed.device, dtype=torch.long
+        )
+        self._needs_reseed[env_ids_tensor] = True
+
+    @staticmethod
+    def _design_sos(
+        sample_hz: float, cutoff_hz: float, order: int
+    ) -> tuple[tuple[float, ...], ...]:
+        if sample_hz <= 0.0:
+            raise ValueError("sample_hz must be positive")
+        if cutoff_hz <= 0.0 or cutoff_hz >= 0.5 * sample_hz:
+            raise ValueError(
+                "cutoff_hz must be between zero and the Nyquist frequency"
+            )
+        if isinstance(order, bool) or order <= 0 or int(order) != order:
+            raise ValueError("order must be a positive integer")
+
+        from scipy.signal import butter
+
+        normalized_cutoff = cutoff_hz / (0.5 * sample_hz)
+        sos = butter(
+            int(order), normalized_cutoff, btype="highpass", output="sos"
+        )
+        sos[:, :3] /= sos[:, 3:4]
+        sos[:, 4:] /= sos[:, 3:4]
+        sos[:, 3] = 1.0
+        return tuple(tuple(float(value) for value in row) for row in sos)
+
+    def _maybe_build_cache(
+        self,
+        current_action: torch.Tensor,
+        sample_hz: float,
+        cutoff_hz: float,
+        order: int,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        signature = (float(sample_hz), float(cutoff_hz), int(order))
+        signature_changed = self._filter_signature != signature
+        if signature_changed:
+            sos_values = self._design_sos(*signature)
+            self._sos = torch.tensor(
+                sos_values,
+                device=current_action.device,
+                dtype=current_action.dtype,
+            )
+            self._filter_signature = signature
+
+        assert self._sos is not None
+        sos_needs_move = (
+            self._sos.device != current_action.device
+            or self._sos.dtype != current_action.dtype
+        )
+        if sos_needs_move:
+            self._sos = self._sos.to(
+                device=current_action.device, dtype=current_action.dtype
+            )
+
+        expected_state_shape = (
+            current_action.shape[0],
+            self._sos.shape[0],
+            current_action.shape[1],
+            2,
+        )
+        state_needs_refresh = (
+            signature_changed
+            or self._filter_state is None
+            or self._filter_state.shape != expected_state_shape
+            or self._filter_state.device != current_action.device
+            or self._filter_state.dtype != current_action.dtype
+        )
+        if state_needs_refresh:
+            self._filter_state = torch.zeros(
+                expected_state_shape,
+                device=current_action.device,
+                dtype=current_action.dtype,
+            )
+            self._needs_reseed = torch.ones(
+                current_action.shape[0],
+                device=current_action.device,
+                dtype=torch.bool,
+            )
+
+        assert self._filter_state is not None
+        return self._sos, self._filter_state
+
+    def _compute_penalty(
+        self,
+        current_signal: torch.Tensor,
+        episode_length_buf: torch.Tensor | None,
+        sample_hz: float = 50.0,
+        cutoff_hz: float = 3.0,
+        order: int = 4,
+    ) -> torch.Tensor:
+        sos, state = self._maybe_build_cache(
+            current_signal, sample_hz, cutoff_hz, order
+        )
+
+        reseed_mask = self._needs_reseed
+        if episode_length_buf is not None:
+            reseed_mask = reseed_mask | (episode_length_buf == 0)
+        reseed_mask = reseed_mask[:, None]
+
+        section_input = current_signal
+        for section_idx in range(sos.shape[0]):
+            b0, b1, b2, _, a1, a2 = sos[section_idx].unbind()
+            section_state = state[:, section_idx]
+
+            dc_gain = (b0 + b1 + b2) / (1.0 + a1 + a2)
+            steady_output = dc_gain * section_input
+            steady_z1 = steady_output - b0 * section_input
+            steady_z2 = b2 * section_input - a2 * steady_output
+            z1 = torch.where(reseed_mask, steady_z1, section_state[..., 0])
+            z2 = torch.where(reseed_mask, steady_z2, section_state[..., 1])
+
+            section_output = b0 * section_input + z1
+            section_state[..., 0] = (
+                b1 * section_input - a1 * section_output + z2
+            )
+            section_state[..., 1] = b2 * section_input - a2 * section_output
+            section_input = section_output
+
+        penalty = torch.mean(section_input.square(), dim=1)
+        penalty = torch.where(reseed_mask[:, 0], 0.0, penalty)
+        self._needs_reseed.fill_(False)
+        return penalty
+
+
+class joint_pos_butterworth_high_freq_l2(_ButterworthHighFreqL2):
+    """Penalize mean high-frequency robot joint-position energy."""
+
+    def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRLEnv):
+        super().__init__(cfg, env)
+        self._asset_name: str | None = None
+        self._joint_ids: torch.Tensor | None = None
+        self._num_joints: int | None = None
+        self._use_all_joints = False
+
+    def __call__(
+        self,
+        env: ManagerBasedRLEnv,
+        asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+        sample_hz: float = 50.0,
+        cutoff_hz: float = 3.0,
+        order: int = 4,
+    ) -> torch.Tensor:
+        asset: Articulation = env.scene[asset_cfg.name]
+        current_joint_pos = asset.data.joint_pos
+        selection_needs_refresh = (
+            self._asset_name != asset_cfg.name
+            or self._joint_ids is None
+            or self._num_joints != current_joint_pos.shape[1]
+            or self._joint_ids.device != current_joint_pos.device
+        )
+        if selection_needs_refresh:
+            joint_ids = _joint_ids_to_tensor(
+                getattr(asset_cfg, "joint_ids", None),
+                num_joints=current_joint_pos.shape[1],
+                device=current_joint_pos.device,
+            )
+            self._asset_name = asset_cfg.name
+            self._joint_ids = joint_ids
+            self._num_joints = current_joint_pos.shape[1]
+            self._use_all_joints = torch.equal(
+                joint_ids,
+                torch.arange(
+                    current_joint_pos.shape[1],
+                    device=current_joint_pos.device,
+                ),
+            )
+            self._filter_state = None
+
+        assert self._joint_ids is not None
+        selected_joint_pos = (
+            current_joint_pos
+            if self._use_all_joints
+            else current_joint_pos[:, self._joint_ids]
+        )
+        return self._compute_penalty(
+            selected_joint_pos,
+            getattr(env, "episode_length_buf", None),
+            sample_hz,
+            cutoff_hz,
+            order,
+        )
+
+
 def feet_stumble(
     env: ManagerBasedRLEnv, sensor_cfg: SceneEntityCfg
 ) -> torch.Tensor:

@@ -9,7 +9,6 @@ license agreement from NVIDIA CORPORATION is strictly prohibited.
 
 import numpy as np
 import torch
-import torch.nn.functional as F
 
 
 def to_torch(x, dtype=torch.float, device="cpu", requires_grad=False):
@@ -932,47 +931,6 @@ def standardize_quaternion(quaternions: torch.Tensor) -> torch.Tensor:
         Standardized quaternions as tensor of shape (..., 4).
     """
     return torch.where(quaternions[..., 0:1] < 0, -quaternions, quaternions)
-
-
-@torch.compiler.disable
-def gaussian_kernel1d(
-    sigma: float, device: torch.device, dtype: torch.dtype
-) -> torch.Tensor:
-    if sigma <= 0.0:
-        raise ValueError(f"Invalid sigma: {sigma}")
-    radius = int(4.0 * sigma + 0.5)
-    x = torch.arange(-radius, radius + 1, device=device, dtype=dtype)
-    kernel = torch.exp(-0.5 * (x / sigma).square())
-    return kernel / kernel.sum()
-
-
-@torch.compiler.disable
-def gaussian_filter1d(x: torch.Tensor, sigma: float, dim: int) -> torch.Tensor:
-    if x.shape[dim] < 2:
-        return x
-    kernel = gaussian_kernel1d(sigma, device=x.device, dtype=x.dtype).reshape(
-        1, 1, -1
-    )
-    x_perm = x.movedim(dim, -1)
-    x_flat = x_perm.reshape(-1, 1, x_perm.shape[-1])
-    pad = kernel.shape[-1] // 2
-    x_flat = F.pad(x_flat, (pad, pad), mode="replicate")
-    y = F.conv1d(x_flat, kernel)
-    y = y.reshape(x_perm.shape)
-    return y.movedim(-1, dim)
-
-
-def smooth_time_series(
-    x: torch.Tensor, sigma: float, dim: int
-) -> torch.Tensor:
-    """Gaussian smooth along a time dimension.
-
-    This is a thin wrapper around :func:`gaussian_filter1d` that treats
-    non-positive sigma as "no-op" for easy ablations.
-    """
-    if sigma <= 0.0:
-        return x
-    return gaussian_filter1d(x, sigma=float(sigma), dim=int(dim))
 
 
 @torch.compiler.disable

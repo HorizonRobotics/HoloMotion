@@ -15,7 +15,7 @@
 # permissions and limitations under the License.
 
 source train.env
-metrics_json_dir="logs/Holomotion/metrics_output_dataset"
+metrics_json_dir="logs/HoloMotion/metrics_output_dataset"
 
 ${Train_CONDA_PREFIX}/bin/python \
   holomotion/src/evaluation/multi_model_metrics_report.py \

@@ -30,18 +30,13 @@ naming:
 preprocess:
   # Available stages:
   # ['filename_as_motionkey','legacy_to_ref_keys','add_legacy_keys',
-  #  'slicing','apply_butterworth_filter','add_padding','tagging']
+  #  'slicing','add_padding','tagging']
   # Empty list [] means no preprocessing stages applied
   pipeline: []
 
 slicing:
   window_size: 500
   overlap: 50
-
-filtering:
-  type: butterworth
-  butter_cutoff_hz: 3.0
-  butter_order: 4
 
 padding:
   # Robot config path for FK and default joint angles

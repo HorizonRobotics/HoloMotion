@@ -802,28 +802,9 @@ class GroupedMoETransformerPolicy(nn.Module):
         self.aux_keybody_pos_dim = int(
             len(aux_cfg.get("keybody_rel_pos_names", []))
         )
-        self.use_aux_denoise_ref_root_lin_vel = bool(
-            float(aux_cfg.get("w_denoise_ref_root_lin_vel", 0.0)) > 0.0
-        )
-        self.use_aux_denoise_ref_root_ang_vel = bool(
-            float(aux_cfg.get("w_denoise_ref_root_ang_vel", 0.0)) > 0.0
-        )
-        self.use_aux_denoise_ref_dof_pos = bool(
-            float(aux_cfg.get("w_denoise_ref_dof_pos", 0.0)) > 0.0
-        )
         if self.aux_state_pred_enabled:
             self.aux_vel_head = nn.Linear(self.d_model, 6)
             self.aux_height_head = nn.Linear(self.d_model, 2)
-            self.aux_denoise_ref_root_lin_vel_head = (
-                nn.Linear(self.d_model, 3)
-                if self.use_aux_denoise_ref_root_lin_vel
-                else None
-            )
-            self.aux_denoise_ref_root_ang_vel_head = (
-                nn.Linear(self.d_model, 3)
-                if self.use_aux_denoise_ref_root_ang_vel
-                else None
-            )
             self.aux_contact_head = (
                 nn.Linear(self.d_model, self.aux_contact_dim)
                 if self.aux_contact_dim > 0
@@ -839,20 +820,12 @@ class GroupedMoETransformerPolicy(nn.Module):
                 if self.aux_keybody_pos_dim > 0
                 else None
             )
-            self.aux_denoise_ref_dof_pos_head = (
-                nn.Linear(self.d_model, self.output_dim)
-                if self.use_aux_denoise_ref_dof_pos
-                else None
-            )
         else:
             self.aux_vel_head = None
             self.aux_height_head = None
-            self.aux_denoise_ref_root_lin_vel_head = None
-            self.aux_denoise_ref_root_ang_vel_head = None
             self.aux_contact_head = None
             self.aux_ref_keybody_pos_head = None
             self.aux_robot_keybody_pos_head = None
-            self.aux_denoise_ref_dof_pos_head = None
 
         # True per-layer KV cache for single-step inference.
         # K/V shapes: [B, n_layers, max_ctx_len, n_kv_heads, head_dim]
@@ -1710,14 +1683,6 @@ class GroupedMoETransformerPolicy(nn.Module):
                 pre_moe_hidden.shape[1],
                 0,
             )
-        if self.aux_denoise_ref_root_lin_vel_head is not None:
-            aux_outputs["denoise_ref_root_lin_vel_residual"] = (
-                self.aux_denoise_ref_root_lin_vel_head(pre_moe_hidden)
-            )
-        if self.aux_denoise_ref_root_ang_vel_head is not None:
-            aux_outputs["denoise_ref_root_ang_vel_residual"] = (
-                self.aux_denoise_ref_root_ang_vel_head(pre_moe_hidden)
-            )
         if self.aux_ref_keybody_pos_head is not None:
             aux_outputs["ref_keybody_rel_pos"] = self.aux_ref_keybody_pos_head(
                 pre_moe_hidden
@@ -1747,10 +1712,6 @@ class GroupedMoETransformerPolicy(nn.Module):
                 pre_moe_hidden.shape[1],
                 0,
                 3,
-            )
-        if self.aux_denoise_ref_dof_pos_head is not None:
-            aux_outputs["denoise_ref_dof_pos_residual"] = (
-                self.aux_denoise_ref_dof_pos_head(pre_moe_hidden)
             )
         return aux_outputs
 

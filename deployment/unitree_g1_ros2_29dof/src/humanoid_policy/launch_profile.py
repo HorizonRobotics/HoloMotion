@@ -20,8 +20,12 @@ DEFAULT_PROFILE = {
         "deploy_env": "../../deploy.env",
         "build_before_launch": True,
         "python_executable": "${Deploy_CONDA_PREFIX}/bin/python",
+        "cuda_home": "",
         "cyclonedds_home": "",
         "extra_ld_library_paths": [],
+        "pico_service_command": "/opt/apps/roboticsservice/runService.sh",
+        "pico_service_log": "/tmp/holomotion_pico_service.log",
+        "pico_service_startup_sec": 1.0,
     },
     "robot": {
         "config_file": "config/g1_29dof_holomotion.yaml",
@@ -34,14 +38,16 @@ DEFAULT_PROFILE = {
         "topics": ["/lowcmd", "/lowstate", "/humanoid/action"],
     },
     "policy": {
-        "latest_obs_zmq_uri": "tcp://192.168.124.29:6001",
-        "latest_obs_zmq_topic": "obs65",
-        "latest_obs_zmq_mode": "connect",
-        "latest_obs_zmq_conflate": True,
+        "reference_source": "zmq",
+        "reference_zmq_uri": "tcp://192.168.124.29:6001",
+        "reference_zmq_topic": "reference_qpos",
+        "reference_zmq_mode": "connect",
+        "reference_zmq_conflate": True,
         "zmq_jitter_delay_frames": 5,
         "max_data_age": 0.6,
         "enable_teleop_reference": False,
         "inference_backend": "onnx",
+        "motion_observation_backend": "auto",
         "motion_rope_max_seq_len": 0,
         "motion_rope_reset_margin": 64,
         "timing_debug_enabled": False,
@@ -49,19 +55,30 @@ DEFAULT_PROFILE = {
         "timing_debug_log_per_loop": False,
         "cpu_affinity_main": "",
         "cpu_affinity_zmq_sub": "",
+        "local_retarget_asset_root": "",
+        "reference_telemetry_enabled": False,
+        "reference_telemetry_uri": "tcp://*:6002",
+        "reference_telemetry_topic": "reference_qpos",
+        "reference_telemetry_mode": "bind",
+        "reference_telemetry_hz": 50.0,
+        "reference_telemetry_min_slack_ms": 2.0,
+        "reference_telemetry_deadline_pause_sec": 5.0,
+        "cpu_affinity_reference_telemetry": "",
     },
 }
 
 ROBOT_CONFIG_RUNTIME_FIELDS = (
     "vr",
-    "latest_obs_zmq_uri",
-    "latest_obs_zmq_topic",
-    "latest_obs_zmq_mode",
-    "latest_obs_zmq_conflate",
+    "reference_source",
+    "reference_zmq_uri",
+    "reference_zmq_topic",
+    "reference_zmq_mode",
+    "reference_zmq_conflate",
     "zmq_jitter_delay_frames",
     "max_data_age",
     "enable_teleop_reference",
     "inference_backend",
+    "motion_observation_backend",
     "motion_rope_max_seq_len",
     "motion_rope_reset_margin",
     "timing_debug_enabled",
@@ -69,6 +86,15 @@ ROBOT_CONFIG_RUNTIME_FIELDS = (
     "timing_debug_log_per_loop",
     "cpu_affinity_main",
     "cpu_affinity_zmq_sub",
+    "local_retarget_asset_root",
+    "reference_telemetry_enabled",
+    "reference_telemetry_uri",
+    "reference_telemetry_topic",
+    "reference_telemetry_mode",
+    "reference_telemetry_hz",
+    "reference_telemetry_min_slack_ms",
+    "reference_telemetry_deadline_pause_sec",
+    "cpu_affinity_reference_telemetry",
     "network_interface",
     "python_executable",
     "enable_recording",
@@ -379,11 +405,22 @@ def runtime_shell_assignments(
         "HLM_RUNTIME_ROS_SETUP": runtime_path("ros_setup"),
         "HLM_RUNTIME_UNITREE_SETUP": runtime_path("unitree_setup"),
         "HLM_RUNTIME_DEPLOY_ENV": runtime_path("deploy_env"),
+        "HLM_RUNTIME_CUDA_HOME": runtime_path("cuda_home"),
         "HLM_RUNTIME_BUILD_BEFORE_LAUNCH": (
             "true" if as_bool(runtime.get("build_before_launch", True)) else "false"
         ),
         "HLM_RUNTIME_CYCLONEDDS_HOME": runtime_path("cyclonedds_home"),
         "HLM_RUNTIME_EXTRA_LD_LIBRARY_PATHS": ":".join(resolved_extra_paths),
+        "HLM_RUNTIME_PICO_SERVICE_COMMAND": runtime_path("pico_service_command"),
+        "HLM_RUNTIME_PICO_SERVICE_LOG": str(
+            runtime.get("pico_service_log", "/tmp/holomotion_pico_service.log")
+        ),
+        "HLM_RUNTIME_PICO_SERVICE_STARTUP_SEC": str(
+            float(runtime.get("pico_service_startup_sec", 1.0))
+        ),
+        "HLM_POLICY_REFERENCE_SOURCE": str(
+            profile.get("policy", {}).get("reference_source", "zmq")
+        ).strip().lower(),
     }
 
 

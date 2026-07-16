@@ -36,10 +36,6 @@ branch = 0.10.2
 path = thirdparties/unitree_sdk2
 url = https://github.com/unitreerobotics/unitree_sdk2.git
 
-[submodule "thirdparties/GMR"]
-path = thirdparties/GMR
-url = https://github.com/YanjieZe/GMR.git
-branch = master
 [submodule "thirdparties/HoloMotion_assets"]
 path = thirdparties/HoloMotion_assets
 url = https://huggingface.co/datasets/HorizonRobotics/HoloMotion_assets

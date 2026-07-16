@@ -2,7 +2,7 @@
 """
 HoloMotion Policy Node
 
-This module implements the main policy execution node for the HoloMotion humanoid robot system using ZMQ latest_obs transport.
+This module implements the main policy execution node for the HoloMotion humanoid robot system using ZMQ reference_qpos transport.
 It handles neural network policy inference, motion sequence management, remote controller input,
 and robot state coordination for humanoid behaviors including velocity tracking and motion tracking.
 
@@ -35,15 +35,23 @@ from rclpy.qos import QoSProfile
 from std_msgs.msg import Float32MultiArray, String
 from unitree_hg.msg import LowState
 
+from holomotion.src.motion_tracking.reference_observation import (
+    REFERENCE_QPOS_DIM,
+)
+
 from humanoid_policy.config import DeploymentConfig
 from humanoid_policy.config import RobotConfig
 from humanoid_policy.config import format_config_for_log
 from humanoid_policy.cpu_affinity import parse_cpu_affinity
 from humanoid_policy.cpu_affinity import set_thread_cpu_affinity
-from humanoid_policy.latest_obs_transport import DEFAULT_ZMQ_TOPIC
-from humanoid_policy.latest_obs_transport import LatestObsBuffer
-from humanoid_policy.latest_obs_transport import ZmqLatestObsSubscriber
-from humanoid_policy.latest_obs_transport import decode_zmq_topic
+from humanoid_policy.reference_transport import ReferenceBuffer
+from humanoid_policy.reference_transport import BestEffortReferencePublisher
+from humanoid_policy.reference_transport import ZmqReferenceSubscriber
+from humanoid_policy.reference_transport import decode_zmq_topic
+from humanoid_policy.gpu_motion_observation import GpuMotionObservationBuilder
+from humanoid_policy.gpu_motion_observation import GpuReferenceQueue
+from humanoid_policy.local_retarget import AsyncDeviceQposSnapshotter
+from humanoid_policy.local_retarget import LocalPicoRetargetSource
 from humanoid_policy.motion_clip_library import list_motion_clip_files
 from humanoid_policy.motion_clip_library import load_motion_clips
 from humanoid_policy.motion_clip_library import validate_loaded_motion_clip
@@ -54,7 +62,7 @@ from humanoid_policy.onnx_policy import warmup_policy_session
 from humanoid_policy.obs_builder import PolicyObsBuilder
 from humanoid_policy.observation_evaluator import PolicyObservationEvaluator
 from humanoid_policy.policy_runtime import PolicyRuntime
-from humanoid_policy.vr_reference import VrLatestObsReference
+from humanoid_policy.vr_reference import VrReference
 from humanoid_policy.utils.remote_controller_filter import RemoteController
 
 
@@ -162,21 +170,27 @@ class HoloMotionPolicyNode(Node):
         self.n_motion_frames = 0
 
         self._latest_sender_timestamp = None
-        self.latest_obs_flag = False
-        self.latest_obs_expected_dim = 65
+        self._last_consumed_reference_sequence = None
+        self.reference_stream_active = False
+        self.reference_qpos_dim = REFERENCE_QPOS_DIM
+        self.reference_source = self.deployment_config.reference_source.strip().lower()
         self.max_data_age = self.deployment_config.max_data_age
         self.stale_data_warning_count = 0
         self.last_poll_time = None
-        self.latest_obs_zmq_uri = self.deployment_config.latest_obs_zmq_uri
-        self.latest_obs_zmq_topic = self.deployment_config.latest_obs_zmq_topic
-        self.latest_obs_zmq_mode = self.deployment_config.latest_obs_zmq_mode
-        self.latest_obs_zmq_conflate = self.deployment_config.latest_obs_zmq_conflate
+        self.reference_zmq_uri = self.deployment_config.reference_zmq_uri
+        self.reference_zmq_topic = self.deployment_config.reference_zmq_topic
+        self.reference_zmq_mode = self.deployment_config.reference_zmq_mode
+        self.reference_zmq_conflate = self.deployment_config.reference_zmq_conflate
         self.zmq_jitter_delay_frames = self.deployment_config.zmq_jitter_delay_frames
         self.enable_teleop_reference = self.deployment_config.enable_teleop_reference
         self.motion_rope_max_seq_len = self.deployment_config.motion_rope_max_seq_len
         self.motion_rope_reset_margin = self.deployment_config.motion_rope_reset_margin
         self._cpu_affinity_main_str = self.deployment_config.cpu_affinity_main
         self._cpu_affinity_zmq_sub_str = self.deployment_config.cpu_affinity_zmq_sub
+        self._local_retarget_source = None
+        self._reference_telemetry = None
+        self._reference_snapshotter = None
+        self._pending_reference_telemetry = None
         self.timing_debug_enabled = self.deployment_config.timing_debug_enabled
         self.timing_debug_log_interval_sec = (
             self.deployment_config.timing_debug_log_interval_sec
@@ -184,36 +198,62 @@ class HoloMotionPolicyNode(Node):
         self.timing_debug_log_per_loop = self.deployment_config.timing_debug_log_per_loop
         self._timing_debug_last_log_time = None
         self._timing_debug_samples = deque(maxlen=500)
-        self._root_only_fk_keybody_warned = False
-        self._ros_latest_obs_buffer = None
+        self._ros_reference_buffer = None
         self._npz_replay_frame_index = None
 
-        self._latest_obs_buffer = LatestObsBuffer()
-        self._latest_obs_zmq_topic_bytes = decode_zmq_topic(self.latest_obs_zmq_topic)
-        if str(self.latest_obs_zmq_mode).strip().lower() == "connect":
-            uri_str = str(self.latest_obs_zmq_uri)
+        self._reference_buffer = ReferenceBuffer()
+        self._reference_zmq_topic_bytes = decode_zmq_topic(self.reference_zmq_topic)
+        if str(self.reference_zmq_mode).strip().lower() == "connect":
+            uri_str = str(self.reference_zmq_uri)
             if "*" in uri_str or "0.0.0.0" in uri_str:
                 self.get_logger().warn(
                     "[ZMQ] connect mode requires a concrete peer address. "
                     "Do not use '*' or '0.0.0.0'; use the sender IP instead, "
                     "for example tcp://192.168.124.29:6001."
                 )
-        zmq_cpu_affinity = parse_cpu_affinity(self._cpu_affinity_zmq_sub_str)
-        self._zmq_subscriber = ZmqLatestObsSubscriber(
-            uri=self.latest_obs_zmq_uri,
-            topic=self._latest_obs_zmq_topic_bytes,
-            mode=self.latest_obs_zmq_mode,
-            conflate=bool(self.latest_obs_zmq_conflate),
-            buffer=self._latest_obs_buffer,
-            logger=self.get_logger(),
-            cpu_affinity=zmq_cpu_affinity if zmq_cpu_affinity else None,
-        )
-        self._zmq_subscriber.start()
-        self.get_logger().info(
-            f"ZMQ latest_obs subscriber started: mode={self.latest_obs_zmq_mode}, "
-            f"uri={self.latest_obs_zmq_uri}, topic={self.latest_obs_zmq_topic}, "
-            f"jitter_delay={self.zmq_jitter_delay_frames}"
-        )
+        self._zmq_subscriber = None
+        if self.reference_source == "zmq":
+            zmq_cpu_affinity = parse_cpu_affinity(self._cpu_affinity_zmq_sub_str)
+            self._zmq_subscriber = ZmqReferenceSubscriber(
+                uri=self.reference_zmq_uri,
+                topic=self._reference_zmq_topic_bytes,
+                mode=self.reference_zmq_mode,
+                conflate=bool(self.reference_zmq_conflate),
+                buffer=self._reference_buffer,
+                logger=self.get_logger(),
+                cpu_affinity=zmq_cpu_affinity if zmq_cpu_affinity else None,
+            )
+            self._zmq_subscriber.start()
+            self.get_logger().info(
+                f"ZMQ reference subscriber started: mode={self.reference_zmq_mode}, "
+                f"uri={self.reference_zmq_uri}, topic={self.reference_zmq_topic}, "
+                f"jitter_delay={self.zmq_jitter_delay_frames}"
+            )
+        else:
+            self.get_logger().info(
+                "Reference source: local Pico/XRoboToolkit on the policy clock"
+            )
+
+        if self.deployment_config.reference_telemetry_enabled:
+            telemetry_affinity = parse_cpu_affinity(
+                self.deployment_config.cpu_affinity_reference_telemetry
+            )
+            self._reference_telemetry = BestEffortReferencePublisher(
+                uri=self.deployment_config.reference_telemetry_uri,
+                topic=decode_zmq_topic(
+                    self.deployment_config.reference_telemetry_topic
+                ),
+                mode=self.deployment_config.reference_telemetry_mode,
+                publish_hz=self.deployment_config.reference_telemetry_hz,
+                deadline_pause_sec=(
+                    self.deployment_config.reference_telemetry_deadline_pause_sec
+                ),
+                logger=self.get_logger(),
+                cpu_affinity=(
+                    telemetry_affinity if telemetry_affinity else None
+                ),
+            )
+            self._reference_telemetry.start()
 
         self.dof_names_ref_motion = []
         self.num_actions = 29
@@ -230,8 +270,6 @@ class HoloMotionPolicyNode(Node):
         self.target_dof_pos_real = None
         self.motion_in_progress = False
         self._keybody_indices_by_term_name = {}
-        self.motion_action_ema_filter_enabled = False
-        self.motion_action_ema_filter_alpha = 1.0
         self._vr_reference = None
 
     def _is_vr_ready_for_motion(self) -> bool:
@@ -289,17 +327,17 @@ class HoloMotionPolicyNode(Node):
             state.current_policy_mode = str(value)
 
     @property
-    def latest_obs_flag(self):
+    def reference_stream_active(self):
         state = self._runtime_state()
-        return state.latest_obs_flag if state is not None else getattr(self, "_latest_obs_flag", False)
+        return state.reference_stream_active if state is not None else getattr(self, "_reference_stream_active", False)
 
-    @latest_obs_flag.setter
-    def latest_obs_flag(self, value):
+    @reference_stream_active.setter
+    def reference_stream_active(self, value):
         state = self._runtime_state()
         if state is None:
-            self._latest_obs_flag = bool(value)
+            self._reference_stream_active = bool(value)
         else:
-            state.latest_obs_flag = bool(value)
+            state.reference_stream_active = bool(value)
 
     @property
     def motion_frame_idx(self):
@@ -462,15 +500,62 @@ class HoloMotionPolicyNode(Node):
         )
 
         n_fut = int(self.n_fut_frames) if hasattr(self, "n_fut_frames") else 0
-        self._vr_reference = VrLatestObsReference(
+        self._vr_reference = VrReference(
             n_fut_frames=n_fut,
             num_actions=self.num_actions,
-            expected_dim=self.latest_obs_expected_dim,
+            expected_dim=self.reference_qpos_dim,
         )
-        self.observation_evaluator.initialize_vr_fk_buffers(n_fut, self.num_actions)
+        self.observation_evaluator.initialize_vr_reference_buffers(
+            n_fut, self.num_actions
+        )
 
         # Set default obs_builder to velocity mode
         self.obs_builder = self.velocity_obs_builder
+
+    def _init_gpu_motion_observation(self) -> None:
+        self.gpu_motion_obs_builder = None
+        requested = self.deployment_config.motion_observation_backend.strip().lower()
+        self.motion_observation_backend_active = "cpu"
+        if requested == "cpu":
+            if self.reference_source == "pico_local":
+                raise RuntimeError(
+                    "reference_source=pico_local requires Warp CUDA Observation"
+                )
+            self.get_logger().info("Motion Observation backend: cpu")
+            return
+        try:
+            self.gpu_motion_obs_builder = GpuMotionObservationBuilder(
+                n_future_frames=int(self.n_fut_frames),
+                reference_dof_indices=self.observation_evaluator.ref_to_onnx,
+                default_dof_pos=self.motion_default_angles_onnx,
+                device=str(self.robot_config.device),
+                fps=float(1.0 / self.dt),
+            )
+        except Exception as exc:
+            if requested in {"torch", "warp"} or self.reference_source == "pico_local":
+                raise RuntimeError(
+                    f"Requested motion Observation backend '{requested}' failed"
+                ) from exc
+            self.get_logger().warn(
+                f"GPU motion Observation unavailable; falling back to CPU: {exc}"
+            )
+            return
+        self.motion_observation_backend_active = "warp"
+        if self.reference_source == "pico_local":
+            self._vr_reference = GpuReferenceQueue(
+                n_future_frames=int(self.n_fut_frames),
+                device=str(self.robot_config.device),
+                fps=float(1.0 / self.dt),
+            )
+            if self._reference_telemetry is not None:
+                self._reference_snapshotter = AsyncDeviceQposSnapshotter(
+                    device=str(self.robot_config.device),
+                    max_hz=self.deployment_config.reference_telemetry_hz,
+                )
+        self.get_logger().info(
+            "Motion Observation backend: shared Warp CUDA kernel "
+            "with direct TensorRT I/O binding"
+        )
 
     def load_policy(self):
         """Load both velocity and motion policy models using ONNX Runtime."""
@@ -608,41 +693,12 @@ class HoloMotionPolicyNode(Node):
 
         self.get_logger().info(f"Loading motion model config from {motion_config_path}")
         self.motion_config = OmegaConf.load(motion_config_path)
-        self._load_motion_action_ema_filter_cfg()
         self.actor_place_holder_ndim = (
             self.observation_evaluator._find_actor_place_holder_ndim()
         )
         self.n_fut_frames = int(self.motion_config.obs.n_fut_frames)
         self.torso_body_idx = self.motion_config.robot.body_names.index("torso_link")
         self.get_logger().info("Both model configs loaded successfully")
-
-    def _load_motion_action_ema_filter_cfg(self) -> None:
-        actuator_cfg = self.motion_config.get("robot", {}).get("actuators", {})
-        enabled_raw = actuator_cfg.get("ema_filter_enabled", None)
-        alpha_raw = actuator_cfg.get("ema_filter_alpha", None)
-
-        if enabled_raw is None or alpha_raw is None:
-            self.motion_action_ema_filter_enabled = False
-            self.motion_action_ema_filter_alpha = 1.0
-            self.get_logger().info(
-                "[Motion EMA] ema_filter_enabled/ema_filter_alpha not found in motion config; EMA disabled."
-            )
-            return
-
-        self.motion_action_ema_filter_enabled = _coerce_config_bool(
-            enabled_raw, default=False
-        )
-        self.motion_action_ema_filter_alpha = float(alpha_raw)
-        if not 0.0 <= self.motion_action_ema_filter_alpha <= 1.0:
-            raise ValueError(
-                "motion_config robot.actuators.ema_filter_alpha must be within [0, 1], "
-                f"got {self.motion_action_ema_filter_alpha}."
-            )
-        self.get_logger().info(
-            "[Motion EMA] Loaded from motion config: "
-            f"enabled={self.motion_action_ema_filter_enabled}, "
-            f"alpha={self.motion_action_ema_filter_alpha:.4f}"
-        )
 
     def _warmup_motion_policy(self, num_iters: int = 2) -> None:
         if self.velocity_policy_session is not None:
@@ -833,22 +889,26 @@ class HoloMotionPolicyNode(Node):
             QoSProfile(depth=10),
         )
 
-        self.latest_obs_ros_sub = self.create_subscription(
+        self.reference_ros_sub = self.create_subscription(
             Float32MultiArray,
-            "latest_obs_ros",
-            self._latest_obs_ros_callback,
+            "reference_qpos_ros",
+            self._reference_ros_callback,
             QoSProfile(depth=10),
         )
 
-    def _latest_obs_ros_callback(self, msg: Float32MultiArray):
-        """Receive replayed latest_obs_ros messages for offline validation."""
+    def _reference_ros_callback(self, msg: Float32MultiArray):
+        """Receive replayed reference qpos messages for offline validation."""
         data = np.asarray(msg.data, dtype=np.float32)
-        if data.size == 66:
+        framed_dim = REFERENCE_QPOS_DIM + 1
+        if data.size == framed_dim:
             frame_idx = int(data[0])
-            obs = data[1:66]
-            self._ros_latest_obs_buffer = (frame_idx, obs)
-        elif data.size >= 65:
-            self._ros_latest_obs_buffer = (None, data[:65])
+            qpos = data[1:framed_dim]
+            self._ros_reference_buffer = (frame_idx, qpos)
+        elif data.size >= REFERENCE_QPOS_DIM:
+            self._ros_reference_buffer = (
+                None,
+                data[:REFERENCE_QPOS_DIM],
+            )
 
     def _setup_publishers(self):
         """Set up ROS2 publishers for action commands and status information."""
@@ -874,13 +934,13 @@ class HoloMotionPolicyNode(Node):
             "policy_mode",
             QoSProfile(depth=10),
         )
-        self.latest_obs_pub = self.create_publisher(
+        self.reference_pub = self.create_publisher(
             Float32MultiArray,
-            "latest_obs",
+            "reference_qpos",
             QoSProfile(depth=10),
         )
         self._action_msg = Float32MultiArray()
-        self._latest_obs_msg = Float32MultiArray()
+        self._reference_msg = Float32MultiArray()
         self._policy_mode_msg = String()
         self._last_policy_mode_msg_data = None
         self._last_policy_mode_publish_time = 0.0
@@ -929,39 +989,49 @@ class HoloMotionPolicyNode(Node):
         """Main execution loop for policy inference and action publication."""
         self.runtime.run()
 
-    def _store_vr_latest_obs(self, arr: np.ndarray):
-        """Store latest_obs and maintain the current/future frame queues."""
+    def _store_vr_reference(
+        self, arr: np.ndarray, *, sample_time: float | None = None
+    ):
+        """Store reference qpos and maintain current/future frame queues."""
         if arr.ndim == 1:
             arr = arr[None, :]
-        if arr.shape[1] < self.latest_obs_expected_dim:
+        if arr.shape[1] != self.reference_qpos_dim:
             self.get_logger().warn(
-                f"Received latest_obs dim={arr.shape[1]}, expected >= {self.latest_obs_expected_dim}"
+                f"Received reference qpos dim={arr.shape[1]}, expected {self.reference_qpos_dim}"
             )
             return
         current_time = time.time()
         raw_idx = getattr(self, "_npz_replay_frame_index", None)
         if self._vr_reference is None:
-            self._vr_reference = VrLatestObsReference(
+            self._vr_reference = VrReference(
                 n_fut_frames=getattr(self, "n_fut_frames", 0),
                 num_actions=self.num_actions,
-                expected_dim=self.latest_obs_expected_dim,
+                expected_dim=self.reference_qpos_dim,
             )
         stored = self._vr_reference.store(
             arr,
             current_time=current_time,
+            sample_time=sample_time,
             frame_index=raw_idx,
         )
         if not stored:
             self.get_logger().warn(
-                f"Received latest_obs dim={arr.shape[1]}, expected >= {self.latest_obs_expected_dim}"
+                f"Received reference qpos dim={arr.shape[1]}, expected {self.reference_qpos_dim}"
             )
             return
 
-    def _poll_zmq_latest_obs(self):
-        """Poll the ZMQ latest_obs buffer with stale-data checks and delay."""
+    def _poll_zmq_reference(self):
+        """Poll the ZMQ reference buffer with stale-data checks and delay."""
         current_time = time.time()
 
-        data, timestamp, is_stale, frame_index, sender_timestamp = self._latest_obs_buffer.get_with_age_and_delay(
+        (
+            data,
+            timestamp,
+            is_stale,
+            frame_index,
+            sender_timestamp,
+            sequence,
+        ) = self._reference_buffer.get_with_age_and_delay(
             max_age=self.max_data_age,
             delay_steps=int(getattr(self, "zmq_jitter_delay_frames", 0)),
         )
@@ -969,29 +1039,36 @@ class HoloMotionPolicyNode(Node):
         if data is None:
             return
 
-        if frame_index is not None:
-            self._npz_replay_frame_index = int(frame_index)
-        self._latest_sender_timestamp = sender_timestamp
-
         if is_stale:
             self.stale_data_warning_count += 1
             if self.stale_data_warning_count % 50 == 0:
                 age_ms = (current_time - timestamp) * 1000.0
                 self.get_logger().warn(
-                    f"ZMQ latest_obs is stale: age={age_ms:.1f}ms "
+                    f"ZMQ reference is stale: age={age_ms:.1f}ms "
                     f"(threshold={self.max_data_age*1000:.1f}ms), "
                     f"stale_count={self.stale_data_warning_count}"
                 )
-                queue_stats = self._latest_obs_buffer.get_queue_stats()
-                if queue_stats.get("expected_freq"):
+                queue_stats = self._reference_buffer.get_queue_stats()
+                if queue_stats.get("arrival_freq"):
                     self.get_logger().warn(
-                        f"latest_obs buffer: size={queue_stats['queue_size']}, "
+                        f"reference buffer: size={queue_stats['queue_size']}, "
                         f"avg_interval={queue_stats['avg_interval']*1000:.1f}ms, "
-                        f"expected_freq={queue_stats['expected_freq']:.1f}Hz"
+                        f"reference_arrival={queue_stats['arrival_freq']:.1f}Hz"
                     )
+            return
         else:
             if self.stale_data_warning_count > 0:
                 self.stale_data_warning_count = 0
+
+        # The policy timer may run faster than the reference stream. Advance the
+        # temporal reference queue only once per received transport frame.
+        if sequence == self._last_consumed_reference_sequence:
+            return
+        self._last_consumed_reference_sequence = sequence
+
+        if frame_index is not None:
+            self._npz_replay_frame_index = int(frame_index)
+        self._latest_sender_timestamp = sender_timestamp
 
         if self.last_poll_time is not None:
             poll_interval = current_time - self.last_poll_time
@@ -1001,7 +1078,9 @@ class HoloMotionPolicyNode(Node):
                 )
         self.last_poll_time = current_time
 
-        self._store_vr_latest_obs(np.asarray(data, dtype=np.float32))
+        self._store_vr_reference(
+            np.asarray(data, dtype=np.float32), sample_time=sender_timestamp
+        )
 
         if (
             getattr(self, "enable_teleop_reference", True)
@@ -1009,16 +1088,81 @@ class HoloMotionPolicyNode(Node):
         ):
             self.runtime.mark_vr_queue_ready()
 
-    def _publish_latest_obs(self):
-        """Publish the latest_obs topic for debugging or reuse."""
-        if self._vr_reference is None or self._vr_reference.latest_obs is None:
+    def _poll_local_retarget_reference(self):
+        """Run local Retarget once from the latest Pico pose on this policy tick."""
+        source = self._local_retarget_source
+        if source is None:
+            return
+        result = source.step()
+        if result is None:
+            return
+        reference_qpos, frame_index, sample_meta = result
+        self._npz_replay_frame_index = int(frame_index)
+        current_time = time.time()
+        stored = self._vr_reference.store_device(
+            reference_qpos,
+            current_time=current_time,
+            sample_time=current_time,
+            frame_index=frame_index,
+        )
+        if not stored:
+            self.get_logger().error("Local Retarget returned invalid reference qpos")
+            return
+        self._pending_reference_telemetry = (
+            reference_qpos,
+            int(frame_index),
+            sample_meta,
+        )
+        if self._is_vr_ready_for_motion():
+            self.runtime.mark_vr_queue_ready()
+
+    def _flush_reference_telemetry(self, *, control_elapsed: float) -> None:
+        """Poll/schedule asynchronous snapshots after the action-producing path."""
+        publisher = self._reference_telemetry
+        snapshotter = self._reference_snapshotter
+        pending = self._pending_reference_telemetry
+        self._pending_reference_telemetry = None
+        if publisher is None or snapshotter is None:
+            return
+        min_slack = (
+            float(self.deployment_config.reference_telemetry_min_slack_ms)
+            * 1.0e-3
+        )
+        if float(control_elapsed) + min_slack >= self.dt:
+            publisher.note_deadline_pressure()
             return
         try:
-            msg = self._latest_obs_msg
-            msg.data = self._vr_reference.latest_obs[0].tolist()
-            self.latest_obs_pub.publish(msg)
+            for reference_qpos, frame_index, sample_meta in snapshotter.poll_completed():
+                publisher.submit(
+                    reference_qpos,
+                    frame_index=frame_index,
+                    sample_meta=sample_meta,
+                )
+            if pending is not None:
+                reference_qpos, frame_index, sample_meta = pending
+                snapshotter.offer(
+                    reference_qpos,
+                    frame_index=frame_index,
+                    sample_meta=sample_meta,
+                )
+        except Exception as exc:
+            self._reference_snapshotter = None
+            self.get_logger().error(
+                f"[Telemetry] device snapshot disabled after failure: {exc}"
+            )
+
+    def _publish_reference(self):
+        """Publish the latest reference qpos for debugging or reuse."""
+        if self.reference_source == "pico_local":
+            return
+        if self._vr_reference is None or self._vr_reference.latest_qpos is None:
+            return
+        try:
+            msg = self._reference_msg
+            msg.data = self._vr_reference.latest_qpos.tolist()
+            self.reference_pub.publish(msg)
         except Exception as e:
-            self.get_logger().error(f"Failed to publish latest_obs: {e}")
+            self.get_logger().error(f"Failed to publish reference qpos: {e}")
 
     def _apply_onnx_metadata(self):
         """Apply PD/scale/defaults from ONNX metadata as authoritative values.
@@ -1178,7 +1322,7 @@ class HoloMotionPolicyNode(Node):
                 f"loop_total={sample['loop_total_ms']:.2f}ms "
                 f"io={sample['io_ms']:.2f}ms "
                 f"policy_total={sample['policy_total_ms']:.2f}ms "
-                f"fk={sample['fk_ms']:.2f}ms "
+                f"reference_kinematics={sample['reference_kinematics_ms']:.2f}ms "
                 f"obs={sample['obs_ms']:.2f}ms "
                 f"onnx={sample['onnx_ms']:.2f}ms "
                 f"post={sample['post_ms']:.2f}ms"
@@ -1200,7 +1344,7 @@ class HoloMotionPolicyNode(Node):
             "loop_total_ms",
             "io_ms",
             "policy_total_ms",
-            "fk_ms",
+            "reference_kinematics_ms",
             "obs_ms",
             "onnx_ms",
             "post_ms",
@@ -1245,14 +1389,20 @@ class HoloMotionPolicyNode(Node):
             self.get_logger().info(f"[Policy] main thread pinned to CPUs {main_affinity}")
         self.load_model_config()  # Load config first
         self.update_config_parameters()  # Update parameters from config
-        # Initialize FK for online VR reference reconstruction
-        self.observation_evaluator.initialize_fk()
         self.load_policy()        # Then load policies
         self._apply_onnx_metadata()
         self._init_obs_buffers()
         self._build_dof_mappings()
+        self._init_gpu_motion_observation()
         self._warmup_motion_policy()
         self.observation_evaluator._init_keybody_indices_cache()
+        if self.reference_source == "pico_local":
+            self._local_retarget_source = LocalPicoRetargetSource(
+                logger=self.get_logger(),
+                asset_root=self.deployment_config.local_retarget_asset_root,
+                max_source_age=self.max_data_age,
+            )
+            self._local_retarget_source.start()
         # Always load motion data since we support both modes
         self.load_motion_data()
         self.get_logger().info("Synchronous root-only policy setup completed")
@@ -1261,6 +1411,16 @@ class HoloMotionPolicyNode(Node):
         try:
             if getattr(self, "_zmq_subscriber", None) is not None:
                 self._zmq_subscriber.stop()
+        except Exception:
+            pass
+        try:
+            if getattr(self, "_local_retarget_source", None) is not None:
+                self._local_retarget_source.stop()
+        except Exception:
+            pass
+        try:
+            if getattr(self, "_reference_telemetry", None) is not None:
+                self._reference_telemetry.stop()
         except Exception:
             pass
 
