@@ -160,9 +160,6 @@ The image includes:
 qinghai_v1_4_0.npz
 ```
 
-This sample is filtered with a 3 Hz, 4th-order Butterworth low-pass filter.
-Velocity fields are recomputed from the filtered motion.
-
 Start offline motion tracking:
 
 ```bash
@@ -220,6 +217,41 @@ PICO / XRoboToolkit -> Orin HoloRetarget -> observation -> policy -> robot
 The optional workstation viewer receives telemetry from the robot on port
 `6002`; it is not part of the control path.
 
+### PICO / XRoboToolkit Setup
+
+Use PICO 4 Ultra with XRoboToolkit body tracking. The recommended
+setup uses one headset, two controllers, and two PICO motion trackers strapped
+to the ankles. Keep PICO and the robot on the same low-latency Wi-Fi network.
+
+One-time setup:
+
+1. Install the XRoboToolkit PICO app and enable Developer Mode on PICO.
+2. Pair the two PICO motion trackers and calibrate full-body tracking.
+
+Before teleoperation:
+
+1. Start `holomotion teleop` so the robot-side XRoboToolkit service is running.
+2. In the XRoboToolkit PICO app, set `PC Service` to the robot IP address.
+3. Confirm the status is `WORKING`.
+4. Enable `Head`, `Controller`, `Full body` and `Send`.
+5. Stand in a stable calibration pose until body tracking is visible.
+
+The robot-side service command is configured in the launch profile:
+
+```yaml
+runtime:
+  pico_service_command: "/opt/apps/roboticsservice/runService.sh"
+  pico_service_log: "/tmp/holomotion_pico_service.log"
+
+policy:
+  reference_source: "pico_local"
+  enable_teleop_reference: true
+```
+
+If your image or robot uses a different XRoboToolkit service path, update the
+launch profile in the image or in your derived container. Keep
+`reference_source: "pico_local"` for the v1.4.0 on-robot teleoperation path.
+
 Start teleoperation:
 
 ```bash
@@ -237,6 +269,20 @@ Select: emergency stop
 
 If the logs say the VR queue is not ready, wait until PICO / XRoboToolkit data
 is streaming, then press `B` again.
+
+Useful checks inside the container:
+
+```bash
+tail -f /tmp/holomotion_pico_service.log
+```
+
+Expected startup logs include:
+
+```text
+Starting Pico service: /opt/apps/roboticsservice/runService.sh
+Pico service ready
+Reference source: local Pico/XRoboToolkit on the policy clock
+```
 
 HoloRetarget consumes PICO 24-joint global poses directly in v1.4.0. The robot
 deployment image does not require an SMPL model.
