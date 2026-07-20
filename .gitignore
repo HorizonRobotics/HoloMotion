@@ -49,7 +49,9 @@ __pycache__/
 *.pyc
 *.egg-info
 
-.agents/
+.agents/*
+!.agents/skills/
+!.agents/skills/**
 .codex
 .codex/
 .cursor/

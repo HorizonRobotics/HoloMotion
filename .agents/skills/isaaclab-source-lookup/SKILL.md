@@ -14,34 +14,26 @@ Invoke this skill whenever:
 
 ## Source path
 
-Isaac Lab source is installed under the holomotion_train conda env:
+Isaac Lab source is installed under the environment selected by `train.env`.
+Resolve the Python version instead of hardcoding it:
 
+```bash
+cd <holomotion-root>
+source train.env
+pyver=$("$Train_CONDA_PREFIX/bin/python" -c 'import sys; print(f"python{sys.version_info.major}.{sys.version_info.minor}")')
+source_root="$Train_CONDA_PREFIX/lib/$pyver/site-packages/isaaclab/source"
 ```
-${Train_CONDA_PREFIX}/lib/python3.11/site-packages/isaaclab/source/
-```
-
-Subpackages under `source/` include:
-- `isaaclab/` – core
-- `isaaclab_assets/`
-- `isaaclab_mimic/`
-- `isaaclab_rl/`
-- `isaaclab_tasks/`
 
 ## Resolving the path
 
-`Train_CONDA_PREFIX` is set by sourcing the project env file:
-
-- **From repo root:** `source holomotion/train.env`
-- **From holomotion dir:** `source train.env`
-
-Then the source root is: `"${Train_CONDA_PREFIX}/lib/python3.11/site-packages/isaaclab/source/"`.
-
-When you cannot run shell (e.g. in Cursor), use the typical env path: `$CONDA_BASE/envs/holomotion_train` with `CONDA_BASE` from `conda info --base`, or assume the path is already correct if the user has sourced `train.env`.
+If the computed path does not exist, search only under
+`"$Train_CONDA_PREFIX/lib/"` for `site-packages/isaaclab/source` and report the
+resolved path. Do not assume a global Conda base or Python minor version.
 
 ## How to look up source
 
-1. **Do not import isaaclab.** Importing isaaclab requires the simulator app to be launched first and will fail in normal editor/script contexts.
-2. **Use filesystem tools only:** Read, Glob, and Grep on the source path above.
+1. **Do not import isaaclab.** Resolve the installation with filesystem paths.
+2. **Use filesystem tools only:** prefer `rg`, file listing, and targeted reads.
 3. **Map module to path:** e.g. `isaaclab.envs` → `source/isaaclab/isaaclab/envs/`, `isaaclab_rl` → `source/isaaclab_rl/`.
 4. **Search by symbol or topic:** Use Grep over the source directory for class/function names or keywords.
 
@@ -49,12 +41,12 @@ When you cannot run shell (e.g. in Cursor), use the typical env path: `$CONDA_BA
 
 To find how a VecEnv is created in Isaac Lab RL:
 
-1. Set source root: `"${Train_CONDA_PREFIX}/lib/python3.11/site-packages/isaaclab/source/"`.
+1. Resolve `source_root` with the environment Python version.
 2. Grep for "VecEnv" or "vec_env" under that root.
 3. Read the relevant files with the Read tool.
 
 ## Rules
 
 - Never `import isaaclab` (or subpackages) to get source info; use file-based lookup only.
-- Always use the `source/` subtree; the rest of the site-packages tree may be generated or non-source.
-- Prefer Read/Glob/Grep on the resolved path; run shell only when you need to resolve `Train_CONDA_PREFIX` (e.g. `source holomotion/train.env && echo $Train_CONDA_PREFIX`).
+- Always use the `source/` subtree; the rest of site-packages may be generated or installed wrappers.
+- Cite the source file and relevant symbol in the result.

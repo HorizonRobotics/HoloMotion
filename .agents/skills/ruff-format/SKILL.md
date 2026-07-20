@@ -1,34 +1,33 @@
 ---
 name: ruff-format
-description: Runs project-wise Python formatting with ruff after sourcing train.env for the correct Python path. Use when the user asks to format Python code with ruff, run ruff, or run project-wide formatting.
+description: Format HoloMotion Python files with the Ruff binary selected by train.env. Use when the user asks to format Python code, run Ruff formatting, check formatting, format changed files, or explicitly format the whole project.
 ---
 
-# Ruff format (project-wide)
-
-## When to use
-
-Apply this skill when the user wants to:
-- Run ruff for Python formatting
-- Format project Python code with ruff
-- Run project-wise or project-wide formatting
+# Ruff Format
 
 ## Workflow
 
-1. **Source the environment** (from repo root). This sets `Train_CONDA_PREFIX` so ruff and Python come from the holomotion_train conda env.
-2. **Run ruff** using that env’s binary: `"$Train_CONDA_PREFIX/bin/ruff"`.
+1. Resolve and enter the public HoloMotion Git root.
+2. Source `train.env`.
+3. Verify `"$Train_CONDA_PREFIX/bin/ruff"` exists.
+4. Determine the requested scope.
 
-**Format (write changes), from repo root:**
+Default to explicitly requested files. If the user asks to format current changes, derive the Python file list from staged and unstaged Git changes and exclude deleted files.
+
 ```bash
-source train.env && "$Train_CONDA_PREFIX/bin/ruff" format --config pyproject.toml ./
+"$Train_CONDA_PREFIX/bin/ruff" format --config pyproject.toml <files...>
 ```
 
-**Format check only (no write), from repo root:**
+Use check-only mode when requested:
+
 ```bash
-source train.env && "$Train_CONDA_PREFIX/bin/ruff" format --check --config pyproject.toml ./
+"$Train_CONDA_PREFIX/bin/ruff" format --check --config pyproject.toml <files...>
 ```
 
-## Rules
+Run project-wide formatting only when the user explicitly requests it:
 
-- Always source `train.env` before running ruff.
-- Use `$Train_CONDA_PREFIX/bin/ruff` so the correct env is used.
-- Ruff config is in `pyproject.toml`; from repo root pass `--config pyproject.toml` and target `./`.
+```bash
+"$Train_CONDA_PREFIX/bin/ruff" format --config pyproject.toml .
+```
+
+After formatting, inspect the diff and report files changed. Never revert unrelated user changes.
