@@ -1,27 +1,29 @@
 ---
 name: train-motion-policy
-description: Train, fine-tune, evaluate, and export a HoloMotion motion-tracking policy from robot HDF5 data. Use when users want to fine-tune the released model on their own motions, train a policy, resume a run, evaluate checkpoints, export ONNX, or prepare a model for simulation and deployment.
+description: Train, fine-tune, resume, evaluate, and export a HoloMotion motion policy. Use for dataset selection, configuration preflight, checkpoint lineage, distributed training, evaluation coverage, export parity, and preparation for simulation or deployment.
 ---
 
 # Train Motion Policy
 
-Follow the complete model path:
+Treat training as one contract-preserving pipeline:
 
 ```text
-robot HDF5 -> training or fine-tuning -> offline evaluation -> ONNX export -> sim2sim
+validated data -> training or fine-tuning -> evaluation -> export -> simulation -> deployment gates
 ```
 
-Read `docs/train_motion_tracking.md`, `docs/evaluate_motion_tracking.md`, and `docs/mujoco_sim2sim.md`. Use the project training environment through the `holomotion-train-interpreter` skill.
+Discover the current documentation, environment bootstrap, configuration
+composition, entry points, evaluator, and exporter from the checked-out source.
+Use `holomotion-train-interpreter` to run the selected environment.
 
 ## Choose training or fine-tuning
 
-- Prefer fine-tuning when the user has the released v1.4 checkpoint package and wants to adapt it to custom motion data.
+- Prefer fine-tuning when a compatible released or validated checkpoint exists.
 - Use training from scratch only when requested or when the pretrained policy contract is incompatible.
-- Verify that the checkpoint package contains the main checkpoint and its actor/critic state directories before fine-tuning.
+- Verify checkpoint completeness and optimizer/model-state compatibility before fine-tuning or resume.
 
-Inspect the selected Hydra config rather than relying on remembered defaults. Confirm:
+Inspect the fully composed training config rather than relying on remembered defaults. Confirm:
 
-- every `train_hdf5_roots` path exists and sampling ratios are intentional;
+- every configured dataset exists, is immutable for the run, and has intentional sampling;
 - robot, DOF order, observations, actions, history/future reference, and network module agree;
 - experiment name and output directory are distinct;
 - resume and fine-tune semantics match the user's intent;
@@ -29,34 +31,34 @@ Inspect the selected Hydra config rather than relying on remembered defaults. Co
 
 ## Preflight
 
-Start with the smallest useful command or dry run. For the released fine-tuning entry:
+Resolve the current launcher from documentation and source. Prefer its
+non-submitting dry-run or command-print mode; otherwise inspect it and run the
+smallest local configuration that validates composition and startup. Review
+the resolved command, checkpoint, config, data overrides, topology, and output
+location before starting a long run.
 
-```bash
-HOLOMOTION_FINETUNE_DRY_RUN=1 \
-  bash holomotion/scripts/training/finetune_motion_tracking_v1_4_0.sh
-```
-
-Review the printed command, checkpoint, config, dataset overrides, GPU selection, and output location before starting a long run.
-
-Use:
-
-- `holomotion/scripts/training/finetune_motion_tracking_v1_4_0.sh` for released-model fine-tuning;
-- `holomotion/scripts/training/train_motion_tracking.sh` for the standard public training path.
-
-Do not edit shared base configs merely to launch one experiment. Prefer a dedicated config or explicit Hydra overrides.
+Do not edit shared base configs merely to launch one experiment. Prefer a
+dedicated config or explicit overrides supported by the current configuration
+composer.
 
 ## Evaluate and export
 
 Do not judge a policy from training reward alone.
 
-1. Run offline evaluation with `holomotion/scripts/evaluation/eval_motion_tracking.sh`.
-2. Inspect per-clip failures and generated reports, not only aggregate metrics.
-3. Calculate offline metrics and visualize representative NPZ outputs.
-4. Confirm that evaluation produces the expected ONNX artifact.
-5. Run MuJoCo sim2sim before real-robot deployment when the required assets are available.
+1. Resolve the evaluator and export contract associated with the selected
+   training config rather than assuming a script or flag name.
+2. Require complete intended checkpoint, dataset, and clip coverage.
+3. Inspect per-clip failures and balanced aggregates, not only a global mean.
+4. Use machine-readable reports for exact values and human-readable summaries
+   for review; discover their current schemas from the evaluator.
+5. Confirm exported inputs, outputs, state, preprocessing, and numerical
+   behavior against the training implementation.
+6. Run the currently supported simulation evaluation before real-robot use.
 
 Keep training, evaluation, and deployment observation/action contracts aligned. If exported behavior differs from PyTorch evaluation, localize the first divergent stage before tuning the policy.
 
 ## Completion
 
-Report the exact config, data roots, checkpoint lineage, command, outputs, evaluation evidence, exported model path, and unperformed deployment gates. Never claim real-robot success from simulation-only evidence.
+Report the resolved config, datasets, checkpoint lineage, command, topology,
+outputs, evaluation coverage, exported artifact, and unperformed gates. Never
+claim real-robot success from training or simulation evidence.

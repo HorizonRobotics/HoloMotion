@@ -1,0 +1,4 @@
+interface:
+  display_name: "Benchmark HoloMotion Latency"
+  short_description: "Measure deployment-equivalent inference latency"
+  default_prompt: "Use $benchmark-holomotion-latency to benchmark this model with the deployed contract and report comparable latency metrics."

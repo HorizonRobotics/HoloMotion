@@ -1,5 +1,20 @@
 # HoloMotion Agent Instructions
 
+## Cross-harness discovery
+
+- Treat `.agents/skills/` as the canonical Agent Skills tree. Codex and the
+  official DeepSeek Harness discover it directly.
+- `.claude/skills` must resolve to that same tree so Claude Code uses identical
+  skill content. Never copy skills between the two locations.
+- `AGENTS.md` is the canonical project-instruction file. `CLAUDE.md` must
+  resolve to it so repository rules stay identical across harnesses.
+- Interpret capability names in skills semantically. Use the current harness's
+  equivalent file, search, shell, planning, or user-confirmation tool instead
+  of assuming a vendor-specific tool name.
+- Files under `agents/`, such as `agents/openai.yaml`, are optional
+  harness-specific presentation metadata. They must not contain required
+  workflow semantics.
+
 ## Use project skills automatically
 
 Inspect the skill descriptions under `.agents/skills/` and use every skill that clearly matches the user's task. Do not wait for the user to name a skill.

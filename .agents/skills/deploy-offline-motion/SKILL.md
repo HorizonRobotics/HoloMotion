@@ -1,44 +1,43 @@
 ---
 name: deploy-offline-motion
-description: Deploy and troubleshoot the released HoloMotion model for offline motion tracking on a supported Unitree G1 robot. Use when users want to run the pretrained model, replay the bundled motion, mount a custom motion NPZ, perform the no-action deployment check, or diagnose offline real-robot startup.
+description: Deploy and troubleshoot a HoloMotion policy for offline real-robot motion tracking. Use for deployment preflight, no-action validation, model or motion substitution, controller startup, and offline robot-runtime diagnosis.
 ---
 
 # Deploy Offline Motion
 
-Use the Docker workflow in `docs/realworld_deployment.md`. The supported public v1.4 path is the self-contained robot deployment image, not a host-side training environment.
+Treat the current repository documentation, deployment profile, launcher, and
+runtime CLI as the source of truth. Discover their current locations and
+interfaces before constructing commands; do not reuse paths or flags from a
+remembered release.
 
 ## Safety boundary
 
-`holomotion check` is no-action validation. `holomotion offline` can send robot actions.
-
-Never start the container command that operates the robot, run `holomotion offline`, or change robot mode without explicit user confirmation. Before requesting confirmation, state the exact command, robot, motion file, operator stop method, and whether the robot is suspended or in a safe fixture.
+Separate no-action validation from any command that can publish control. Never
+start an actuating runtime or change robot mode without explicit user
+confirmation immediately before the action. State the exact resolved command,
+target robot, artifact, motion source, fixture state, and stop method.
 
 ## Workflow
 
-1. Confirm the supported robot, DOF configuration, onboard runtime, Docker runtime, network interface, and remote controller are available.
-2. Follow the image pull/load and container startup instructions in `docs/realworld_deployment.md`.
-3. Run:
-
-   ```bash
-   holomotion check
-   ```
-
-4. Continue only when the check explicitly reports that it passed and no action was sent.
-5. For the first active test, use the bundled model and bundled offline motion.
-6. Confirm robot preparation and emergency-stop readiness.
-7. Ask for explicit approval immediately before running:
-
-   ```bash
-   holomotion offline
-   ```
-
-8. Observe startup and controller transitions. Stop immediately on unexpected motion.
+1. Resolve the supported robot contract, DOF ordering, runtime environment,
+   deployment profile, network interface, controller states, and stop path.
+2. Resolve the current no-action preflight from the CLI help, launcher, and
+   documentation. Verify artifact readability, schemas, providers, dimensions,
+   and configuration without starting the controller.
+3. Continue only when the preflight explicitly succeeds and evidence confirms
+   that no action publisher or robot process was started.
+4. Hold model, motion, profile, and runtime constant for the first active test.
+   Prefer repository-provided baseline artifacts before substitutions.
+5. Obtain confirmation immediately before the resolved actuating command.
+6. Observe every controller transition and stop on unexpected state or motion.
 
 ## Custom motion
 
-Validate the custom NPZ before mounting it into the container. It must follow `docs/holomotion_motion_file_spec.md` and the deployment requirements in `docs/realworld_deployment.md`.
-
-Check the six required `ref_*` arrays, consistent frame counts, finite values, expected 29-DOF and body layouts, quaternion order, units, frame rate metadata, and plausible joint motion. Test the custom clip in visualization or simulation before real-robot use.
+Resolve the current motion schema from the checked-in specification, loader,
+and validator. Check required fields, shapes, ordering, units, rotations,
+timestamps, finite values, and semantic plausibility. Validate the same file
+with the deployed loader and test it in visualization or simulation before
+real-robot use.
 
 Run the bundled motion successfully before substituting a custom clip or custom model. Change one variable at a time.
 
@@ -46,13 +45,15 @@ Run the bundled motion successfully before substituting a custom clip or custom 
 
 Localize failures in this order:
 
-1. image and architecture;
-2. Docker/NVIDIA runtime;
-3. launch profile and network;
-4. model and ONNX providers;
-5. motion NPZ schema;
-6. controller readiness and mode transition;
-7. policy runtime;
+1. package or image and target architecture;
+2. accelerator and container runtime;
+3. resolved profile, mounts, and network;
+4. model loading and execution provider;
+5. motion schema and preprocessing;
+6. controller readiness and state transition;
+7. policy timing and output validity;
 8. physical behavior.
 
-Do not bypass a failed `holomotion check`. Report the last successful stage, first failing stage, relevant logs, and whether any robot action was sent.
+Do not bypass a failed no-action gate. Report the last successful stage, first
+failing boundary, exact resolved artifacts and interfaces, relevant evidence,
+and whether any robot action was sent.
