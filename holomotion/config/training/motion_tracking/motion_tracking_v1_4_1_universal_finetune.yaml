@@ -1,0 +1,62 @@
+# @package _global_
+
+defaults:
+  - /training/motion_tracking/motion_tracking_v1_4_0_finetune
+  - _self_
+
+project_name: HoloMotionMotrackV1.4.1
+
+algo:
+  config:
+    # Continue the published model_14000 lineage through model_20000 while
+    # retaining finetune semantics (strict weights, fresh optimizer state).
+    finetune_continue_iteration: true
+    num_learning_iterations: 6000
+    save_interval: 1000
+    actor_learning_rate: 1.0e-5
+    entropy_coef: 1.0e-3
+
+# Assign all 66 physically unique robot combinations round-robin within every
+# rank. Heterogeneous assets require physics replication to be disabled.
+robot:
+  asset:
+    urdf_variant_mode: per_env
+    urdf_variant_glob: ${oc.env:HOLOMOTION_G1_VARIANT_GLOB,assets/robots/unitree/G1/modular/generated/urdf/g1_*.urdf}
+    urdf_variant_expected_count: 66
+    usd_cache_root: ${oc.env:HOLOMOTION_USD_CACHE_ROOT,""}
+    force_usd_conversion: false
+
+env:
+  config:
+    replicate_physics: false
+    # Inherit the v1.4 action term unchanged. Its Isaac articulation order is
+    # part of the model_14000 checkpoint and deployment contract.
+
+domain_rand:
+  # Cover the official 1.9 kg AGX backpack with margin while retaining the
+  # inherited v1.4 additive mass uncertainty on both pelvis and torso.
+  randomize_mass:
+    params:
+      mass_range: [-1.0, 3.0]
+
+  # ULC-paper-style additive wrist loading, with a 1.5 kg total-object
+  # contract across one or both hands.
+  # Sampling is startup-only: thousands of environments provide diversity
+  # without CPU PhysX property writes on every short motion episode reset.
+  hand_payload_mass:
+    mode: startup
+    params:
+      asset_name: robot
+      body_names:
+        - left_wrist_yaw_link
+        - right_wrist_yaw_link
+      object_mass_range: [0.0, 1.5]
+      hardware_mass_range: [0.0, 0.4]
+      mode_probabilities: [0.10, 0.30, 0.30, 0.30]
+      bimanual_split_range: [0.3, 0.7]
+      recompute_inertia: true
+
+# Universal morphology evaluation needs a multi-scene matrix; keep the legacy
+# single-scene post-hook off and run the dedicated evaluation job separately.
+mujoco_eval:
+  enabled: false

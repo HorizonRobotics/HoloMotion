@@ -15,10 +15,8 @@
 # permissions and limitations under the License.
 
 
-
 import copy
 import os
-import time
 from dataclasses import MISSING
 
 import isaaclab.sim as sim_utils
@@ -29,6 +27,7 @@ from isaaclab.sensors import ContactSensorCfg, RayCasterCfg, patterns
 from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.utils import configclass
 from loguru import logger
+
 from holomotion.src.env.isaaclab_components.isaaclab_terrain import (
     build_terrain_config,
 )
@@ -38,6 +37,95 @@ from holomotion.src.env.isaaclab_components.unitree_actuators import (
     UnitreeErfiActuator,
     UnitreeErfiActuatorCfg,
 )
+from holomotion.src.utils.g1_variants import (
+    ResolvedRobotVariant,
+    prepare_shared_file_cache,
+    resolve_rank_urdf_path,
+    resolve_urdf_variants,
+    variant_source_signature,
+)
+
+
+def _make_urdf_spawn_cfg(
+    urdf_path: str,
+    usd_dir: str,
+    force_usd_conversion: bool,
+    root_link_name: str,
+) -> sim_utils.UrdfFileCfg:
+    os.makedirs(usd_dir, exist_ok=True)
+    return sim_utils.UrdfFileCfg(
+        asset_path=os.path.abspath(urdf_path),
+        usd_dir=os.path.abspath(usd_dir),
+        force_usd_conversion=force_usd_conversion,
+        fix_base=False,
+        merge_fixed_joints=True,
+        root_link_name=root_link_name,
+        replace_cylinders_with_capsules=True,
+        activate_contact_sensors=True,
+        rigid_props=sim_utils.RigidBodyPropertiesCfg(
+            disable_gravity=False,
+            retain_accelerations=False,
+            linear_damping=0.0,
+            angular_damping=0.0,
+            max_linear_velocity=1000.0,
+            max_angular_velocity=1000.0,
+            max_depenetration_velocity=1.0,
+        ),
+        articulation_props=sim_utils.ArticulationRootPropertiesCfg(
+            enabled_self_collisions=True,
+            solver_position_iteration_count=8,
+            solver_velocity_iteration_count=4,
+        ),
+        joint_drive=sim_utils.UrdfConverterCfg.JointDriveCfg(
+            gains=sim_utils.UrdfConverterCfg.JointDriveCfg.PDGainsCfg(
+                stiffness=0,
+                damping=0,
+            )
+        ),
+    )
+
+
+def _spawn_round_robin_usd(
+    prim_path: str,
+    cfg,
+    translation=None,
+    orientation=None,
+    **kwargs,
+):
+    """Reference one pre-converted articulation USD directly into each env."""
+
+    import isaacsim.core.utils.prims as prim_utils
+
+    root_path, asset_name = prim_path.rsplit("/", 1)
+    source_prim_paths = sim_utils.find_matching_prim_paths(root_path)
+    if not source_prim_paths:
+        raise RuntimeError(f"No environment prims match: {root_path}")
+    usd_paths = list(cfg.usd_path)
+    template_cfg = sim_utils.UsdFileCfg(
+        usd_path=usd_paths[0],
+        activate_contact_sensors=cfg.activate_contact_sensors,
+        rigid_props=cfg.rigid_props,
+        articulation_props=cfg.articulation_props,
+    )
+    for index, source_prim_path in enumerate(source_prim_paths):
+        selected_cfg = template_cfg.replace(
+            usd_path=usd_paths[index % len(usd_paths)]
+        )
+        selected_cfg.func(
+            f"{source_prim_path}/{asset_name}",
+            selected_cfg,
+            translation=translation,
+            orientation=orientation,
+            **kwargs,
+        )
+    return prim_utils.get_prim_at_path(f"{source_prim_paths[0]}/{asset_name}")
+
+
+@configclass
+class RoundRobinUsdFileCfg(sim_utils.MultiUsdFileCfg):
+    """Multi-USD spawner that avoids prototype copying for articulations."""
+
+    func = _spawn_round_robin_usd
 
 
 class SceneFunctions:
@@ -50,6 +138,7 @@ class SceneFunctions:
         main_process: bool = True,
         process_id: int = 0,
         num_processes: int = 1,
+        resolved_robot_variant: ResolvedRobotVariant | None = None,
     ) -> ArticulationCfg:
         """Build robot articulation configuration.
 
@@ -59,7 +148,25 @@ class SceneFunctions:
             process_id: Process ID/rank (from compiled config)
             num_processes: Total number of processes (from compiled config)
         """
-        urdf_path = config.asset.urdf_file
+        variant_mode = str(
+            config.asset.get("urdf_variant_mode", "per_rank")
+        ).lower()
+        urdf_variants = resolve_urdf_variants(config.asset)
+        if resolved_robot_variant is not None:
+            if variant_mode == "per_env" and len(urdf_variants) > 1:
+                raise ValueError(
+                    "A single resolved rank URDF cannot represent "
+                    "per-environment variants."
+                )
+            urdf_path = resolved_robot_variant.urdf_path
+            urdf_variant_index = resolved_robot_variant.variant_index
+        elif variant_mode == "per_env" and urdf_variants:
+            urdf_path = urdf_variants[0]
+            urdf_variant_index = None
+        else:
+            urdf_path, urdf_variant_index = resolve_rank_urdf_path(
+                config.asset, process_id, num_processes
+            )
         init_pos = config.init_state.pos
         default_joint_positions = config.init_state.default_joint_angles
         root_link_name = config.get("root_name", "pelvis")
@@ -80,114 +187,142 @@ class SceneFunctions:
         logger.info(f"Using {actuator_type} actuators")
         logger.info(f"Actuators: {actuators}")
 
-        if not os.path.exists(urdf_path):
-            raise FileNotFoundError(f"URDF file not found: {urdf_path}")
-
-        # Configure USD output directory. Optionally isolate per rank to avoid races.
-        usd_base_dir = os.path.join(os.path.dirname(urdf_path), "usd")
-        unique_usd_per_rank = True
-        if num_processes > 1 and unique_usd_per_rank:
-            usd_dir = os.path.join(usd_base_dir, f"rank_{process_id}")
-        else:
-            usd_dir = usd_base_dir
-        os.makedirs(usd_dir, exist_ok=True)
-        logger.info(f"Using URDF path: {urdf_path}")
-        logger.info(f"Using USD directory: {usd_dir}")
-
-        force_usd_conversion = config.asset.get("force_usd_conversion", True)
-        if num_processes > 1 and unique_usd_per_rank:
-            # Ensure each rank generates its own USD into its isolated directory
-            force_usd_conversion = True
-
-        # Handle DDP
-        if num_processes > 1:
+        if urdf_variant_index is not None:
             logger.info(
-                f"[Process {process_id}/{num_processes}] Distributed training detected"
+                "Per-rank URDF variant: process {}/{} -> [{}] {}",
+                process_id,
+                num_processes,
+                urdf_variant_index,
+                urdf_path,
+            )
+        if resolved_robot_variant is not None:
+            logger.info(
+                "Rank URDF contract: process {}/{} path={} sha256={}",
+                process_id,
+                num_processes,
+                resolved_robot_variant.urdf_path,
+                resolved_robot_variant.urdf_sha256,
             )
 
-            if unique_usd_per_rank:
-                logger.info(
-                    f"[Process {process_id}] Using per-rank USD dir; forcing USD conversion: {force_usd_conversion}"
-                )
-            else:
-                # Only main process should convert USD to avoid file conflicts
-                if main_process:
-                    logger.info(
-                        f"[Process {process_id}] Main process - Force USD conversion: {force_usd_conversion}"
-                    )
-                else:
-                    logger.info(
-                        f"[Process {process_id}] Non-main process - Skipping USD conversion, waiting for main process"
-                    )
-                    force_usd_conversion = False
-
-                    # Wait for USD files to be created by main process
-                    urdf_basename = os.path.splitext(
-                        os.path.basename(urdf_path)
-                    )[0]
-                    expected_usd_file = os.path.join(
-                        usd_dir, f"{urdf_basename}.usd"
-                    )
-
-                    logger.info(
-                        f"[Process {process_id}] Waiting for main process to create USD files at {expected_usd_file}..."
-                    )
-                    max_wait = 60
-                    wait_interval = 1
-                    waited = 0
-
-                    while (
-                        not os.path.exists(expected_usd_file)
-                        and waited < max_wait
-                    ):
-                        time.sleep(wait_interval)
-                        waited += wait_interval
-
-                    if os.path.exists(expected_usd_file):
-                        logger.info(
-                            f"[Process {process_id}] USD file found, proceeding with loading"
-                        )
-                    else:
-                        logger.warning(
-                            f"[Process {process_id}] USD file not found after {max_wait}s, proceeding anyway"
-                        )
-        else:
+        if variant_mode == "per_env" and urdf_variants:
             logger.info(
-                f"Single process training. Force USD conversion: {force_usd_conversion}"
+                "Per-environment URDF variants: {} assets assigned "
+                "round-robin on process {}/{}",
+                len(urdf_variants),
+                process_id,
+                num_processes,
+            )
+
+        selected_urdf_paths = (
+            urdf_variants
+            if variant_mode == "per_env" and urdf_variants
+            else [urdf_path]
+        )
+        for selected_path in selected_urdf_paths:
+            if not os.path.exists(selected_path):
+                raise FileNotFoundError(
+                    f"URDF file not found: {selected_path}"
+                )
+
+        # Configure USD output directory.
+        usd_base_dir = config.asset.get("usd_cache_root") or os.path.join(
+            os.path.dirname(urdf_path), "usd"
+        )
+        force_usd_conversion = config.asset.get("force_usd_conversion", True)
+        logger.info(f"Using URDF path: {urdf_path}")
+        logger.info(f"Using USD cache root: {usd_base_dir}")
+
+        if variant_mode == "per_env" and len(selected_urdf_paths) > 1:
+            from isaaclab.sim import converters
+
+            if num_processes > 1 and force_usd_conversion:
+                raise ValueError(
+                    "Distributed per-environment variants require "
+                    "force_usd_conversion=false. Delete or prewarm the shared "
+                    "cache when a full rebuild is required."
+                )
+            urdf_spawn_cfgs = [
+                _make_urdf_spawn_cfg(
+                    selected_path,
+                    os.path.join(
+                        usd_base_dir,
+                        os.path.splitext(os.path.basename(selected_path))[0],
+                    ),
+                    force_usd_conversion,
+                    root_link_name,
+                )
+                for selected_path in selected_urdf_paths
+            ]
+            expected_usd_paths = [
+                os.path.join(
+                    urdf_cfg.usd_dir,
+                    f"{os.path.splitext(os.path.basename(urdf_cfg.asset_path))[0]}.usd",
+                )
+                for urdf_cfg in urdf_spawn_cfgs
+            ]
+            cache_key = variant_source_signature(
+                selected_urdf_paths,
+                conversion_options={
+                    "root_link_name": root_link_name,
+                    "fix_base": False,
+                    "merge_fixed_joints": True,
+                    "replace_cylinders_with_capsules": True,
+                    "activate_contact_sensors": True,
+                },
+            )
+
+            def _populate_usd_cache():
+                return [
+                    converters.UrdfConverter(urdf_cfg).usd_path
+                    for urdf_cfg in urdf_spawn_cfgs
+                ]
+
+            usd_paths, prepared_cache = prepare_shared_file_cache(
+                usd_base_dir,
+                cache_key=cache_key,
+                expected_paths=expected_usd_paths,
+                populate=_populate_usd_cache,
+                force=force_usd_conversion,
+            )
+            cache_action = "prepared" if prepared_cache else "reused"
+            logger.info(
+                "[Process {}/{}] {} shared USD cache with {} variants",
+                process_id,
+                num_processes,
+                cache_action,
+                len(usd_paths),
+            )
+            spawn_cfg = RoundRobinUsdFileCfg(
+                usd_path=usd_paths,
+                activate_contact_sensors=True,
+                rigid_props=urdf_spawn_cfgs[0].rigid_props,
+                articulation_props=urdf_spawn_cfgs[0].articulation_props,
+            )
+        else:
+            # Legacy homogeneous/per-rank mode keeps rank-isolated converter
+            # outputs because its source asset may intentionally differ by rank.
+            usd_dir = (
+                os.path.join(usd_base_dir, f"rank_{process_id}")
+                if num_processes > 1
+                else usd_base_dir
+            )
+            if num_processes > 1:
+                force_usd_conversion = True
+                logger.info(
+                    "[Process {}/{}] using rank-isolated USD conversion",
+                    process_id,
+                    num_processes,
+                )
+            spawn_cfg = _make_urdf_spawn_cfg(
+                urdf_path,
+                usd_dir,
+                force_usd_conversion,
+                root_link_name,
             )
 
         articulation_cfg = ArticulationCfg(
             prim_path=prim_path,
-            spawn=sim_utils.UrdfFileCfg(
-                asset_path=os.path.abspath(urdf_path),
-                usd_dir=os.path.abspath(usd_dir),
-                force_usd_conversion=force_usd_conversion,
-                fix_base=False,
-                merge_fixed_joints=True,
-                root_link_name=root_link_name,
-                replace_cylinders_with_capsules=True,
-                activate_contact_sensors=True,
-                rigid_props=sim_utils.RigidBodyPropertiesCfg(
-                    disable_gravity=False,
-                    retain_accelerations=False,
-                    linear_damping=0.0,
-                    angular_damping=0.0,
-                    max_linear_velocity=1000.0,
-                    max_angular_velocity=1000.0,
-                    max_depenetration_velocity=1.0,
-                ),
-                articulation_props=sim_utils.ArticulationRootPropertiesCfg(
-                    enabled_self_collisions=True,
-                    solver_position_iteration_count=8,
-                    solver_velocity_iteration_count=4,
-                ),
-                joint_drive=sim_utils.UrdfConverterCfg.JointDriveCfg(
-                    gains=sim_utils.UrdfConverterCfg.JointDriveCfg.PDGainsCfg(
-                        stiffness=0,
-                        damping=0,
-                    )
-                ),
-            ),
+            spawn=spawn_cfg,
             init_state=ArticulationCfg.InitialStateCfg(
                 pos=init_pos,
                 joint_pos=default_joint_positions,
@@ -255,6 +390,7 @@ def build_scene_config(
     main_process: bool = True,
     process_id: int = 0,
     num_processes: int = 1,
+    resolved_robot_variant: ResolvedRobotVariant | None = None,
 ) -> MotionTrackingSceneCfg:
     """Build IsaacLab-compatible scene configuration from config dictionary.
 
@@ -276,12 +412,18 @@ def build_scene_config(
     # Build robot configuration with process info
     if "robot" in scene_config_dict:
         robot_config = scene_config_dict["robot"]
+        if robot_config.asset.get("urdf_variant_mode") == "per_env":
+            scene_cfg.replicate_physics = False
+            logger.info(
+                "Per-environment URDF variants require replicate_physics=False"
+            )
         scene_cfg.robot = SceneFunctions.build_robot_config(
             robot_config,
             domain_rand_config=scene_config_dict.get("domain_rand", {}),
             main_process=main_process,
             process_id=process_id,
             num_processes=num_processes,
+            resolved_robot_variant=resolved_robot_variant,
         )
 
     # Build terrain configuration

@@ -263,6 +263,9 @@ class MLP(nn.Module):
         self.hidden_norm_eps = float(
             module_config_dict.get("hidden_norm_eps", 1.0e-6)
         )
+        self.use_checkpointing = bool(
+            module_config_dict.get("use_checkpointing", False)
+        )
 
         layer_config = self.module_config_dict["layer_config"]
         hidden_dims: list[int] = list(layer_config.get("hidden_dims", []))
@@ -296,7 +299,14 @@ class MLP(nn.Module):
         """
         if not isinstance(x, torch.Tensor):
             raise TypeError(f"MLP expects torch.Tensor input, got {type(x)}")
-        h = self.trunk(x)
+        if self.use_checkpointing and self.training and torch.is_grad_enabled():
+            h = checkpoint.checkpoint(
+                self.trunk,
+                x,
+                use_reentrant=False,
+            )
+        else:
+            h = self.trunk(x)
         return self.output_head(h)
 
 
@@ -2019,6 +2029,82 @@ class GroupedMoETransformerPolicy(nn.Module):
 
         h = self.norm_f(h)
         return self.action_mu_head(h[:, 0, :])
+
+    def single_step_mu_chunked(
+        self, x: torch.Tensor, chunk_size: int
+    ) -> torch.Tensor:
+        """Run the cached single-step path in contiguous environment chunks.
+
+        The cache and per-environment router history remain one logical batch;
+        only transient forward activations are chunked.  This is intended for
+        large rollout batches where the environment count must stay unchanged.
+        """
+        if x.ndim != 2:
+            raise ValueError(f"Expected [B, D], got {x.shape}")
+        chunk_size = int(chunk_size)
+        if chunk_size <= 0:
+            raise ValueError("chunk_size must be positive")
+        batch_size = int(x.shape[0])
+        if batch_size <= chunk_size:
+            return self.single_step_mu(x)
+        if self._k_cache is None:
+            return torch.cat(
+                [
+                    self.single_step_mu(x[start:end])
+                    for start in range(0, batch_size, chunk_size)
+                    for end in [min(start + chunk_size, batch_size)]
+                ],
+                dim=0,
+            )
+        if int(self._k_cache.shape[0]) != batch_size:
+            raise ValueError(
+                "KV cache batch size must match rollout batch size: "
+                f"cache={int(self._k_cache.shape[0])}, input={batch_size}."
+            )
+
+        # Match the existing full-batch path's one-time cache promotion before
+        # taking views.  Otherwise a chunk-local dtype conversion would detach
+        # that chunk from the full cache.
+        compute_dtype = next(self.obs_embed.parameters()).dtype
+        if self._k_cache.dtype != compute_dtype:
+            self._k_cache = self._k_cache.to(compute_dtype)
+            self._v_cache = self._v_cache.to(compute_dtype)
+
+        per_env_attrs = (
+            "_k_cache",
+            "_v_cache",
+            "_kv_cache_len",
+            "_kv_cache_write_idx",
+            "_kv_cache_abs_pos",
+            "_prev_last_moe_router_p",
+            "_prev_last_moe_router_valid",
+        )
+        full_state = {
+            name: getattr(self, name)
+            for name in per_env_attrs
+            if getattr(self, name) is not None
+        }
+        outputs: list[torch.Tensor] = []
+        try:
+            for start in range(0, batch_size, chunk_size):
+                end = min(start + chunk_size, batch_size)
+                for name, tensor in full_state.items():
+                    setattr(self, name, tensor[start:end])
+                outputs.append(self.single_step_mu(x[start:end]))
+
+                # Cache K/V and router history update their sliced views
+                # in-place.  The three integer cache-state tensors are rebound
+                # by single_step_mu, so copy those values back explicitly.
+                for name in (
+                    "_kv_cache_len",
+                    "_kv_cache_write_idx",
+                    "_kv_cache_abs_pos",
+                ):
+                    full_state[name][start:end].copy_(getattr(self, name))
+        finally:
+            for name, tensor in full_state.items():
+                setattr(self, name, tensor)
+        return torch.cat(outputs, dim=0)
 
     def _forward_inference_onnx(
         self,

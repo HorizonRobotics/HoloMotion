@@ -26,6 +26,7 @@ import numpy as np
 import torch
 from accelerate import Accelerator
 from accelerate.utils import (
+    DistributedDataParallelKwargs,
     ProjectConfiguration,
     TorchDynamoPlugin,
     load_checkpoint_in_model,
@@ -73,6 +74,12 @@ class BaseOnpolicyRL:
             os.makedirs(self.log_dir, exist_ok=True)
 
         accelerator_kwargs = {}
+        if bool(self.config.get("ddp_gradient_as_bucket_view", False)):
+            accelerator_kwargs["kwargs_handlers"] = [
+                DistributedDataParallelKwargs(
+                    gradient_as_bucket_view=True,
+                )
+            ]
         mixed_precision = self.config.get("mixed_precision", None)
         if mixed_precision in ("fp16", "bf16"):
             accelerator_kwargs["mixed_precision"] = mixed_precision
@@ -250,6 +257,11 @@ class BaseOnpolicyRL:
             "enable_cameras": enable_cameras,
             "video": _record_video,
             "device": device_str,
+            # SimulationApp defaults multi_gpu=True and appends that setting
+            # after generic Kit arguments.  Pass the launcher option explicitly
+            # so every distributed rank only creates a graphics context on its
+            # assigned GPU.
+            "multi_gpu": False,
             "kit_args": kit_args_str,
         }
 
@@ -299,6 +311,11 @@ class BaseOnpolicyRL:
         self.save_interval = self.config.save_interval
         self.log_interval = self.config.log_interval
         self.num_steps_per_env = self.config.num_steps_per_env
+        self.rollout_forward_chunk_size = int(
+            self.config.get("rollout_forward_chunk_size", 0)
+        )
+        if self.rollout_forward_chunk_size < 0:
+            raise ValueError("rollout_forward_chunk_size must be >= 0")
         self.num_learning_iterations = self.config.num_learning_iterations
         self.total_learning_iterations = int(self.num_learning_iterations)
 
@@ -441,17 +458,25 @@ class BaseOnpolicyRL:
         track_episode_stats: bool = True,
     ) -> TensorDict:
         update_obs_norm = not self.is_offline_eval
+        forward_kwargs = {}
+        if self.rollout_forward_chunk_size > 0:
+            forward_kwargs["forward_chunk_size"] = (
+                self.rollout_forward_chunk_size
+            )
         with self.accelerator.autocast():
             actor_out: TensorDict = self.actor(
                 obs_td,
                 actions=None,
                 mode=actor_mode,
                 update_obs_norm=update_obs_norm,
+                **forward_kwargs,
             )
             critic_out: TensorDict | None = None
             if collect_transition:
                 critic_out = self.critic(
-                    obs_td, update_obs_norm=update_obs_norm
+                    obs_td,
+                    update_obs_norm=update_obs_norm,
+                    **forward_kwargs,
                 )
 
         if collect_transition:
@@ -509,9 +534,18 @@ class BaseOnpolicyRL:
 
     def _compute_returns(self, obs_td: TensorDict) -> None:
         update_obs_norm = not self.is_offline_eval
+        forward_kwargs = {}
+        if self.rollout_forward_chunk_size > 0:
+            forward_kwargs["forward_chunk_size"] = (
+                self.rollout_forward_chunk_size
+            )
         with self.accelerator.autocast():
             last_values = (
-                self.critic(obs_td, update_obs_norm=update_obs_norm)
+                self.critic(
+                    obs_td,
+                    update_obs_norm=update_obs_norm,
+                    **forward_kwargs,
+                )
                 .get("values")
                 .detach()
             )

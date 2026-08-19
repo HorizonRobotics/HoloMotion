@@ -14,9 +14,15 @@
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
+set -eo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+cd "$REPO_ROOT"
+
 source train.env
 
-export CUDA_VISIBLE_DEVICES=0
+export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 
 if [[ $(echo ${CUDA_VISIBLE_DEVICES} | tr ',' '\n' | wc -l) -eq 1 ]]; then
     USE_MULTI_GPU=false
@@ -35,16 +41,22 @@ COMMON_ARGS=(
     "num_envs=${num_envs}"
     "headless=true"
     "experiment_name=${config_name}"
+    "$@"
 )
 
-trap cleanup SIGINT SIGTERM
+LAUNCH_ARGS=()
 if [[ "${USE_MULTI_GPU}" == "true" ]]; then
-    ${Train_CONDA_PREFIX}/bin/accelerate launch \
-        --multi_gpu \
-        "${COMMON_ARGS[@]}"
-else
-    ${Train_CONDA_PREFIX}/bin/accelerate launch \
-        "${COMMON_ARGS[@]}"
+    LAUNCH_ARGS+=(--multi_gpu)
 fi
-wait ${TRAIN_PID}
-trap - SIGINT SIGTERM
+
+if [[ "${HOLOMOTION_TRAIN_DRY_RUN:-0}" == "1" ]]; then
+    printf 'Training command:'
+    printf ' %q' "${Train_CONDA_PREFIX}/bin/accelerate" launch
+    printf ' %q' "${LAUNCH_ARGS[@]}" "${COMMON_ARGS[@]}"
+    printf '\n'
+    exit 0
+fi
+
+exec "${Train_CONDA_PREFIX}/bin/accelerate" launch \
+    "${LAUNCH_ARGS[@]}" \
+    "${COMMON_ARGS[@]}"

@@ -54,6 +54,5 @@ thirdparties/smpl_models/SMPL_python_v.1.1.0/smpl/models/basicmodel_neutral_lbs_
 Download `SMPL_python_v.1.1.0.zip` from the official SMPL website and extract it
 under `thirdparties/smpl_models/`. The directory is intentionally gitignored.
 
-For private cluster jobs, `scripts/orchard_holoretarget_submit.sh` validates this
-file and copies the dereferenced model into the private job package. Do not
-commit the SMPL model file or include it in public release archives.
+Do not commit the licensed SMPL model file or include it in public release
+archives. Keep it in the gitignored local asset directory above.

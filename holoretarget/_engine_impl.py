@@ -385,6 +385,7 @@ class HoloNewtonG1Retargeter:
         robot: str = "unitree_g1",
         actual_human_height: Optional[float] = None,
         ik_iterations: int = 1,
+        step_size: float = 0.75,
         use_cuda_graph: bool = True,
         joint_limit_weight: float = 10.0,
         max_joint_step: float = 0.1,
@@ -406,6 +407,9 @@ class HoloNewtonG1Retargeter:
         self.src_human = src_human
         self.robot = robot
         self.ik_iterations = max(1, int(ik_iterations))
+        self.step_size = float(step_size)
+        if not np.isfinite(self.step_size) or self.step_size <= 0.0:
+            raise ValueError("Newton step_size must be finite and positive")
         self.use_cuda_graph = bool(use_cuda_graph)
         self.graph_target_copy = _env_bool("HOLORETARGET_GRAPH_TARGET_COPY", False)
         self.native_direct_targets = _env_bool("HOLORETARGET_NATIVE_DIRECT_TARGETS", False)
@@ -854,6 +858,7 @@ class HoloNewtonG1Retargeter:
             self.joint_q,
             self.joint_q,
             iterations=max(1, int(self.ik_iterations)),
+            step_size=self.step_size,
         )
 
     def _project_dofs_to_continuous_limits(self, dof_pos: np.ndarray) -> np.ndarray:
@@ -1570,6 +1575,7 @@ class HoloRetargetRunner:
         src_human: str = "xrobot",
         offset_to_ground: bool = False,
         newton_iterations: Optional[int] = None,
+        newton_step_size: float = 0.75,
         newton_cuda_graph: bool = True,
         newton_joint_limit_weight: float = 10.0,
         newton_max_joint_step: float = 0.1,
@@ -1611,6 +1617,7 @@ class HoloRetargetRunner:
             robot=robot,
             actual_human_height=None,
             ik_iterations=solve_iterations,
+            step_size=newton_step_size,
             use_cuda_graph=newton_cuda_graph,
             joint_limit_weight=newton_joint_limit_weight,
             max_joint_step=newton_max_joint_step,

@@ -31,7 +31,7 @@ if os.path.exists(launch_profiles_dir):
 
 setup(
     name=package_name,
-    version="1.4.0",
+    version="1.4.1",
     packages=find_packages(),
     data_files=data_files,
     install_requires=["setuptools"],

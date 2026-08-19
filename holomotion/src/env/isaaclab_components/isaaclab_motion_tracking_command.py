@@ -467,6 +467,9 @@ class RefMotionCommand(CommandTerm):
                 sampler_rank=int(self.cfg.process_id),
                 sampler_world_size=int(self.cfg.num_processes),
                 allowed_prefixes=allowed_prefixes,
+                excluded_tensor_names=cache_cfg.get(
+                    "excluded_tensor_names", None
+                ),
                 swap_interval_steps=int(
                     cache_cfg.get("swap_interval_steps", max_frame_length)
                 ),
@@ -639,6 +642,9 @@ class RefMotionCommand(CommandTerm):
                 sampler_rank=int(self.cfg.process_id),
                 sampler_world_size=int(self.cfg.num_processes),
                 allowed_prefixes=allowed_prefixes,
+                excluded_tensor_names=cache_cfg.get(
+                    "excluded_tensor_names", None
+                ),
                 swap_interval_steps=int(
                     cache_cfg.get("swap_interval_steps", max_frame_length)
                 ),

@@ -906,6 +906,7 @@ class PPOCritic(TensorDictModuleBase):
         self,
         obs_td: TensorDict,
         update_obs_norm: bool = True,
+        forward_chunk_size: int = 0,
         **kwargs,
     ) -> TensorDict:
         """TensorDict-first forward for PPOCritic.
@@ -937,7 +938,20 @@ class PPOCritic(TensorDictModuleBase):
         update = bool(update_obs_norm)
         for fn in self.critic_obs_transforms:
             critic_obs = fn(critic_obs, update)
-        values = self.critic_module(critic_obs)
+        chunk_size = int(forward_chunk_size)
+        if chunk_size > 0 and int(critic_obs.shape[0]) > chunk_size:
+            values = torch.cat(
+                [
+                    self.critic_module(critic_obs[start:end])
+                    for start in range(0, int(critic_obs.shape[0]), chunk_size)
+                    for end in [
+                        min(start + chunk_size, int(critic_obs.shape[0]))
+                    ]
+                ],
+                dim=0,
+            )
+        else:
+            values = self.critic_module(critic_obs)
         if values.ndim == 1:
             values = values[..., None]
         td.set("values", values)
@@ -1167,6 +1181,7 @@ class PPOTFActor(PPOActor):
         attn_mask: torch.Tensor | None = None,
         *,
         update_obs_norm: bool = True,
+        forward_chunk_size: int = 0,
         past_key_values: torch.Tensor | None = None,
         current_pos: torch.Tensor | None = None,
     ) -> TensorDict | tuple[torch.Tensor, torch.Tensor]:
@@ -1296,7 +1311,15 @@ class PPOTFActor(PPOActor):
             actor_obs = fn(actor_obs, update)
         self._maybe_update_aux_router_future_recon_norm(obs_td, update=update)
 
-        if hasattr(self.actor_module, "single_step_mu"):
+        if (
+            int(forward_chunk_size) > 0
+            and int(actor_obs.shape[0]) > int(forward_chunk_size)
+            and hasattr(self.actor_module, "single_step_mu_chunked")
+        ):
+            mu = self.actor_module.single_step_mu_chunked(
+                actor_obs, int(forward_chunk_size)
+            )
+        elif hasattr(self.actor_module, "single_step_mu"):
             mu = self.actor_module.single_step_mu(actor_obs)
         else:
             mu = self.actor_module(actor_obs)

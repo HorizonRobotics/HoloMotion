@@ -22,6 +22,7 @@ class HoloRetargetConfig:
     target_table: str = "ik_match_table2"
     robot_asset: str = "holoretarget_mjcf"
     newton_iterations: int = 1
+    newton_step_size: float = 0.75
     root_seed_mode: str = "pelvis"
     max_joint_step: float = 0.5
     joint_limit_weight: float = 8.0

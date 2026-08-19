@@ -15,7 +15,6 @@
 # permissions and limitations under the License.
 
 
-
 """Simplified HDF5 motion cache backed by a PyTorch ``DataLoader``.
 
 This module provides two core utilities:
@@ -940,9 +939,11 @@ class Hdf5RootDofDataset(Dataset[MotionClipSample]):
         handpicked_motion_names: Optional[List[str]] = None,
         excluded_motion_names: Optional[List[str]] = None,
         fk_robot_file_path: Optional[str] = None,
+        expected_dof_names: Optional[Sequence[str]] = None,
         allowed_prefixes: Optional[Sequence[str]] = None,
     ) -> None:
         super().__init__()
+        self._file_handles: "OrderedDict[int, h5py.File]" = OrderedDict()
         if max_frame_length <= 0:
             raise ValueError("max_frame_length must be positive")
         if min_window_length <= 0:
@@ -966,6 +967,15 @@ class Hdf5RootDofDataset(Dataset[MotionClipSample]):
         if not self._fk_robot_file_path:
             raise ValueError("fk_robot_file_path is required for hdf5_v2 FK")
         self._fk_transform = _CpuFKTransform(self._fk_robot_file_path)
+        if expected_dof_names is not None:
+            expected = [str(name) for name in expected_dof_names]
+            actual = list(self._fk_transform._fk.dof_names)
+            if actual != expected:
+                raise ValueError(
+                    "Reference FK URDF joint order does not match the motion "
+                    f"DOF contract: expected={expected}, actual={actual}, "
+                    f"urdf={self._fk_robot_file_path}"
+                )
         self._world_frame_transform = _WorldFrameNormalizeTransform()
         if allowed_prefixes is None:
             self._allowed_prefixes = ("ref_",)
@@ -1040,7 +1050,6 @@ class Hdf5RootDofDataset(Dataset[MotionClipSample]):
             )
 
         # Setting up hdf5 file handles management for bounded host-memory usage
-        self._file_handles: "OrderedDict[int, h5py.File]" = OrderedDict()
         max_open_env = os.getenv("HOLOMOTION_HDF5_MAX_OPEN_SHARDS")
         if max_open_env is None:
             self._h5_max_open_files = 16
@@ -1445,6 +1454,7 @@ def build_motion_datasets_from_cfg(
             handpicked_motion_names=handpicked_motion_names,
             excluded_motion_names=excluded_motion_names,
             fk_robot_file_path=fk_robot_file_path,
+            expected_dof_names=motion_cfg.get("dof_names"),
             allowed_prefixes=allowed_prefixes,
         )
 
@@ -1465,6 +1475,7 @@ def build_motion_datasets_from_cfg(
                 handpicked_motion_names=handpicked_motion_names,
                 excluded_motion_names=excluded_motion_names,
                 fk_robot_file_path=fk_robot_file_path,
+                expected_dof_names=motion_cfg.get("dof_names"),
                 allowed_prefixes=allowed_prefixes,
             )
         cache_kwargs = {
@@ -1481,8 +1492,14 @@ def _cache_collate_fn(
     samples: List[MotionClipSample],
     mode: str,
     batch_size: int,
+    excluded_tensor_names: Optional[Sequence[str]] = None,
 ) -> ClipBatch:
     """Collate function for motion cache DataLoader (supports validation padding)."""
+    if excluded_tensor_names:
+        excluded = set(excluded_tensor_names)
+        for sample in samples:
+            for tensor_name in excluded:
+                sample.tensors.pop(tensor_name, None)
     if mode == "val" and batch_size > len(samples) and len(samples) > 0:
         extra = batch_size - len(samples)
         gen = torch.Generator()
@@ -2453,6 +2470,7 @@ class MotionClipBatchCache:
         sampler_rank: int = 0,
         sampler_world_size: int = 1,
         allowed_prefixes: Optional[Sequence[str]] = None,
+        excluded_tensor_names: Optional[Sequence[str]] = None,
         swap_interval_steps: Optional[int] = None,
         force_timeout_on_swap: bool = True,
         stage_on_swap_only: bool = False,
@@ -2479,6 +2497,9 @@ class MotionClipBatchCache:
         self._batch_size = int(batch_size)
         self._allowed_prefixes: Optional[Tuple[str, ...]] = (
             tuple(allowed_prefixes) if allowed_prefixes is not None else None
+        )
+        self._excluded_tensor_names: Tuple[str, ...] = tuple(
+            str(name) for name in (excluded_tensor_names or ())
         )
 
         # If enabled, keep the prefetched batch on CPU (FK on CPU) and stage to GPU
@@ -3350,6 +3371,7 @@ class MotionClipBatchCache:
             _cache_collate_fn,
             mode=self._mode,
             batch_size=self._batch_size,
+            excluded_tensor_names=self._excluded_tensor_names,
         )
 
         mp_ctx = None

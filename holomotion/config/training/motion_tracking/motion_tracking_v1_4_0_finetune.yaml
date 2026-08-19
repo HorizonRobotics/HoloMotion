@@ -10,12 +10,15 @@ checkpoint: ${oc.env:HOLOMOTION_FINETUNE_CHECKPOINT,checkpoints/holomotion_v1.4/
 
 algo:
   config:
+    # Strictly warm-start actor/critic (including normalization buffers), but
+    # reset Adam state and iteration-dependent schedules for the new task.
+    checkpoint_load_mode: finetune
     num_learning_iterations: 10000
 
 mujoco_eval:
   ckpt_onnx_names:
-    - model_16000.onnx
-    - model_18000.onnx
-    - model_20000.onnx
-    - model_22000.onnx
-    - model_24000.onnx
+    - model_2000.onnx
+    - model_4000.onnx
+    - model_6000.onnx
+    - model_8000.onnx
+    - model_10000.onnx

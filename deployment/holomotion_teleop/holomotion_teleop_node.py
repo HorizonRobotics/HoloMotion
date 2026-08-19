@@ -442,6 +442,7 @@ class HoloRetargetTeleopNode:
             f"table={self.retargeter.config.target_table}, "
             f"asset={self.retargeter.config.robot_asset}, "
             f"iter={self.retargeter.config.newton_iterations}, "
+            f"step_size={self.retargeter.config.newton_step_size:.2f}, "
             f"root_seed={self.retargeter.config.root_seed_mode}, "
             f"max_joint_step={self.retargeter.config.max_joint_step:.3f}, "
             f"joint_limit_weight={self.retargeter.config.joint_limit_weight:.3f}"

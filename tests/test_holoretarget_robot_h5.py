@@ -147,6 +147,27 @@ class HoloRetargetRobotH5Tests(unittest.TestCase):
             )
             dataset.close()
 
+    def test_hdf5_v2_loader_rejects_fk_joint_order_mismatch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest_path = Path(tmp) / "manifest.json"
+            manifest_path.write_text(
+                json.dumps({"hdf5_shards": [], "clips": {}})
+            )
+            robot_file = (
+                Path(__file__).resolve().parents[1]
+                / "assets/robots/unitree/G1/29dof/g1_29dof_rev_1_0.urdf"
+            )
+
+            with self.assertRaisesRegex(
+                ValueError, "Reference FK URDF joint order"
+            ):
+                Hdf5RootDofDataset(
+                    manifest_path=str(manifest_path),
+                    max_frame_length=4,
+                    fk_robot_file_path=str(robot_file),
+                    expected_dof_names=["wrong_joint"],
+                )
+
     def test_distributed_finalize_converts_shard_paths_to_indices(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

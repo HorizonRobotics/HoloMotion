@@ -4,6 +4,7 @@
 from __future__ import annotations
 import argparse
 import hashlib
+import shutil
 from pathlib import Path
 
 from huggingface_hub import snapshot_download
@@ -115,7 +116,7 @@ def main() -> None:
                 relative_path = path.relative_to(package_dir)
                 target = output_dir / relative_path
                 target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_bytes(path.read_bytes())
+                shutil.copy2(path, target)
 
     validate_checkpoint_layout(output_dir)
     validate_checksums(output_dir)

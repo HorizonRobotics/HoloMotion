@@ -37,7 +37,16 @@ thirdparties/
 After cloning this repository, run the following command to get all submodule dependencies:
 
 ```shell
+git lfs install
 git submodule update --init --recursive
+```
+
+`thirdparties/HoloMotion_assets` is the Hugging Face dataset submodule that
+provides the shared robot meshes and modular G1 component package. If the
+submodule was initialized with LFS downloads disabled, hydrate it explicitly:
+
+```shell
+git -C thirdparties/HoloMotion_assets lfs pull
 ```
 
 ### 2.3 Create Asset Symlinks
@@ -66,7 +75,7 @@ thirdparties/
 
 ## Step 3: Create the Conda Environment
 
-Create the `holomotion_train` Conda environment. The files under `environments/` are the supported dependency installation entry points for v1.4.0. The project does not support installing runtime dependencies directly from `pyproject.toml`; its editable installation only registers the repository source after the Conda environment has been created.
+Create the `holomotion_train` Conda environment. The files under `environments/` are the supported dependency installation entry points for v1.4.x. The project does not support installing runtime dependencies directly from `pyproject.toml`; its editable installation only registers the repository source after the Conda environment has been created.
 
 Robot-side deployment uses the Docker workflow documented in [Real-World Deployment](./realworld_deployment.md).
 
@@ -80,7 +89,7 @@ conda run -n holomotion_train \
   python -m pip install -r environments/requirements_torch_cu128.txt
 ```
 
-The separate override is required because Isaac Sim and the project-validated cu128 stack specify different exact Torch versions; requesting both in one pip operation would fail dependency resolution. The v1.4.0 cu128 environment uses Torch 2.9.1, torchvision 0.24.1, and torchaudio 2.9.1. Isaac Sim 5.0 declares exact dependencies on Torch 2.7.0, torchvision 0.22.0, and torchaudio 2.7.0, so `pip check` reports those three known version conflicts. Do not treat additional dependency conflicts as expected.
+The separate override is required because Isaac Sim and the project-validated cu128 stack specify different exact Torch versions; requesting both in one pip operation would fail dependency resolution. The v1.4.x cu128 environment uses Torch 2.9.1, torchvision 0.24.1, and torchaudio 2.9.1. Isaac Sim 5.0 declares exact dependencies on Torch 2.7.0, torchvision 0.22.0, and torchaudio 2.7.0, so `pip check` reports those three known version conflicts. Do not treat additional dependency conflicts as expected.
 
 
 Install `smplx` into the conda environment:

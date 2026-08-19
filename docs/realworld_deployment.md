@@ -1,9 +1,9 @@
 # HoloMotion Real-World Deployment
 
-This guide describes the Docker workflow for deploying HoloMotion v1.4.0 on a
+This guide describes the Docker workflow for deploying HoloMotion v1.4.1 on a
 Unitree G1 29-DOF robot with onboard NVIDIA Jetson Orin.
 
-The v1.4.0 deployment image is self-contained: it includes the robot-side
+The v1.4.1 deployment image is self-contained: it includes the robot-side
 deployment code, velocity model, motion-tracking model, and one filtered offline
 motion sample. Users do not need to clone the repository or download SMPL models
 for robot deployment.
@@ -82,13 +82,13 @@ container. Do not edit ROS launch files directly for network configuration.
 ## Pull Image
 
 ```bash
-docker pull horizonrobotics/holomotion:v1.4.0-orin-jp5.1-arm64
+docker pull horizonrobotics/holomotion:v1.4.1-orin-jp5.1-arm64
 ```
 
 For an offline transfer, load the exported tar instead:
 
 ```bash
-docker load -i holomotion_v1.4.0_orin_jp5.1_arm64.tar
+docker load -i holomotion_v1.4.1_orin_jp5.1_arm64.tar
 ```
 
 ## Start Container
@@ -103,7 +103,7 @@ docker run --rm -it \
   --network host \
   --name holomotion_g1 \
   --entrypoint bash \
-  horizonrobotics/holomotion:v1.4.0-orin-jp5.1-arm64
+  horizonrobotics/holomotion:v1.4.1-orin-jp5.1-arm64
 ```
 
 All commands below are executed inside the container.
@@ -157,7 +157,7 @@ Validate offline motion before live teleoperation.
 The image includes:
 
 ```text
-qinghai_v1_4_0.npz
+qinghaiyao.npz
 ```
 
 Start offline motion tracking:
@@ -186,7 +186,7 @@ docker run --rm -it \
   -v /home/unitree/offline_data:/data:ro \
   --name holomotion_g1 \
   --entrypoint bash \
-  horizonrobotics/holomotion:v1.4.0-orin-jp5.1-arm64
+  horizonrobotics/holomotion:v1.4.1-orin-jp5.1-arm64
 ```
 
 Then run:
@@ -250,7 +250,7 @@ policy:
 
 If your image or robot uses a different XRoboToolkit service path, update the
 launch profile in the image or in your derived container. Keep
-`reference_source: "pico_local"` for the v1.4.0 on-robot teleoperation path.
+`reference_source: "pico_local"` for the v1.4.1 on-robot teleoperation path.
 
 Start teleoperation:
 
@@ -284,7 +284,7 @@ Pico service ready
 Reference source: local Pico/XRoboToolkit on the policy clock
 ```
 
-HoloRetarget consumes PICO 24-joint global poses directly in v1.4.0. The robot
+HoloRetarget consumes PICO 24-joint global poses directly in v1.4.1. The robot
 deployment image does not require an SMPL model.
 
 ## Optional Viewer
@@ -327,19 +327,20 @@ production-grade control system.
 
 ## Included Models
 
-The Docker image includes the v1.4.0 release model:
+The Docker image includes the v1.4.1 release model:
 
 ```text
-HoloMotion_motion_tracking_model_v1.4.0/exported/model_14000.onnx
+HoloMotion_motion_tracking_model_v1.4.1/exported/model_16200.onnx
 ```
 
 The standalone model package is available on Hugging Face:
 
-- [HoloMotion motion tracking model v1.4.0](https://huggingface.co/HorizonRobotics/HoloMotion_models/tree/main/HoloMotion_motion_tracking_model_v1.4.0)
+- [HoloMotion motion tracking model v1.4.1](https://huggingface.co/HorizonRobotics/HoloMotion_models/tree/main/HoloMotion_motion_tracking_model_v1.4.1)
+- [HoloMotion motion tracking model v1.4.0](https://huggingface.co/HorizonRobotics/HoloMotion_models/tree/main/HoloMotion_motion_tracking_model_v1.4.0) (from-scratch base checkpoint)
 - [HoloMotion velocity tracking model](https://huggingface.co/HorizonRobotics/HoloMotion_models/tree/main/HoloMotion_velocity_tracking_model)
 
 Use the standalone model package for training, finetuning, or custom deployment
-packaging. Real-robot v1.4.0 users should start from the Docker image above.
+packaging. Real-robot v1.4.1 users should start from the Docker image above.
 
 ## Troubleshooting
 

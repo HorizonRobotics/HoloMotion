@@ -1,10 +1,12 @@
 from __future__ import annotations
+import copy
 
 import pytest
 import torch
+from tensordict import TensorDict
+
 from holomotion.src.algo.ppo_tf import PPOTF
 from holomotion.src.modules.agent_modules import PPOTFRefRouterActor
-from tensordict import TensorDict
 
 
 def _make_ref_router_obs_schema() -> dict:
@@ -143,6 +145,55 @@ def test_ref_router_actor_single_step_and_sequence_logp_match_contract():
     assert seq_out["sigma"].shape == (2, 3, 4)
     assert seq_out["actions_log_prob"].shape == (2, 3, 1)
     assert seq_out["entropy"].shape == (2, 3, 1)
+
+
+def test_ref_router_actor_chunked_rollout_matches_full_batch_cache_state():
+    torch.manual_seed(7)
+    full_actor = _make_ref_router_actor()
+    chunked_actor = copy.deepcopy(full_actor)
+    batch_size = 7
+    full_actor.reset_kv_cache(batch_size, "cpu")
+    chunked_actor.reset_kv_cache(batch_size, "cpu")
+    full_actor.actor_module.set_collect_routing_stats(True)
+    chunked_actor.actor_module.set_collect_routing_stats(True)
+
+    for _ in range(3):
+        obs_td = _make_ref_router_obs([batch_size])
+        full_out = full_actor(
+            obs_td,
+            mode="inference",
+            update_obs_norm=False,
+        )
+        chunked_out = chunked_actor(
+            obs_td,
+            mode="inference",
+            update_obs_norm=False,
+            forward_chunk_size=3,
+        )
+        torch.testing.assert_close(chunked_out["actions"], full_out["actions"])
+
+    full_module = full_actor.actor_module
+    chunked_module = chunked_actor.actor_module
+    for name in (
+        "_k_cache",
+        "_v_cache",
+        "_kv_cache_len",
+        "_kv_cache_write_idx",
+        "_kv_cache_abs_pos",
+        "_prev_last_moe_router_p",
+        "_prev_last_moe_router_valid",
+    ):
+        torch.testing.assert_close(
+            getattr(chunked_module, name), getattr(full_module, name)
+        )
+    for chunked_layer, full_layer in zip(
+        chunked_module.layers, full_module.layers, strict=True
+    ):
+        if hasattr(full_layer, "routing_counts_accum"):
+            torch.testing.assert_close(
+                chunked_layer.routing_counts_accum,
+                full_layer.routing_counts_accum,
+            )
 
 
 def test_ref_router_actor_rejects_aux_router_future_recon():

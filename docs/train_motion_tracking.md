@@ -17,9 +17,11 @@ class A dashed
 class B,C,D,E normal
 ```
 
-### 1. Train the Motion Tracking Model
+### 1. Train v1.4.0 from scratch
 
-The training entry point is `holomotion/src/training/train.py`, which uses the training config to start distributed training across multiple GPUs.
+The public v1.4.0 from-scratch path remains the baseline training entry. The
+training entry point is `holomotion/src/training/train.py`, which uses the
+training config to start distributed training across multiple GPUs.
 
 #### 1.1 Prepare the Training Config
 
@@ -73,6 +75,43 @@ NUM_ENVS=2048 CONFIG_NAME=motion_tracking_v1_4_0 \
 ```
 
 Note that IsaacLab relies on internet connections to pull assets from Nvidia's cloud storage. If you encountered stuck at scene creation, it is very likely that you can't access the cloud-hosted assets. Turn on your proxy and try again can solve the issue.
+
+### 2. Fine-tune v1.4.1 for modular G1 morphologies
+
+v1.4.1 is a fine-tuned continuation of the published v1.4.0 `model_14000`
+checkpoint. It is not a separate from-scratch recipe. The policy architecture,
+29-DoF action order, and deployment input/output contract remain compatible
+with v1.4.0.
+
+Initialize the public asset submodule and generate the 66 deterministic G1
+variants:
+
+```shell
+git submodule update --init --recursive thirdparties/HoloMotion_assets
+
+python assets/robots/unitree/G1/modular/g1_urdf_composer.py generate-all \
+  --output-dir assets/robots/unitree/G1/modular/generated/urdf
+```
+
+Download the complete public v1.4.0 checkpoint package used as the fine-tuning
+base:
+
+```shell
+python holomotion/scripts/training/download_v1_4_checkpoint.py \
+  HorizonRobotics/HoloMotion_models
+```
+
+Then start universal morphology fine-tuning explicitly:
+
+```shell
+CONFIG_NAME=motion_tracking_v1_4_1_universal_finetune \
+  bash holomotion/scripts/training/finetune_motion_tracking_v1_4_0.sh
+```
+
+`HOLOMOTION_FINETUNE_CHECKPOINT` can override the default
+`checkpoints/holomotion_v1.4/model_14000.pt` path. The complete checkpoint
+package is required because fine-tuning restores actor and critic weights and
+normalization buffers while starting a fresh optimizer state.
 
 ### Training Tips
 

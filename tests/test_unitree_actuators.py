@@ -354,6 +354,7 @@ def _load_scene_module(monkeypatch):
 
     isaaclab_root = ModuleType("isaaclab")
     isaaclab_sim = ModuleType("isaaclab.sim")
+    isaaclab_sim.MultiUsdFileCfg = object
     isaaclab_sim.UrdfFileCfg = lambda **kwargs: SimpleNamespace(**kwargs)
     isaaclab_sim.RigidBodyPropertiesCfg = lambda **kwargs: SimpleNamespace(
         **kwargs

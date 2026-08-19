@@ -35,6 +35,7 @@ class HoloRetargeter:
             src_human=src_human,
             offset_to_ground=False,
             newton_iterations=self.config.newton_iterations,
+            newton_step_size=self.config.newton_step_size,
             newton_cuda_graph=self.config.use_cuda_graph,
             newton_joint_limit_weight=self.config.joint_limit_weight,
             newton_max_joint_step=self.config.max_joint_step,

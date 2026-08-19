@@ -57,6 +57,9 @@ from holomotion.src.env.isaaclab_components.isaaclab_observation import (
 from holomotion.src.env.isaaclab_components.isaaclab_utils import (
     resolve_holo_config,
 )
+from holomotion.src.utils.g1_variants import bind_rank_robot_variant
+from holomotion.src.utils.g1_variants import resolve_rank_robot_variant
+from holomotion.src.utils.g1_variants import resolve_urdf_variants
 
 # from holomotion.src.modules.agent_modules import ObsSeqSerializer
 import isaaclab.envs.mdp as isaaclab_mdp
@@ -234,6 +237,15 @@ class MotionTrackingEnv:
                 pid = int(self.config.get("process_id", 0))
             seed_val = int(time.time()) + pid
 
+        if self.accelerator is not None:
+            _runtime_main_process = self.accelerator.is_main_process
+            _runtime_process_id = self.accelerator.process_index
+            _runtime_num_processes = self.accelerator.num_processes
+        else:
+            _runtime_main_process = self.config.get("main_process", True)
+            _runtime_process_id = int(self.config.get("process_id", 0))
+            _runtime_num_processes = int(self.config.get("num_processes", 1))
+
         _robot_config_dict = EasyDict(
             OmegaConf.to_container(self.config.robot, resolve=True)
         )
@@ -277,6 +289,32 @@ class MotionTrackingEnv:
             resolve=True,
         )
 
+        _variant_mode = str(
+            _robot_config_dict.asset.get("urdf_variant_mode", "per_rank")
+        ).lower()
+        _urdf_variants = resolve_urdf_variants(_robot_config_dict.asset)
+        _resolved_robot_variant = None
+        if not (_variant_mode == "per_env" and len(_urdf_variants) > 1):
+            _resolved_robot_variant = resolve_rank_robot_variant(
+                _robot_config_dict.asset,
+                _runtime_process_id,
+                _runtime_num_processes,
+            )
+            bind_rank_robot_variant(
+                _robot_config_dict,
+                _commands_config_dict,
+                _resolved_robot_variant,
+            )
+            logger.info(
+                "Resolved rank URDF for scene and reference FK: "
+                "process={}/{} variant_index={} path={} sha256={}",
+                _runtime_process_id,
+                _runtime_num_processes,
+                _resolved_robot_variant.variant_index,
+                _resolved_robot_variant.urdf_path,
+                _resolved_robot_variant.urdf_sha256,
+            )
+
         _simulation_config_dict = EasyDict(
             OmegaConf.to_container(
                 self.config.simulation,
@@ -317,22 +355,24 @@ class MotionTrackingEnv:
             physx = PhysxCfg(
                 bounce_threshold_velocity=_simulation_config_dict.physx.bounce_threshold_velocity,
                 gpu_max_rigid_patch_count=_simulation_config_dict.physx.gpu_max_rigid_patch_count,
+                gpu_found_lost_aggregate_pairs_capacity=_simulation_config_dict.physx.get(
+                    "gpu_found_lost_aggregate_pairs_capacity", 2**25
+                ),
+                gpu_total_aggregate_pairs_capacity=_simulation_config_dict.physx.get(
+                    "gpu_total_aggregate_pairs_capacity", 2**21
+                ),
                 enable_stabilization=True,
             )
 
-            if self.accelerator is not None:
-                main_process = self.accelerator.is_main_process
-                process_id = self.accelerator.process_index
-                num_processes = self.accelerator.num_processes
-            else:
-                main_process = self.config.get("main_process", True)
-                process_id = self.config.get("process_id", 0)
-                num_processes = self.config.get("num_processes", 1)
+            main_process = _runtime_main_process
+            process_id = _runtime_process_id
+            num_processes = _runtime_num_processes
             scene: MotionTrackingSceneCfg = build_scene_config(
                 scene_config_dict,
                 main_process=main_process,
                 process_id=process_id,
                 num_processes=num_processes,
+                resolved_robot_variant=_resolved_robot_variant,
             )
 
             sim: SimulationCfg = SimulationCfg(
@@ -359,14 +399,8 @@ class MotionTrackingEnv:
 
             # Populate RefMotionCommand distributed params when present.
             if "ref_motion" in motion_cmds:
-                if self.accelerator is not None:
-                    cmd_process_id = self.accelerator.process_index
-                    cmd_num_processes = self.accelerator.num_processes
-                else:
-                    cmd_process_id = getattr(self.config, "process_id", 0)
-                    cmd_num_processes = getattr(
-                        self.config, "num_processes", 1
-                    )
+                cmd_process_id = _runtime_process_id
+                cmd_num_processes = _runtime_num_processes
                 motion_cmds["ref_motion"]["params"].update(
                     {
                         "seed": int(seed_val),

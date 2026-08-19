@@ -15,7 +15,6 @@
 # permissions and limitations under the License.
 
 
-
 import inspect
 import re
 from pathlib import Path
@@ -30,27 +29,61 @@ def _list_to_csv_str(arr, *, decimals: int = 3, delimiter: str = ",") -> str:
     )
 
 
-def attach_onnx_metadata_holomotion(env, onnx_path: str, actor_module=None) -> None:
+def attach_onnx_metadata_holomotion(
+    env, onnx_path: str, actor_module=None
+) -> None:
     import onnx
 
+    robot_data = env.scene["robot"].data
+    action_term = env.action_manager.get_term("dof_pos")
+    simulator_joint_names = list(robot_data.joint_names)
+    action_joint_names = list(action_term._joint_names)
+    if len(action_joint_names) != len(simulator_joint_names) or set(
+        action_joint_names
+    ) != set(simulator_joint_names):
+        raise ValueError(
+            "The exported action term must cover every simulator joint "
+            "exactly once. Got action joints "
+            f"{action_joint_names} and simulator joints "
+            f"{simulator_joint_names}."
+        )
+
+    simulator_index = {
+        name: index for index, name in enumerate(simulator_joint_names)
+    }
+    action_from_simulator = [
+        simulator_index[name] for name in action_joint_names
+    ]
+
+    def _robot_values_in_action_order(values) -> list:
+        simulator_values = values[0].cpu().tolist()
+        return [simulator_values[index] for index in action_from_simulator]
+
+    action_scale = action_term._scale
+    if isinstance(action_scale, (int, float)):
+        action_scale_values = [float(action_scale)] * len(action_joint_names)
+    else:
+        action_scale_values = action_scale[0].cpu().tolist()
+    if len(action_scale_values) != len(action_joint_names):
+        raise ValueError(
+            "Action scale size does not match exported action order: "
+            f"{len(action_scale_values)} vs {len(action_joint_names)}."
+        )
+
     metadata = {
-        "joint_names": env.scene["robot"].data.joint_names,
-        "joint_stiffness": env.scene["robot"]
-        .data.default_joint_stiffness[0]
-        .cpu()
-        .tolist(),
-        "joint_damping": env.scene["robot"]
-        .data.default_joint_damping[0]
-        .cpu()
-        .tolist(),
-        "default_joint_pos": env.scene["robot"]
-        .data.default_joint_pos[0]
-        .cpu()
-        .tolist(),
-        "action_scale": env.action_manager.get_term("dof_pos")
-        ._scale[0]
-        .cpu()
-        .tolist(),
+        # The actor output, action scale/offset, and deployment metadata must
+        # share one order. In v1.4 this is the Isaac articulation order.
+        "joint_names": action_joint_names,
+        "joint_stiffness": _robot_values_in_action_order(
+            robot_data.default_joint_stiffness
+        ),
+        "joint_damping": _robot_values_in_action_order(
+            robot_data.default_joint_damping
+        ),
+        "default_joint_pos": _robot_values_in_action_order(
+            robot_data.default_joint_pos
+        ),
+        "action_scale": action_scale_values,
     }
     if actor_module is not None:
         rope_max_seq_len = getattr(actor_module, "rope_max_seq_len", None)

@@ -3,7 +3,7 @@
 This directory contains workstation-side tools for visualization, fake Pico
 tests, and the legacy workstation-retarget pipeline.
 
-For HoloMotion v1.4.0 real-robot deployment, do not run the workstation retarget
+For HoloMotion v1.4.1 real-robot deployment, do not run the workstation retarget
 node as the control path. The Unitree G1 Docker image runs Pico/XRoboToolkit
 input, HoloRetarget, observation construction, and policy inference on the
 robot's Orin. Use this command inside the robot Docker container instead:
@@ -60,7 +60,7 @@ with `HOLORETARGET_RECORD_ROOT` when needed.
 ## Legacy Workstation Retarget
 
 This mode runs Pico input and HoloRetarget on a workstation, then publishes
-`reference_qpos` on ZMQ port `6001`. It is not the v1.4.0 Unitree G1 deployment
+`reference_qpos` on ZMQ port `6001`. It is not the v1.4.1 Unitree G1 deployment
 path. Use it only for debugging, recording reference streams, or comparing the
 old workstation-retarget flow.
 
@@ -109,7 +109,7 @@ python holomotion_teleop_node.py \
 ```
 
 This ZMQ fake stream targets the legacy workstation-retarget interface on port
-`6001`; it is not required for the v1.4.0 robot Docker teleop flow.
+`6001`; it is not required for the v1.4.1 robot Docker teleop flow.
 
 ## Viewer
 

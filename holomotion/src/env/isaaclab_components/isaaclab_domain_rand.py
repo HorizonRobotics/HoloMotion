@@ -29,6 +29,7 @@ from isaaclab.utils import configclass
 
 from isaaclab.envs import ManagerBasedEnv
 from isaaclab.managers import EventTermCfg
+from holomotion.src.utils.g1_variants import sample_correlated_hand_payloads
 
 
 class DomainRandFunctions:
@@ -109,7 +110,16 @@ class DomainRandFunctions:
         restitution_range: tuple[float, float] | None = None,
         num_buckets: int = 64,
     ):
-        asset_cfg = SceneEntityCfg(asset_name, body_names=body_names)
+        # Keep the all-body selector as ``slice(None)``. Isaac Lab's material
+        # randomizer then operates on the padded ``max_shapes`` tensor and
+        # supports articulations whose collision-shape counts differ by env.
+        # Resolving the regex ``.*`` into explicit body indices instead makes
+        # the upstream term infer shape counts from env_0 and reject valid
+        # heterogeneous assets.
+        if body_names == ".*" or body_names == [".*"]:
+            asset_cfg = SceneEntityCfg(asset_name)
+        else:
+            asset_cfg = SceneEntityCfg(asset_name, body_names=body_names)
         asset_cfg.resolve(env.scene)
         eveent_cfg = EventTermCfg(
             func=isaaclab_mdp.events.randomize_rigid_body_material,
@@ -180,6 +190,76 @@ class DomainRandFunctions:
             asset_cfg=asset_cfg,
             operation="add",
         )
+
+    @staticmethod
+    def _get_dr_hand_payload_mass(
+        env: ManagerBasedEnv,
+        env_ids: torch.Tensor | None,
+        asset_name: str = "robot",
+        body_names: list[str] = (
+            "left_wrist_yaw_link",
+            "right_wrist_yaw_link",
+        ),
+        object_mass_range: tuple[float, float] = (0.0, 2.5),
+        hardware_mass_range: tuple[float, float] = (0.0, 0.4),
+        mode_probabilities: tuple[float, float, float, float] = (
+            0.25,
+            0.25,
+            0.25,
+            0.25,
+        ),
+        bimanual_split_range: tuple[float, float] = (0.3, 0.7),
+        recompute_inertia: bool = True,
+    ):
+        """Apply bounded one-hand/bimanual payload mass to merged wrist bodies."""
+
+        asset_cfg = SceneEntityCfg(asset_name, body_names=body_names)
+        asset_cfg.resolve(env.scene)
+        if (
+            not isinstance(asset_cfg.body_ids, list)
+            or len(asset_cfg.body_ids) != 2
+        ):
+            raise ValueError(
+                "hand_payload_mass requires exactly two body_names in left/right order."
+            )
+        asset: Articulation = env.scene[asset_name]
+        if env_ids is None:
+            env_ids_cpu = torch.arange(env.scene.num_envs, device="cpu")
+        else:
+            env_ids_cpu = env_ids.to(device="cpu", dtype=torch.long)
+        body_ids = torch.tensor(
+            asset_cfg.body_ids, dtype=torch.long, device="cpu"
+        )
+
+        added_mass, _ = sample_correlated_hand_payloads(
+            len(env_ids_cpu),
+            object_mass_range=object_mass_range,
+            hardware_mass_range=hardware_mass_range,
+            mode_probabilities=mode_probabilities,
+            bimanual_split_range=bimanual_split_range,
+            device="cpu",
+        )
+        default_mass = asset.data.default_mass[
+            env_ids_cpu[:, None], body_ids
+        ].clone()
+        if bool((default_mass <= 0.0).any()):
+            raise ValueError(
+                "hand payload target bodies must have positive default mass."
+            )
+        target_mass = default_mass + added_mass
+
+        masses = asset.root_physx_view.get_masses()
+        masses[env_ids_cpu[:, None], body_ids] = target_mass
+        asset.root_physx_view.set_masses(masses, env_ids_cpu)
+
+        if recompute_inertia:
+            ratios = target_mass / default_mass
+            inertias = asset.root_physx_view.get_inertias()
+            inertias[env_ids_cpu[:, None], body_ids] = (
+                asset.data.default_inertia[env_ids_cpu[:, None], body_ids]
+                * ratios[..., None]
+            )
+            asset.root_physx_view.set_inertias(inertias, env_ids_cpu)
 
 
 @configclass

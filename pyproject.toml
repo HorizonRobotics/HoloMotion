@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "holomotion"
-version = "1.4.0"
+version = "1.4.1"
 description = "HoloMotion"
 authors = [
     {name = "Horizon Robotics"},

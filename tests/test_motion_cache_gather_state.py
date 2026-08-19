@@ -1,7 +1,7 @@
 import sys
 import unittest
-from unittest import mock
 from pathlib import Path
+from unittest import mock
 
 import torch
 
@@ -11,7 +11,9 @@ from holomotion.src.training.h5_dataloader import (
     ClipBatch,
     Hdf5RootDofDataset,
     MotionClipBatchCache,
+    MotionClipSample,
     MotionWindow,
+    _cache_collate_fn,
     _CpuFKTransform,
     _WorldFrameNormalizeTransform,
     build_motion_datasets_from_cfg,
@@ -34,6 +36,28 @@ def _expected_field(
 
 
 class MotionCacheGatherStateTests(unittest.TestCase):
+    def test_cache_collate_excludes_configured_tensor_names(self):
+        sample = MotionClipSample(
+            motion_key="clip-a",
+            raw_motion_key="clip-a",
+            window_index=0,
+            tensors={
+                "ref_dof_pos": torch.ones(2, 3),
+                "ref_dof_vel": torch.ones(2, 3),
+                "frame_flag": torch.ones(2, dtype=torch.long),
+            },
+            length=2,
+        )
+
+        batch = _cache_collate_fn(
+            [sample],
+            mode="train",
+            batch_size=1,
+            excluded_tensor_names=("ref_dof_vel", "frame_flag"),
+        )
+
+        self.assertEqual(set(batch.tensors), {"ref_dof_pos"})
+
     def test_build_motion_datasets_uses_only_raw_reference_prefix(self):
         with (
             mock.patch(
@@ -54,7 +78,9 @@ class MotionCacheGatherStateTests(unittest.TestCase):
             )
 
         self.assertEqual(dataset_cls.call_count, 1)
-        self.assertEqual(dataset_cls.call_args.kwargs["allowed_prefixes"], ["ref_"])
+        self.assertEqual(
+            dataset_cls.call_args.kwargs["allowed_prefixes"], ["ref_"]
+        )
 
     def test_gather_tensor_returns_expected_values(self):
         cache = MotionClipBatchCache.__new__(MotionClipBatchCache)
@@ -193,7 +219,9 @@ class MotionCacheGatherStateTests(unittest.TestCase):
 
     def test_hdf5_v2_sample_contains_no_filtered_reference(self):
         sample = self._make_stub_root_dof_dataset()[0]
-        self.assertFalse(any(name.startswith("ft_ref_") for name in sample.tensors))
+        self.assertFalse(
+            any(name.startswith("ft_ref_") for name in sample.tensors)
+        )
         self.assertNotIn("filter_cutoff_hz", sample.tensors)
 
     @staticmethod

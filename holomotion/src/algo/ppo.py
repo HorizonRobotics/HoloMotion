@@ -1247,6 +1247,15 @@ class PPO(BaseOnpolicyRL):
         if self.is_main_process:
             logger.info(f"Loading checkpoint from {ckpt_path}")
 
+        checkpoint_load_mode = str(
+            self.config.get("checkpoint_load_mode", "resume")
+        ).lower()
+        if checkpoint_load_mode not in {"resume", "finetune"}:
+            raise ValueError(
+                "checkpoint_load_mode must be one of {'resume', 'finetune'}, "
+                f"got {checkpoint_load_mode!r}."
+            )
+
         actor_model_path = self._resolve_model_file_path(ckpt_path, "actor")
         critic_model_path = self._resolve_model_file_path(ckpt_path, "critic")
         self._load_accelerate_model(self.actor, actor_model_path, strict=True)
@@ -1255,7 +1264,11 @@ class PPO(BaseOnpolicyRL):
         )
 
         loaded_dict = torch.load(ckpt_path, map_location=self.device)
-        if not getattr(self, "is_offline_eval", False):
+        should_restore_training_state = (
+            not getattr(self, "is_offline_eval", False)
+            and checkpoint_load_mode == "resume"
+        )
+        if should_restore_training_state:
             self._restore_optimizer_state(
                 self.actor_optimizer,
                 loaded_dict["actor_optimizer_state_dict"],
@@ -1266,11 +1279,25 @@ class PPO(BaseOnpolicyRL):
                 loaded_dict["critic_optimizer_state_dict"],
                 optimizer_name="critic",
             )
+        elif checkpoint_load_mode == "finetune" and self.is_main_process:
+            logger.info(
+                "Finetune checkpoint load: keeping strict actor/critic weights "
+                "and fresh optimizer state."
+            )
         elif self.is_main_process:
             logger.info(
                 "Skipping optimizer state restore during offline evaluation."
             )
-        self.current_learning_iteration = loaded_dict.get("iter", 0)
+        loaded_iteration = int(loaded_dict.get("iter", 0))
+        if checkpoint_load_mode == "resume":
+            self.current_learning_iteration = loaded_iteration
+        elif bool(self.config.get("finetune_continue_iteration", False)):
+            # A saved checkpoint contains the last completed iteration. Start
+            # the finetune at the next one while intentionally keeping fresh
+            # optimizer state.
+            self.current_learning_iteration = loaded_iteration + 1
+        else:
+            self.current_learning_iteration = 0
         self._maybe_override_loaded_actor_sigma()
         self._load_extra_checkpoint_state(loaded_dict)
         return loaded_dict.get("infos", None)

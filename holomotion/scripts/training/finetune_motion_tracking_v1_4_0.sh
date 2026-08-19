@@ -36,7 +36,7 @@ for required_file in "${required_files[@]}"; do
     fi
 done
 
-config_name="motion_tracking_v1_4_0_finetune"
+config_name="${CONFIG_NAME:-motion_tracking_v1_4_0_finetune}"
 num_envs="${NUM_ENVS:-4096}"
 
 common_args=(
@@ -62,12 +62,6 @@ if [[ "${HOLOMOTION_FINETUNE_DRY_RUN:-0}" == "1" ]]; then
     exit 0
 fi
 
-"${Train_CONDA_PREFIX}/bin/accelerate" launch \
+exec "${Train_CONDA_PREFIX}/bin/accelerate" launch \
     "${launch_args[@]}" \
-    "${common_args[@]}" &
-TRAIN_PID=$!
-trap cleanup SIGINT SIGTERM
-wait "$TRAIN_PID"
-status=$?
-trap - SIGINT SIGTERM
-exit "$status"
+    "${common_args[@]}"

@@ -1,8 +1,10 @@
 from types import SimpleNamespace
 from unittest import mock
 
+import pytest
 import torch
 import torch.nn as nn
+
 from holomotion.src.algo.ppo import PPO, _checkpoint_state_to_cpu
 from holomotion.src.modules.agent_modules import PPOActor
 
@@ -172,6 +174,97 @@ def test_ppo_load_skips_incompatible_optimizer_state_restore():
     )
     algo._maybe_override_loaded_actor_sigma.assert_called_once_with()
     algo._load_extra_checkpoint_state.assert_called_once_with(loaded_dict)
+
+
+def test_ppo_finetune_load_keeps_weights_but_resets_training_state():
+    algo = PPO.__new__(PPO)
+    algo.is_main_process = False
+    algo.is_offline_eval = False
+    algo.device = torch.device("cpu")
+    algo.actor = nn.Linear(1, 1)
+    algo.critic = nn.Linear(1, 1)
+    algo.accelerator = SimpleNamespace(unwrap_model=lambda model: model)
+    algo.config = {"checkpoint_load_mode": "finetune"}
+    algo._load_extra_checkpoint_state = mock.Mock()
+    algo._resolve_model_file_path = (
+        lambda ckpt_path, model_name: f"{ckpt_path}:{model_name}"
+    )
+    algo._load_accelerate_model = mock.Mock()
+    algo._maybe_override_loaded_actor_sigma = mock.Mock()
+    algo.actor_optimizer = mock.Mock()
+    algo.critic_optimizer = mock.Mock()
+
+    loaded_dict = {
+        "actor_optimizer_state_dict": {"state": {"stale": {}}},
+        "critic_optimizer_state_dict": {"state": {"stale": {}}},
+        "iter": 14000,
+        "infos": {"source": "v1.4.0"},
+    }
+
+    with mock.patch(
+        "holomotion.src.algo.ppo.torch.load", return_value=loaded_dict
+    ):
+        infos = algo.load("model_14000.pt")
+
+    assert infos == {"source": "v1.4.0"}
+    assert algo.current_learning_iteration == 0
+    algo._load_accelerate_model.assert_has_calls(
+        [
+            mock.call(algo.actor, "model_14000.pt:actor", strict=True),
+            mock.call(algo.critic, "model_14000.pt:critic", strict=True),
+        ]
+    )
+    algo.actor_optimizer.load_state_dict.assert_not_called()
+    algo.critic_optimizer.load_state_dict.assert_not_called()
+    algo._maybe_override_loaded_actor_sigma.assert_called_once_with()
+    algo._load_extra_checkpoint_state.assert_called_once_with(loaded_dict)
+
+
+def test_ppo_finetune_can_continue_checkpoint_iteration_with_fresh_optimizer():
+    algo = PPO.__new__(PPO)
+    algo.is_main_process = False
+    algo.is_offline_eval = False
+    algo.device = torch.device("cpu")
+    algo.actor = nn.Linear(1, 1)
+    algo.critic = nn.Linear(1, 1)
+    algo.accelerator = SimpleNamespace(unwrap_model=lambda model: model)
+    algo.config = {
+        "checkpoint_load_mode": "finetune",
+        "finetune_continue_iteration": True,
+    }
+    algo._load_extra_checkpoint_state = mock.Mock()
+    algo._resolve_model_file_path = (
+        lambda ckpt_path, model_name: f"{ckpt_path}:{model_name}"
+    )
+    algo._load_accelerate_model = mock.Mock()
+    algo._maybe_override_loaded_actor_sigma = mock.Mock()
+    algo.actor_optimizer = mock.Mock()
+    algo.critic_optimizer = mock.Mock()
+
+    loaded_dict = {
+        "actor_optimizer_state_dict": {"state": {"stale": {}}},
+        "critic_optimizer_state_dict": {"state": {"stale": {}}},
+        "iter": 14000,
+        "infos": {"source": "v1.4.0"},
+    }
+
+    with mock.patch(
+        "holomotion.src.algo.ppo.torch.load", return_value=loaded_dict
+    ):
+        algo.load("model_14000.pt")
+
+    assert algo.current_learning_iteration == 14001
+    algo.actor_optimizer.load_state_dict.assert_not_called()
+    algo.critic_optimizer.load_state_dict.assert_not_called()
+
+
+def test_ppo_load_rejects_unknown_checkpoint_mode():
+    algo = PPO.__new__(PPO)
+    algo.is_main_process = False
+    algo.config = {"checkpoint_load_mode": "weights-ish"}
+
+    with pytest.raises(ValueError, match="checkpoint_load_mode"):
+        algo.load("checkpoint.pt")
 
 
 def test_checkpoint_state_to_cpu_moves_nested_tensors():
