@@ -13,7 +13,6 @@
 </div>
 
 # News
-- [2026.08.19] HoloMotion v1.4.1 adds one universal policy for 2 heads × 5 bodies × 7 hands on modular Unitree G1 robots, plus more stable HoloRetarget updates.
 - [2026.07.16] HoloMotion v1.4 introduces HoloRetarget at 3,000+ FPS on RTX 4090 for training data generation and 300+ FPS entirely on-robot for teleoperation, plus HoloSMPL for 10+ datasets and devices.
 - [2026.05.15] HoloMotion v1.3 scales from 60M to 0.4B parameters and 80 to 2000+ hours of motion data, while improving policy inference from ~100 to ~300 FPS.
 - [2026.04.04] HoloMotion v1.2 provides pre-trained motion tracking and velocity tracking models for the community to deploy directly.
@@ -52,6 +51,16 @@ HoloSMPL standardizes VR, inertial, optical, and vision capture into a shared re
 
 <p align="center">
   <img src="assets/media/holosmpl_capture_sources.jpg" alt="HoloSMPL inputs from VR, inertial, optical, and vision capture" width="100%">
+</p>
+
+## One Policy Across Modular G1 Configurations
+
+HoloMotion runs one shared motion policy across 2 heads, 5 G1 29-DoF body modes, and 7 hands, covering 66 unique compatible configurations without training a separate policy for every hardware assembly.
+
+The five body modes retain the same 29-DoF kinematic layout while varying pelvis and wrist geometry together with hip, wrist, and waist actuator specifications. The supported modules span Normal and COMP heads; Mode 5, 11, 13, 15, and 18 bodies; and None, Rubber, Dex1-1, Dex3-1, Inspire DFQ, Inspire FTP, and BrainCo Revo2 hand options.
+
+<p align="center">
+  <img src="assets/media/g1_modular_configurations.jpg" alt="One HoloMotion policy across modular Unitree G1 head, body, and hand configurations" width="100%">
 </p>
 
 ## Closes the Loop From Data to Robots
