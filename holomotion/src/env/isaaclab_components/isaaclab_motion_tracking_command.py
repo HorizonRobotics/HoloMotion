@@ -19,6 +19,7 @@ from dataclasses import MISSING
 from typing import Sequence
 import time
 import json
+import re
 
 from collections import defaultdict
 from typing import Dict, List, Optional
@@ -59,6 +60,15 @@ from holomotion.src.training.h5_dataloader import (
     build_motion_datasets_from_cfg,
     normalize_hdf5_root_entries,
     weighted_bin_cfg_from_motion_cfg,
+)
+from holomotion.src.training.failure_replay import (
+    FailureReplayConfig,
+    RollingSourceExposure,
+    retry_start_frames,
+    select_failure_replays,
+)
+from holomotion.src.training.source_adaptive_runtime import (
+    record_command_mpkpe,
 )
 from holomotion.src.motion_tracking.reference_observation import (
     ReferenceKinematics,
@@ -128,6 +138,16 @@ class RefMotionCommand(CommandTerm):
         self._init_robot_handle()
         self._init_buffers()
         self._init_motion_lib()
+        if bool(
+            getattr(self.cfg, "link_observation", {}).get("enabled", False)
+        ):
+            from holomotion.src.motion_tracking.link_command_state import (
+                LinkCommandObservationAdapter,
+            )
+
+            self._link_observation_adapter = LinkCommandObservationAdapter(
+                self
+            )
 
     #     # self._init_tracking_config()
 
@@ -677,11 +697,43 @@ class RefMotionCommand(CommandTerm):
             sampling_strategy = "uniform"
         else:
             sampling_strategy = str(sampling_strategy_cfg).lower()
+        source_adaptive_cfg = dict(mcfg.get("source_adaptive", {}) or {})
+        source_adaptive_enabled = source_adaptive_cfg.get("enabled", False)
+        if type(source_adaptive_enabled) is not bool:
+            raise ValueError("source_adaptive.enabled must be boolean")
+        source_sampling_cfg = dict(mcfg.get("source_sampling", {}) or {})
+        unknown_source_settings = set(source_sampling_cfg) - {"probabilities"}
+        if unknown_source_settings:
+            raise ValueError(
+                "Unknown source_sampling settings: "
+                f"{sorted(unknown_source_settings)}"
+            )
+        if source_adaptive_enabled and sampling_strategy != "source_adaptive":
+            raise ValueError(
+                "source_adaptive.enabled requires "
+                "sampling_strategy=source_adaptive"
+            )
         if sampling_strategy == "weighted_bin":
             weighted_bin_cfg = weighted_bin_cfg_from_motion_cfg(mcfg)
             self._motion_cache.enable_weighted_bin_sampling(
                 cfg=weighted_bin_cfg
             )
+        elif sampling_strategy == "source_adaptive":
+            if source_adaptive_enabled:
+                self._motion_cache.enable_source_adaptive_sampling(
+                    source_probabilities=source_sampling_cfg.get(
+                        "probabilities"
+                    ),
+                    source_adaptive_cfg=source_adaptive_cfg,
+                    group_by=source_adaptive_cfg.get("group_by", "source_id"),
+                )
+            else:
+                self._motion_cache.enable_source_fixed_sampling(
+                    source_probabilities=source_sampling_cfg.get(
+                        "probabilities"
+                    ),
+                    group_by=source_adaptive_cfg.get("group_by", "source_id"),
+                )
         elif sampling_strategy == "curriculum":
             curriculum_cfg = dict(mcfg.get("curriculum", {}) or {})
             self._motion_cache.enable_cache_curriculum_sampling(
@@ -690,12 +742,90 @@ class RefMotionCommand(CommandTerm):
         elif sampling_strategy not in ("uniform", "curriculum"):
             raise ValueError(
                 f"Invalid sampling_strategy '{sampling_strategy}'. "
-                "Expected one of ['curriculum', 'uniform', 'weighted_bin']."
+                "Expected one of ['curriculum', 'source_adaptive', "
+                "'uniform', 'weighted_bin']."
             )
 
         self._sampling_strategy = sampling_strategy
 
+        self._init_failure_replay(mcfg)
         self._init_per_env_cache()
+
+    def _init_failure_replay(self, mcfg) -> None:
+        self._failure_replay_cfg = FailureReplayConfig.parse(
+            mcfg.get("failure_replay", None)
+        )
+        self._failure_replay_terms_validated = False
+        self._failure_replay_stats = defaultdict(float)
+        self._failure_replay_count = torch.zeros(
+            self.num_envs, dtype=torch.long, device=self.device
+        )
+        self._failure_replay_exposure = None
+        self._failure_replay_upper_probabilities = None
+        self._failure_replay_global_source_counts = None
+        self._failure_replay_source_counts = None
+        if self._failure_replay_cfg is None:
+            return
+        cfg = self._failure_replay_cfg
+        if cfg.count_against_source_budget:
+            if not self._motion_cache.source_sampling_enabled:
+                raise ValueError(
+                    "failure_replay source budget requires source sampling; "
+                    "disable count_against_source_budget for other samplers"
+                )
+            names = self._motion_cache.source_names
+            self._failure_replay_exposure = RollingSourceExposure(
+                len(names), cfg.source_budget_window_assignments, self.device
+            )
+            self._failure_replay_upper_probabilities = (
+                self._motion_cache.source_upper_probabilities(
+                    cfg.source_budget_upper_multiplier, device=self.device
+                )
+            )
+            self._failure_replay_global_source_counts = torch.zeros(
+                len(names), dtype=torch.long, device=self.device
+            )
+            self._failure_replay_source_counts = torch.zeros(
+                len(names), dtype=torch.long, device=self.device
+            )
+        logger.info(
+            "FAILURE_REPLAY: mode={}, probability={}, max_retries={}, "
+            "source_budget={}",
+            cfg.replay_start_mode,
+            cfg.replay_probability,
+            cfg.max_retries_per_motion,
+            cfg.count_against_source_budget,
+        )
+
+    def _record_source_exposure(
+        self,
+        clip_indices: torch.Tensor,
+        replay_mask: torch.Tensor | None = None,
+    ) -> None:
+        exposure = self._failure_replay_exposure
+        if exposure is None or clip_indices.numel() == 0:
+            return
+        sources = self._motion_cache.source_indices_for_indices(clip_indices)
+        exposure.record(sources)
+        if replay_mask is None:
+            replay_mask = torch.zeros_like(sources, dtype=torch.bool)
+        if replay_mask.shape != sources.shape:
+            raise ValueError("Replay mask and source assignments must align")
+        ordinary = sources[~replay_mask]
+        replayed = sources[replay_mask]
+        count = len(self._motion_cache.source_names)
+        self._failure_replay_global_source_counts += torch.bincount(
+            ordinary, minlength=count
+        )
+        self._failure_replay_source_counts += torch.bincount(
+            replayed, minlength=count
+        )
+        self._failure_replay_stats["global_assignments"] += float(
+            ordinary.numel()
+        )
+        self._failure_replay_stats["replay_assignments"] += float(
+            replayed.numel()
+        )
 
     def setup_dumping_dir(self, log_dir: str):
         mcfg = self.mcfg
@@ -770,6 +900,8 @@ class RefMotionCommand(CommandTerm):
         self._reward_sum_since_assign[:] = 0.0
         self._step_count_since_assign[:] = 0.0
         self._update_ref_motion_state_from_cache()
+        if not self._is_evaluating:
+            self._record_source_exposure(clip_idx)
 
     def _maybe_dump_sampled_motion_keys(self) -> None:
         if not self._dump_sampled_motion_keys_enabled:
@@ -1299,23 +1431,256 @@ class RefMotionCommand(CommandTerm):
         extras = super().reset(env_ids)
 
         if env_ids is None:
-            env_ids = slice(None)
-
-        if not isinstance(env_ids, torch.Tensor):
+            env_ids = torch.arange(
+                self.num_envs, device=self.device, dtype=torch.long
+            )
+        elif not isinstance(env_ids, torch.Tensor):
             env_ids = torch.tensor(
                 env_ids, device=self.device, dtype=torch.long
             )
         else:
-            env_ids = env_ids.to(self.device)
+            env_ids = env_ids.to(device=self.device, dtype=torch.long)
         self._motion_end_mask[env_ids] = False
         self.motion_end_counter[env_ids] = 0
 
-        # Do not apply cache swap inside per-env reset; defer to PPO barrier.
-        # Always resample only the requested envs here.
+        # Per-env reset never swaps the cache; the PPO barrier owns swaps.
         motion_ids = self._filter_env_ids_for_motion_task(env_ids.view(-1))
-        self._resample_command(motion_ids, eval=self._is_evaluating)
+        if (
+            self._failure_replay_cfg is None
+            or self._is_evaluating
+            or motion_ids.numel() == 0
+        ):
+            self._resample_command(motion_ids, eval=self._is_evaluating)
+            return extras
 
+        replay_candidates = self._select_failure_replay_candidates(motion_ids)
+        replay_mask = replay_candidates
+        assignments = None
+        planned_sources = None
+        if self._failure_replay_exposure is not None and bool(
+            replay_candidates.any()
+        ):
+            ordinary_clip, ordinary_frame = (
+                self._motion_cache.sample_env_assignments(
+                    len(motion_ids), self.cfg.n_fut_frames, self.device
+                )
+            )
+            ordinary_sources = self._motion_cache.source_indices_for_indices(
+                ordinary_clip
+            )
+            previous_sources = self._motion_cache.source_indices_for_indices(
+                self._clip_indices[motion_ids]
+            )
+            candidate_sources = torch.where(
+                replay_candidates,
+                previous_sources,
+                torch.full_like(previous_sources, -1),
+            )
+            plan = self._failure_replay_exposure.plan_replays(
+                ordinary_sources,
+                candidate_sources,
+                self._failure_replay_upper_probabilities,
+            )
+            replay_mask = plan.accepted_mask
+            planned_sources = plan.final_source_indices
+            assignments = (ordinary_clip, ordinary_frame)
+            self._failure_replay_stats["blocked_source_budget"] += float(
+                (replay_candidates & ~replay_mask).sum()
+            )
+
+        ordinary_ids = motion_ids[~replay_mask]
+        if assignments is None:
+            self._resample_command(ordinary_ids)
+        else:
+            self._resample_command(
+                ordinary_ids,
+                assignments=(
+                    assignments[0][~replay_mask],
+                    assignments[1][~replay_mask],
+                ),
+            )
+        self._failure_replay_count[ordinary_ids] = 0
+        self._replay_failed_command(motion_ids[replay_mask])
+        if self._failure_replay_exposure is not None:
+            actual_sources = self._motion_cache.source_indices_for_indices(
+                self._clip_indices[motion_ids]
+            )
+            if planned_sources is not None and not torch.equal(
+                actual_sources, planned_sources
+            ):
+                raise RuntimeError(
+                    "Replay budget preview disagrees with actual assignments"
+                )
+            self._record_source_exposure(
+                self._clip_indices[motion_ids], replay_mask=replay_mask
+            )
         return extras
+
+    def _validate_failure_replay_terms(self) -> None:
+        if self._failure_replay_terms_validated:
+            return
+        manager = getattr(self._env, "termination_manager", None)
+        if manager is None:
+            raise RuntimeError(
+                "failure_replay requires an active termination manager"
+            )
+        active = set(manager.active_terms)
+        for name in self._failure_replay_cfg.trigger_termination_terms:
+            if name not in active:
+                raise ValueError(
+                    f"failure_replay trigger term {name!r} is not active"
+                )
+            if bool(manager.get_term_cfg(name).time_out):
+                raise ValueError(
+                    f"failure_replay trigger term {name!r} is a timeout"
+                )
+        self._failure_replay_terms_validated = True
+
+    def _select_failure_replay_candidates(
+        self, env_ids: torch.Tensor
+    ) -> torch.Tensor:
+        self._validate_failure_replay_terms()
+        failure = torch.zeros(
+            env_ids.numel(), dtype=torch.bool, device=self.device
+        )
+        manager = self._env.termination_manager
+        for name in self._failure_replay_cfg.trigger_termination_terms:
+            term = manager.get_term(name)[env_ids].bool()
+            failure |= term
+            self._failure_replay_stats[f"trigger/{name}"] += float(term.sum())
+        self._failure_replay_stats["eligible_failures"] += float(failure.sum())
+        retry_room = (
+            self._failure_replay_count[env_ids]
+            < self._failure_replay_cfg.max_retries_per_motion
+        )
+        draws = torch.rand(env_ids.numel(), device=self.device)
+        selected = select_failure_replays(
+            failure,
+            self._failure_replay_count[env_ids],
+            draws,
+            config=self._failure_replay_cfg,
+        )
+        self._failure_replay_stats["blocked_max_retries"] += float(
+            (failure & ~retry_room).sum()
+        )
+        self._failure_replay_stats["probability_fallback"] += float(
+            (failure & retry_room & ~selected).sum()
+        )
+        return selected
+
+    def _replay_failed_command(self, env_ids: torch.Tensor) -> None:
+        if env_ids.numel() == 0:
+            return
+        self._record_completion_rate_for_envs(env_ids)
+        clips = self._clip_indices[env_ids]
+        lengths = self._motion_cache.lengths_for_indices(clips)
+        failure_frames = self._frame_indices[env_ids]
+        backtrack_frames = int(
+            round(
+                self._failure_replay_cfg.backtrack_seconds
+                * float(self.cfg.target_fps)
+            )
+        )
+        starts = retry_start_frames(
+            failure_frames,
+            lengths,
+            n_future_frames=int(self.cfg.n_fut_frames),
+            backtrack_frames=backtrack_frames,
+            replay_start_mode=self._failure_replay_cfg.replay_start_mode,
+        )
+        self._failure_replay_stats["failure_frame_sum"] += float(
+            failure_frames.sum()
+        )
+        self._failure_replay_stats["replay_start_frame_sum"] += float(
+            starts.sum()
+        )
+        if self._failure_replay_cfg.replay_start_mode == "next_frame":
+            maximum = torch.clamp(
+                lengths - 1 - int(self.cfg.n_fut_frames), min=0
+            )
+            expected = torch.remainder(failure_frames + 1, maximum + 1)
+            self._failure_replay_stats["next_frame_contract_matches"] += float(
+                (starts == expected).sum()
+            )
+            self._failure_replay_stats["next_frame_wraps"] += float(
+                (failure_frames + 1 > maximum).sum()
+            )
+        else:
+            self._failure_replay_stats["backtracked_frame_sum"] += float(
+                (failure_frames - starts).sum()
+            )
+        self._frame_indices[env_ids] = starts
+        self._start_frame_indices[env_ids] = starts
+        self._failure_replay_count[env_ids] += 1
+        self._reward_sum_since_assign[env_ids] = 0.0
+        self._step_count_since_assign[env_ids] = 0.0
+        if hasattr(self, "_link_observation_adapter"):
+            self._reference_observation_cache = {}
+        self._update_ref_motion_state_from_cache(env_ids=env_ids)
+        self._align_root_to_ref(env_ids)
+        self._align_dof_to_ref(env_ids)
+        if (
+            hasattr(self, "_link_observation_adapter")
+            and not self._failure_replay_cfg.preserve_mode_mask
+        ):
+            self._reference_observation_cache = {}
+            self._link_observation_adapter.resample_mask(env_ids)
+        self._failure_replay_stats["accepted_replays"] += float(
+            env_ids.numel()
+        )
+
+    def failure_replay_metrics(self) -> Optional[Dict[str, float]]:
+        if self._failure_replay_cfg is None:
+            return None
+        result = {
+            key: float(value)
+            for key, value in self._failure_replay_stats.items()
+        }
+        result["active_retry_mean"] = float(
+            self._failure_replay_count.float().mean()
+        )
+        result["active_retry_max"] = float(self._failure_replay_count.max())
+        result["start_mode_next_frame"] = float(
+            self._failure_replay_cfg.replay_start_mode == "next_frame"
+        )
+        accepted = result.get("accepted_replays", 0.0)
+        if accepted > 0:
+            for name in ("failure_frame", "replay_start_frame"):
+                result[f"mean_{name}"] = (
+                    result.get(f"{name}_sum", 0.0) / accepted
+                )
+            result["next_frame_contract_rate"] = (
+                result.get("next_frame_contract_matches", 0.0) / accepted
+            )
+            result["next_frame_wrap_rate"] = (
+                result.get("next_frame_wraps", 0.0) / accepted
+            )
+        if self._failure_replay_exposure is not None:
+            result.update(self._failure_replay_exposure.metrics())
+            ordinary = self._failure_replay_global_source_counts
+            replayed = self._failure_replay_source_counts
+            total = float((ordinary + replayed).sum())
+            base = self._motion_cache.source_base_probabilities(
+                device=self.device
+            )
+            upper = self._failure_replay_upper_probabilities
+            for index, name in enumerate(self._motion_cache.source_names):
+                safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", name)
+                prefix = f"source/{index:02d}_{safe_name}/"
+                result[prefix + "baseline_probability"] = float(base[index])
+                result[prefix + "upper_probability"] = float(upper[index])
+                result[prefix + "global_assignment_count"] = float(
+                    ordinary[index]
+                )
+                result[prefix + "replay_assignment_count"] = float(
+                    replayed[index]
+                )
+                result[prefix + "total_assignment_fraction"] = (
+                    float(ordinary[index] + replayed[index]) / total
+                    if total > 0
+                    else 0.0
+                )
+        return result
 
     def apply_cache_swap_if_pending_barrier(self, accelerator=None) -> bool:
         """Apply a pending cache swap at a rollout barrier.
@@ -1361,15 +1726,23 @@ class RefMotionCommand(CommandTerm):
         self._start_frame_indices[motion_ids] = frame_idx
         self._reward_sum_since_assign[motion_ids] = 0.0
         self._step_count_since_assign[motion_ids] = 0.0
+        if hasattr(self, "_link_observation_adapter"):
+            self._reference_observation_cache = {}
         self._update_ref_motion_state_from_cache(env_ids=motion_ids)
 
         # Realign robot states to the new reference
         self._align_root_to_ref(motion_ids)
         self._align_dof_to_ref(motion_ids)
+        if hasattr(self, "_link_observation_adapter"):
+            self._reference_observation_cache = {}
+            self._link_observation_adapter.resample_mask(motion_ids)
 
         # Reset per-episode timeout bookkeeping for consistency
         self._motion_end_mask[motion_ids] = False
         self.motion_end_counter[motion_ids] = 0
+        self._failure_replay_count[motion_ids] = 0
+        if not self._is_evaluating:
+            self._record_source_exposure(clip_idx)
         return True
 
     def compute(self, dt: float):
@@ -2685,7 +3058,13 @@ class RefMotionCommand(CommandTerm):
         )  # [B, T, 2 + 3 + 3 + num_dofs * 2 + num_bodies * (3 + 6)]
         return rel_fut_ref_motion_state_seq.reshape(self.num_envs, -1)
 
-    def _resample_command(self, env_ids: Sequence[int], eval=False):
+    def _resample_command(
+        self,
+        env_ids: Sequence[int],
+        eval: bool = False,
+        *,
+        assignments: tuple[torch.Tensor, torch.Tensor] | None = None,
+    ):
         """Resample command for specified environments."""
         if len(env_ids) == 0:
             return
@@ -2707,20 +3086,30 @@ class RefMotionCommand(CommandTerm):
             return
 
         self._record_completion_rate_for_envs(idxs)
-        clip_idx, frame_idx = self._motion_cache.sample_env_assignments(
-            len(idxs),
-            self.cfg.n_fut_frames,
-            self.device,
-            deterministic_start=(eval or self._is_evaluating),
-        )
+        if assignments is None:
+            clip_idx, frame_idx = self._motion_cache.sample_env_assignments(
+                len(idxs),
+                self.cfg.n_fut_frames,
+                self.device,
+                deterministic_start=(eval or self._is_evaluating),
+            )
+        else:
+            clip_idx, frame_idx = assignments
+            if clip_idx.numel() != len(idxs) or frame_idx.numel() != len(idxs):
+                raise ValueError("Preselected command assignments misalign")
         self._clip_indices[idxs] = clip_idx
         self._frame_indices[idxs] = frame_idx
         self._start_frame_indices[idxs] = frame_idx
         self._reward_sum_since_assign[idxs] = 0.0
         self._step_count_since_assign[idxs] = 0.0
+        if hasattr(self, "_link_observation_adapter"):
+            self._reference_observation_cache = {}
         self._update_ref_motion_state_from_cache(env_ids=idxs)
         self._align_root_to_ref(idxs)
         self._align_dof_to_ref(idxs)
+        if hasattr(self, "_link_observation_adapter"):
+            self._reference_observation_cache = {}
+            self._link_observation_adapter.resample_mask(idxs)
 
     def _filter_env_ids_for_motion_task(
         self, env_ids: torch.Tensor
@@ -2972,14 +3361,22 @@ class RefMotionCommand(CommandTerm):
             self._start_frame_indices[resample_ids] = frame_idx
             self._reward_sum_since_assign[resample_ids] = 0.0
             self._step_count_since_assign[resample_ids] = 0.0
+            if hasattr(self, "_link_observation_adapter"):
+                self._reference_observation_cache = {}
             # Realign robot state
             self._update_ref_motion_state_from_cache(env_ids=resample_ids)
             self._align_root_to_ref(resample_ids)
             self._align_dof_to_ref(resample_ids)
+            if hasattr(self, "_link_observation_adapter"):
+                self._reference_observation_cache = {}
+                self._link_observation_adapter.resample_mask(resample_ids)
             # Mark motion end
             self._motion_end_mask[motion_ids] = False
             self._motion_end_mask[resample_ids] = True
             self.motion_end_counter[resample_ids] += 1
+            self._failure_replay_count[resample_ids] = 0
+            if not self._is_evaluating:
+                self._record_source_exposure(clip_idx)
 
     def _update_metrics(self):
         """Update metrics for command progress tracking."""
@@ -3083,6 +3480,8 @@ class RefMotionCommand(CommandTerm):
         self.metrics["Task/MPKPE_Arms"][:] = mpkpe_arms
         self.metrics["Task/MPKPE_Waist"][:] = mpkpe_waist
         self.metrics["Task/MPKPE_Legs"][:] = mpkpe_legs
+        if self._motion_cache.adaptive_sampling_enabled:
+            record_command_mpkpe(self, mpkpe_wholebody)
 
     # --- Pose-error getters for curriculum (WholeBody only) ---
     def get_wholebody_mpjpe(
@@ -3257,6 +3656,8 @@ class MotionCommandCfg(CommandTermCfg):
 
     n_fut_frames: int = MISSING
     target_fps: int = MISSING
+
+    link_observation: dict = {}
 
     anchor_bodylink_name: str = "pelvis"
 

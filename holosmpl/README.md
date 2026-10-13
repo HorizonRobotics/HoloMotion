@@ -3,6 +3,13 @@
 HoloSMPL converts human motion sources into the project-standard human-side
 representation used before HoloRetarget robot data production.
 
+Run from the repository root in the environment described in
+[Environment Setup](../docs/environment_setup.md):
+
+```bash
+source train.env
+```
+
 The normal production flow is:
 
 ```text
@@ -19,9 +26,9 @@ capture.
 Most users only need the source list and one conversion command:
 
 ```bash
-python -m holosmpl list-sources
+"$Train_CONDA_PREFIX/bin/python" -m holosmpl list-sources
 
-python -m holosmpl convert \
+"$Train_CONDA_PREFIX/bin/python" -m holosmpl convert \
   --source pico4_ultra_enterprise \
   --input-root /path/to/raw_pico_csv_root \
   --output-root /path/to/holosmpl_output \
@@ -47,17 +54,17 @@ run_configs/  # exact run configs for reproducibility
 After conversion, generate quick visual checks from the produced motion files:
 
 ```bash
-python -m holosmpl visualize-canonical \
+"$Train_CONDA_PREFIX/bin/python" -m holosmpl visualize-canonical \
   --canonical-root /path/to/holosmpl_output/canonical \
   --output-root /path/to/visual_check \
   --smpl-models-root /path/to/holomotion/assets
 
-python -m holosmpl render-canonical-video \
+"$Train_CONDA_PREFIX/bin/python" -m holosmpl render-canonical-video \
   --canonical-root /path/to/holosmpl_output/canonical \
   --output-root /path/to/canonical_video_check \
   --smpl-models-root /path/to/holomotion/assets
 
-python -m holosmpl render-formal-video \
+"$Train_CONDA_PREFIX/bin/python" -m holosmpl render-formal-video \
   --formal-root /path/to/holosmpl_output/formal_npz \
   --output-root /path/to/formal_video_check \
   --smpl-models-root /path/to/holomotion/assets
@@ -148,6 +155,6 @@ For packed sources that expand one raw file into many clips, export
 `holosmpl/sources.py` and verify:
 
 ```bash
-python -m holosmpl list-sources
-python -m holosmpl convert --source my_source --input-root RAW --output-root OUT --skip-h5
+"$Train_CONDA_PREFIX/bin/python" -m holosmpl list-sources
+"$Train_CONDA_PREFIX/bin/python" -m holosmpl convert --source my_source --input-root RAW --output-root OUT --skip-h5
 ```

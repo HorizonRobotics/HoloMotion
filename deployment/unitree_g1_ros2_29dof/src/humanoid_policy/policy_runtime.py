@@ -1,7 +1,6 @@
 """Runtime state machine and policy loop for the 29DOF policy node."""
 
 from __future__ import annotations
-
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -11,6 +10,54 @@ import numpy as np
 from humanoid_policy.motion_clip_library import select_motion_clip_index
 from humanoid_policy.onnx_policy import run_with_cuda_observation
 from humanoid_policy.utils.remote_controller_filter import KeyMap
+
+
+def load_policy_after_reference_validation(port: Any) -> None:
+    """Reject legacy schemas and timing mismatches before creating ONNX sessions."""
+    from humanoid_policy.config import motion_reference_horizon
+    from humanoid_policy.link_policy_contract import validate_v2_reference_frequency
+
+    motion_reference_horizon(port.motion_config)
+    validate_v2_reference_frequency(port.motion_config, port.robot_config.policy_freq)
+    port.load_policy()
+
+def run_initial_setup_once(port: Any) -> bool:
+    """Finish or fail setup once; never retry partially initialized GPU sessions."""
+    if getattr(port, "_setup_attempted", False):
+        return bool(getattr(port, "_setup_completed", False))
+    port._setup_attempted = True
+    port.get_logger().info("Starting policy node setup...")
+    try:
+        port.setup()
+    except Exception as exc:
+        port._setup_failed = True
+        port.get_logger().error(f"Policy node setup failed: {exc}")
+        # A failed setup is terminal; do not retain partially initialized sessions.
+        port.velocity_policy_session = None
+        port.motion_policy_session = None
+        runtime = getattr(port, "runtime", None)
+        if runtime is not None:
+            runtime.state.policy_enabled = False
+            runtime.state.motion_in_progress = False
+        return False
+    else:
+        port._setup_completed = True
+        port.get_logger().info("Policy node setup completed successfully")
+        return True
+    finally:
+        timer = getattr(port, "_setup_timer", None)
+        if timer is not None:
+            timer.cancel()
+
+def validate_v2_motion_action(output: Any, num_actions: int = 29) -> np.ndarray:
+    """Reject malformed/non-finite V2 actions before state mutation or publication."""
+    actions = np.asarray(output, dtype=np.float32)
+    if actions.shape != (1, num_actions) or not np.all(np.isfinite(actions)):
+        raise ValueError(
+            f"V2 motion action must be finite [1,{num_actions}], got {actions.shape}"
+        )
+    return actions.reshape(-1)
+
 
 
 def _default_button_states() -> dict[int, int]:
@@ -93,6 +140,7 @@ class PolicyRuntime:
         self._motion_input_feed: dict[str, np.ndarray] | None = None
         self._motion_output_names: list[str] | None = None
         self._motion_step_idx_array: np.ndarray | None = None
+        self._record_reset_epoch = 0
 
     def resize_actions(self, num_actions: int) -> None:
         self.state.resize_actions(int(num_actions))
@@ -103,6 +151,16 @@ class PolicyRuntime:
     def set_robot_state(self, robot_state: str) -> None:
         if robot_state == "MOVE_TO_DEFAULT":
             self.state.robot_state_ready = True
+        elif robot_state == "POLICY_HOLD":
+            was_enabled = self.state.policy_enabled
+            self.state.policy_enabled = False
+            self.state.robot_state_ready = False
+            self.state.motion_in_progress = False
+            self.state.motion_uses_vr_reference = False
+            self.state.current_policy_mode = "velocity"
+            self.state.vx = self.state.vy = self.state.vyaw = 0.0
+            if was_enabled:
+                self.port.get_logger().error("Policy inference paused in POLICY_HOLD; Start and then A are required to resume")
         elif robot_state == "ZERO_TORQUE":
             self.state.robot_state_ready = False
         elif robot_state == "EMERGENCY_STOP":
@@ -126,6 +184,9 @@ class PolicyRuntime:
 
         self.port._lowstate_msg = ls_msg
         self.port.remote_controller.set(ls_msg.wireless_remote)
+
+        if getattr(self.port, "_setup_failed", False):
+            return
 
         if self._is_button_pressed(KeyMap.A) and self.state.robot_state_ready:
             self.enable_velocity_policy()
@@ -168,6 +229,9 @@ class PolicyRuntime:
         if hasattr(obs_eval, "clear_motion_yaw_alignment"):
             obs_eval.clear_motion_yaw_alignment()
         self.reset_counters()
+        # Start history from the first current-state sample, not startup warmup
+        # or an earlier mode's sensor/action history.
+        self.port.velocity_obs_builder.reset()
         self.state.actions_onnx = np.zeros(self.port.num_actions, dtype=np.float32)
         self.state.target_dof_pos_onnx = (
             self.port.velocity_default_angles_onnx.copy()
@@ -186,6 +250,9 @@ class PolicyRuntime:
             obs_eval.clear_motion_yaw_alignment()
         obs_eval.clear_vr_reference_cache()
         self.reset_counters()
+        # Start history from the first current-state sample, not startup warmup
+        # or an earlier mode's sensor/action history.
+        self.port.velocity_obs_builder.reset()
         self.state.actions_onnx = np.zeros(self.port.num_actions, dtype=np.float32)
         self.state.target_dof_pos_onnx = (
             self.port.velocity_default_angles_onnx.copy()
@@ -204,9 +271,16 @@ class PolicyRuntime:
                 "VR teleoperation is enabled but the VR queue is not ready yet; staying in velocity mode."
             )
             return False
-
-        if getattr(self.port, "all_motion_data", None):
-            self.port._load_current_motion()
+        if not self.port.enable_teleop_reference or not vr_ready or not vr_data_available:
+            self.port.get_logger().warn("V2 motion requires a ready live reference")
+            return False
+        requested_mode = str(self.port.get_parameter("link_control_mode").value)
+        if requested_mode not in self.port.motion_policy_contract["modes"]:
+            self.port.get_logger().warn(
+                f"Invalid V2 control mode {requested_mode!r}; staying in velocity mode"
+            )
+            return False
+        self.port.link_control_mode_active = requested_mode
 
         self.state.current_policy_mode = "motion"
         self.reset_counters()
@@ -243,8 +317,8 @@ class PolicyRuntime:
             )
         self.state.motion_in_progress = True
         return True
-
     def reset_counters(self) -> None:
+        self._record_reset_epoch += 1
         self.state.motion_frame_idx = 0
         self.state.motion_step_idx = 0
         if self.port.use_kv_cache and self.port.motion_kv_cache is not None:
@@ -262,6 +336,7 @@ class PolicyRuntime:
             return
 
         old_step_idx = self.state.motion_step_idx
+        self._record_reset_epoch += 1
         if self.port.motion_kv_cache is not None:
             self.port.motion_kv_cache.fill(0)
         self.state.motion_step_idx = 0
@@ -285,8 +360,23 @@ class PolicyRuntime:
         if not getattr(self.port, "_setup_completed", False):
             return
 
+        if getattr(self.port, "_teleop_recorder", None) is not None:
+            self.port._teleop_record_inputs = None
+
         t_loop_start = time.perf_counter()
         now = time.time()
+        policy_timing = self.run_policy_step()
+        self._record_tracking_rate(
+            time.perf_counter(), completed=policy_timing is not None
+        )
+        # Freeze this action's recorded inputs before polling can overwrite the
+        # shared device qpos buffer with the next reference snapshot.
+        control_elapsed = time.perf_counter() - t_loop_start
+        flush_recording = getattr(self.port, "_flush_policy_recording", None)
+        if flush_recording is not None:
+            if policy_timing is None:
+                self.port._teleop_record_inputs = None
+            flush_recording(control_elapsed=control_elapsed)
         t_io = time.perf_counter()
         self._consume_ros_reference()
         if getattr(self.port, "reference_source", "zmq") == "pico_local":
@@ -297,10 +387,6 @@ class PolicyRuntime:
         self._log_vr_ready(now)
         io_ms = self.port._timing_ms(t_io)
 
-        policy_timing = self.run_policy_step()
-        self._record_tracking_rate(
-            time.perf_counter(), completed=policy_timing is not None
-        )
         run_elapsed = 0.0
         if policy_timing is not None:
             run_elapsed = float(policy_timing.get("policy_total_ms", 0.0)) / 1000.0
@@ -352,6 +438,11 @@ class PolicyRuntime:
         t_policy_start = time.perf_counter()
 
         if self.state.current_policy_mode == "motion":
+            if getattr(self.port, "reference_source", "zmq") == "pico_local":
+                source = self.port._local_retarget_source
+                if source is None or not source.ready:
+                    self.switch_to_velocity_mode(reason="Pico reference unavailable")
+                    return None
             if self.state.motion_uses_vr_reference:
                 current_time = time.time()
                 if self.port._vr_reference is None:
@@ -367,45 +458,9 @@ class PolicyRuntime:
                     self.switch_to_velocity_mode(reason="VR reference_qpos stale")
                     return None
 
-            if not self.state.motion_uses_vr_reference and (
-                not hasattr(self.port, "n_motion_frames")
-                or not hasattr(self.port, "ref_dof_pos")
-            ):
-                self.port.get_logger().warn(
-                    "Motion data not loaded, skipping policy execution"
-                )
+            if not self.state.motion_uses_vr_reference:
+                self.switch_to_velocity_mode(reason="motion requires a live reference")
                 return None
-
-            if (
-                self.state.motion_uses_vr_reference
-                and self.port._vr_reference is not None
-            ):
-                obs_eval = self._obs_evaluator()
-                try:
-                    n_fut = int(getattr(self.port, "n_fut_frames", 0))
-                    gpu_builder = getattr(
-                        self.port, "gpu_motion_obs_builder", None
-                    )
-                    if (
-                        n_fut > 0
-                        and self.port._vr_reference.has_future_sequence(n_fut)
-                        and gpu_builder is None
-                    ):
-                        t_reference = time.perf_counter()
-                        self.port._vr_reference.update_kinematics(
-                            n_frames=n_fut,
-                            fps=float(1.0 / self.port.dt),
-                        )
-                        timing_info["reference_kinematics_ms"] = (
-                            self.port._timing_ms(t_reference)
-                        )
-                    else:
-                        obs_eval.clear_vr_reference_cache()
-                except Exception as exc:
-                    self.port.get_logger().error(
-                        f"VR reference kinematics failed: {exc}"
-                    )
-                    obs_eval.clear_vr_reference_cache()
 
             self.port.obs_builder = self.port.motion_obs_builder
             current_action_scale = self.port.motion_action_scale_onnx
@@ -421,32 +476,13 @@ class PolicyRuntime:
         obs_eval = self._obs_evaluator()
         if hasattr(obs_eval, "cache_lowstate"):
             obs_eval.cache_lowstate(self.port._lowstate_msg, force=True)
-        gpu_builder = getattr(self.port, "gpu_motion_obs_builder", None)
-        use_gpu_motion_obs = (
-            self.state.current_policy_mode == "motion"
-            and self.state.motion_uses_vr_reference
-            and gpu_builder is not None
-            and self.port._vr_reference is not None
-        )
-        if use_gpu_motion_obs:
-            robot_pos = obs_eval._real_dof_pos_buffer[
-                obs_eval.motion_dof_real_indices_np
-            ]
-            robot_vel = obs_eval._real_dof_vel_buffer[
-                obs_eval.motion_dof_real_indices_np
-            ]
-            yaw_alignment = None
-            if getattr(obs_eval, "_motion_ref_yaw_alignment_ready", False):
-                yaw_alignment = obs_eval._motion_ref_yaw_alignment_quat_wxyz
-            policy_obs = gpu_builder.build(
-                vr_reference=self.port._vr_reference,
-                robot_root_quat_wxyz=obs_eval.robot_root_rot_quat_wxyz,
-                robot_root_angvel_local=obs_eval.robot_root_ang_vel,
-                robot_dof_pos=robot_pos,
-                robot_dof_vel=robot_vel,
-                last_action=self.state.actions_onnx,
-                reference_yaw_alignment_wxyz=yaw_alignment,
-            )
+        if self.state.current_policy_mode == "motion":
+            try:
+                policy_obs = self.port._build_motion_observation()
+            except Exception as exc:
+                self.port.get_logger().error(f"V2 motion observation failed: {exc}")
+                self.switch_to_velocity_mode(reason="invalid V2 motion reference")
+                return None
         else:
             policy_obs_base = self.port.obs_builder.build_policy_obs()
             if hasattr(self.port.obs_builder, "batch_view"):
@@ -462,7 +498,18 @@ class PolicyRuntime:
         timing_info["onnx_ms"] = self.port._timing_ms(t_onnx)
 
         t_post = time.perf_counter()
-        raw_actions_onnx = np.asarray(onnx_output[0], dtype=np.float32).reshape(-1)
+        is_motion = self.state.current_policy_mode == "motion"
+        if is_motion:
+            try:
+                raw_actions_onnx = validate_v2_motion_action(
+                    onnx_output[0], self.state.num_actions
+                )
+            except (TypeError, ValueError) as exc:
+                self.port.get_logger().error(f"Invalid V2 motion action: {exc}")
+                self.switch_to_velocity_mode(reason="invalid V2 motion action")
+                return None
+        else:
+            raw_actions_onnx = np.asarray(onnx_output[0], dtype=np.float32).reshape(-1)
         self.apply_policy_output(
             raw_actions_onnx,
             action_scale=current_action_scale,
@@ -470,13 +517,16 @@ class PolicyRuntime:
             onnx_to_real=current_onnx_to_real,
             is_motion=self.state.current_policy_mode == "motion",
         )
+        if is_motion and not np.all(np.isfinite(self.state.target_dof_pos_real)):
+            self.port.get_logger().error("Invalid V2 scaled motion target")
+            self.switch_to_velocity_mode(reason="invalid V2 scaled motion target")
+            return None
         self.publish_current_action()
         self._mark_offline_motion_complete()
         self.port._publish_policy_mode()
         timing_info["post_ms"] = self.port._timing_ms(t_post)
         timing_info["policy_total_ms"] = self.port._timing_ms(t_policy_start)
         return timing_info
-
     def apply_policy_output(
         self,
         raw_actions_onnx: np.ndarray,
@@ -540,6 +590,11 @@ class PolicyRuntime:
                 )
 
             self._maybe_reset_motion_rope_window()
+            capture = getattr(self.port, "_capture_teleop_policy_inputs", None)
+            if capture is not None:
+                capture(policy_obs, step_index=self.state.motion_step_idx,
+                        pre_kv_cache=self.port.motion_kv_cache,
+                        reset_epoch=self._record_reset_epoch)
 
             if hasattr(policy_obs, "is_cuda") and bool(policy_obs.is_cuda):
                 cpu_inputs = {
@@ -602,6 +657,10 @@ class PolicyRuntime:
             self.state.motion_step_idx += 1
             return onnx_output
 
+        capture = getattr(self.port, "_capture_teleop_policy_inputs", None)
+        if capture is not None:
+            capture(policy_obs, step_index=-1, pre_kv_cache=None,
+                    reset_epoch=self._record_reset_epoch)
         if hasattr(policy_obs, "is_cuda") and bool(policy_obs.is_cuda):
             if self._motion_output_names is None:
                 self._motion_output_names = [self.port.motion_output_name]

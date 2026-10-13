@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-BASE_IMAGE="horizonrobotics/holomotion:orin_foxy_jp5.1_humble_deploy_zmq_full_20260509"
+BASE_IMAGE="horizonrobotics/holomotion:v2.0.0-orin-jp5.1-arm64"
 IMAGE_NAME="${HOLOMOTION_DEPLOY_IMAGE:-$BASE_IMAGE}"
 CONTAINER_NAME="${HOLOMOTION_CONTAINER_NAME:-holomotion_orin_deploy}"
 PIP_CACHE_DIR="${HOLOMOTION_PIP_CACHE_DIR:-$HOME/.cache/holomotion-pip}"

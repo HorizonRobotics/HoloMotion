@@ -60,6 +60,9 @@ except ImportError:
         logger.warning("pynput not available, keyboard control disabled")
 
 from holomotion.src.evaluation.obs import PolicyObsBuilder
+from holomotion.src.motion_tracking.link_observation import (
+    quat_apply_wxyz, quat_conjugate_wxyz,
+)
 from holomotion.src.utils.torch_utils import (
     quat_apply,
     quat_inv,
@@ -1412,6 +1415,11 @@ class MujocoEvaluator:
         )
 
     def _detect_command_mode(self) -> str:
+        if (
+            self.config.get("evaluation_data", {}).get("backend", "npz")
+            == "hdf5_v2"
+        ):
+            return "motion_tracking"
         m_dir = self.config.get("motion_npz_dir") or self.config.get(
             "eval", {}
         ).get("motion_npz_dir")
@@ -1435,6 +1443,15 @@ class MujocoEvaluator:
             obs_policy_cfg=obs_policy_cfg,
         )
 
+        if self.obs_builder.link_adapter is not None:
+            shape = next(
+                node.shape
+                for node in self.policy_session.get_inputs()
+                if node.name == self.policy_input_name
+            )
+            if shape[-1] != self.obs_builder.link_adapter.actor_dim:
+                raise ValueError("Saved link schema and ONNX observation dimensions differ")
+
     def load_policy(self):
         """Load the policy model using ONNX Runtime."""
         onnx_model_path = Path(self.config.ckpt_onnx_path)
@@ -1451,6 +1468,12 @@ class MujocoEvaluator:
         if use_gpu:
             if "CUDAExecutionProvider" in available_providers:
                 cuda_options = {"device_id": gpu_id}
+                if "onnx_use_tf32" in self.config:
+                    cuda_options["use_tf32"] = (
+                        "1"
+                        if _coerce_config_bool(self.config.onnx_use_tf32)
+                        else "0"
+                    )
                 if torch.cuda.is_available():
                     torch.cuda.set_device(gpu_id)
                     cuda_options["user_compute_stream"] = str(
@@ -3167,9 +3190,62 @@ class MujocoEvaluator:
         self._ref_to_sim_t = np.zeros(3, dtype=np.float32)
         self._ref_to_sim_ready = True
 
+    def load_motion_arrays(
+        self, arrays, *, motion_key, reference_horizon=None
+    ):
+        """Accept complete HDF5/FK arrays without creating intermediate NPZs."""
+        mapping = {
+            "ref_global_translation": "ref_rg_pos",
+            "ref_global_rotation_quat_xyzw": "ref_rb_rot",
+            "ref_global_velocity": "ref_body_vel",
+            "ref_global_angular_velocity": "ref_body_ang_vel",
+            "ref_dof_pos": "ref_dof_pos",
+            "ref_dof_vel": "ref_dof_vel",
+        }
+        frames = int(arrays["ref_dof_pos"].shape[0])
+        bodies = len(self.config.robot.body_names)
+        shapes = [
+            (frames, bodies, 3),
+            (frames, bodies, 4),
+            (frames, bodies, 3),
+            (frames, bodies, 3),
+            (frames, self.num_actions),
+            (frames, self.num_actions),
+        ]
+        converted = {}
+        for (attribute, key), shape in zip(
+            mapping.items(), shapes, strict=True
+        ):
+            value = np.asarray(arrays[key], dtype=np.float32)
+            if value.shape != shape or not np.isfinite(value).all():
+                raise ValueError(f"Invalid {key}: expected finite {shape}")
+            converted[attribute] = value
+        horizon = (
+            self.n_fut_frames
+            if reference_horizon is None
+            else int(reference_horizon)
+        )
+        if horizon < 0 or frames <= horizon:
+            raise ValueError("Clip must be longer than the future horizon")
+        for attribute, value in converted.items():
+            setattr(self, attribute, value)
+        self.n_motion_frames = frames
+        self.eval_motion_key = str(motion_key)
+        self.command_mode = "motion_tracking"
+        self._ref_to_sim_q_wxyz = np.array([1, 0, 0, 0], dtype=np.float32)
+        self._ref_to_sim_t = np.zeros(3, dtype=np.float32)
+        self._ref_to_sim_ready = True
+        self._video_output_path = None
+
     def reset_state_teleport(self):
         self.counter = 0
         self.motion_frame_idx = 0
+        if (
+            getattr(getattr(self, "obs_builder", None), "link_adapter", None)
+            is not None
+        ):
+            self.obs_builder.reset()
+            self.actions_onnx = np.zeros(self.num_actions, dtype=np.float32)
 
         mujoco.mj_resetDataKeyframe(self.m, self.d, 0)
 
@@ -3205,6 +3281,17 @@ class MujocoEvaluator:
 
             self.d.qvel[0:3] = root_vel
             self.d.qvel[3:6] = root_ang
+            if (
+                getattr(
+                    getattr(self, "obs_builder", None), "link_adapter", None
+                )
+                is not None
+            ):
+                # HDF5 angular velocity is world-frame; a free joint uses root axes.
+                self.d.qvel[3:6] = quat_apply_wxyz(
+                    quat_conjugate_wxyz(torch.as_tensor(self.d.qpos[3:7])),
+                    torch.as_tensor(root_ang),
+                ).numpy()
             self.d.qvel[self.actuator_qvel_indices] = dof_vel[self.mu_to_ref]
             self.target_dof_pos_mu = dof_pos[self.mu_to_ref].astype(np.float32)
             logger.info(
@@ -3631,6 +3718,9 @@ class MujocoEvaluator:
             output_names.extend([indices_name, logits_name])
 
         onnx_output = self.policy_session.run(output_names, input_feed)
+        parity_callback = getattr(self, "_policy_parity_callback", None)
+        if parity_callback is not None:
+            parity_callback(input_feed, dict(zip(output_names, onnx_output)))
         if self.dump_onnx_io_npy:
             self._record_onnx_io_frame(input_feed, output_names, onnx_output)
 
@@ -4181,6 +4271,18 @@ def _create_ray_evaluator(config_dict, model_type):
 def run_mujoco_sim2sim_eval(override_config: OmegaConf):
     os.chdir(hydra.utils.get_original_cwd())
     config = process_config(override_config)
+    backend = config.get("evaluation_data", {}).get("backend", "npz")
+    if backend not in ("npz", "hdf5_v2"):
+        raise ValueError(
+            "evaluation_data.backend must be npz or hdf5_v2; "
+            "hdf5_v2 uses compact root/DOF shards"
+        )
+    if backend == "hdf5_v2":
+        from holomotion.src.evaluation.mujoco_hdf5_evaluation import (
+            run_hdf5_evaluation,
+        )
+
+        return run_hdf5_evaluation(config)
     is_eval_mode = False
     dataset_dir = config.get("motion_npz_dir", None)
     specific_file = config.get("motion_npz_path", None)

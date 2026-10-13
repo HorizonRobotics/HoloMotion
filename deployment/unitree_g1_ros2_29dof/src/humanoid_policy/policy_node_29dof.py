@@ -22,11 +22,14 @@ Key Features:
 Author: HoloMotion Team
 License: See project LICENSE file
 """
+import json
 import os
 import time
 from collections import deque
+from pathlib import Path
 
 import numpy as np
+from humanoid_policy.local_retarget_process import LocalPicoRetargetProcessSource
 import rclpy
 from ament_index_python.packages import get_package_share_directory
 from omegaconf import OmegaConf
@@ -38,32 +41,47 @@ from unitree_hg.msg import LowState
 from holomotion.src.motion_tracking.reference_observation import (
     REFERENCE_QPOS_DIM,
 )
-
-from humanoid_policy.config import DeploymentConfig
-from humanoid_policy.config import RobotConfig
-from humanoid_policy.config import format_config_for_log
-from humanoid_policy.cpu_affinity import parse_cpu_affinity
-from humanoid_policy.cpu_affinity import set_thread_cpu_affinity
-from humanoid_policy.reference_transport import ReferenceBuffer
-from humanoid_policy.reference_transport import BestEffortReferencePublisher
-from humanoid_policy.reference_transport import ZmqReferenceSubscriber
-from humanoid_policy.reference_transport import decode_zmq_topic
-from humanoid_policy.gpu_motion_observation import GpuMotionObservationBuilder
-from humanoid_policy.gpu_motion_observation import GpuReferenceQueue
-from humanoid_policy.local_retarget import AsyncDeviceQposSnapshotter
-from humanoid_policy.local_retarget import LocalPicoRetargetSource
-from humanoid_policy.motion_clip_library import list_motion_clip_files
-from humanoid_policy.motion_clip_library import load_motion_clips
-from humanoid_policy.motion_clip_library import validate_loaded_motion_clip
-from humanoid_policy.onnx_policy import load_dual_policy_bundle
-from humanoid_policy.onnx_policy import read_onnx_metadata
-from humanoid_policy.onnx_policy import warmup_motion_policy
-from humanoid_policy.onnx_policy import warmup_policy_session
+from humanoid_policy.config import (
+    DeploymentConfig,
+    RobotConfig,
+    format_config_for_log,
+    motion_reference_horizon,
+)
+from humanoid_policy.cpu_affinity import (
+    parse_cpu_affinity,
+    set_thread_cpu_affinity,
+)
+from humanoid_policy.reference_queue import ReferenceQueue
+from humanoid_policy.local_retarget import (
+    AsyncDeviceQposSnapshotter,
+)
+from humanoid_policy.motion_clip_library import (
+    list_motion_clip_files,
+    load_motion_clips,
+    validate_loaded_motion_clip,
+)
 from humanoid_policy.obs_builder import PolicyObsBuilder
 from humanoid_policy.observation_evaluator import PolicyObservationEvaluator
-from humanoid_policy.policy_runtime import PolicyRuntime
-from humanoid_policy.vr_reference import VrReference
+from humanoid_policy.onnx_policy import (
+    load_dual_policy_bundle,
+    read_onnx_metadata,
+    warmup_motion_policy,
+    warmup_policy_session,
+)
+from humanoid_policy.policy_runtime import (
+    PolicyRuntime,
+    load_policy_after_reference_validation,
+    run_initial_setup_once,
+)
+from humanoid_policy.reference_transport import (
+    BestEffortReferencePublisher,
+    ReferenceBuffer,
+    ZmqReferenceSubscriber,
+    decode_zmq_topic,
+)
 from humanoid_policy.utils.remote_controller_filter import RemoteController
+from humanoid_policy.vr_reference import VrReference
+from humanoid_policy.teleop_recorder import TeleopRecorder
 
 
 def _coerce_config_bool(value, default: bool = False) -> bool:
@@ -189,6 +207,15 @@ class HoloMotionPolicyNode(Node):
         self._cpu_affinity_zmq_sub_str = self.deployment_config.cpu_affinity_zmq_sub
         self._local_retarget_source = None
         self._reference_telemetry = None
+        self._teleop_recorder = None
+        self._policy_record_snapshotter = None
+        self._teleop_record_inputs = None
+        self._teleop_sample_sequence = 0
+        self._teleop_record_phase = 0.0
+        self._consumed_device_sequence = None
+        self._teleop_record_next_sample = 0.0
+        self._teleop_record_action_stamp = None
+        self._teleop_record_last_stamp = None
         self._reference_snapshotter = None
         self._pending_reference_telemetry = None
         self.timing_debug_enabled = self.deployment_config.timing_debug_enabled
@@ -209,7 +236,7 @@ class HoloMotionPolicyNode(Node):
                 self.get_logger().warn(
                     "[ZMQ] connect mode requires a concrete peer address. "
                     "Do not use '*' or '0.0.0.0'; use the sender IP instead, "
-                    "for example tcp://192.168.124.29:6001."
+                    "for example tcp://<sender-ip>:6001."
                 )
         self._zmq_subscriber = None
         if self.reference_source == "zmq":
@@ -276,6 +303,12 @@ class HoloMotionPolicyNode(Node):
         """Return whether the ZMQ reference stream is ready for motion mode."""
         if self._vr_reference is None:
             return False
+        if self._vr_reference.data_age(time.time()) > self.max_data_age:
+            return False
+        if self.reference_source == "pico_local":
+            source = self._local_retarget_source
+            if source is None or not source.ready:
+                return False
         return self._vr_reference.is_ready_for_motion(
             enable_teleop_reference=getattr(self, "enable_teleop_reference", True),
             delay_frames=getattr(self, "zmq_jitter_delay_frames", 0),
@@ -489,15 +522,8 @@ class HoloMotionPolicyNode(Node):
             ),
         )
 
-        # Use motion model's parameters for motion obs_builder
-        self.motion_obs_builder = PolicyObsBuilder(
-            dof_names_onnx=self.motion_dof_names_onnx,
-            default_angles_onnx=self.motion_default_angles_onnx,
-            evaluator=self.observation_evaluator,
-            obs_policy_cfg=self.observation_evaluator._get_policy_atomic_obs_list(
-                self.motion_config
-            ),
-        )
+        # Motion observations use the saved v2.0 CUDA schema.
+        self.motion_obs_builder = None
 
         n_fut = int(self.n_fut_frames) if hasattr(self, "n_fut_frames") else 0
         self._vr_reference = VrReference(
@@ -511,51 +537,144 @@ class HoloMotionPolicyNode(Node):
 
         # Set default obs_builder to velocity mode
         self.obs_builder = self.velocity_obs_builder
+    def _init_motion_policy_contract(self) -> None:
+        """Bind the saved link schema to the already-loaded motion ONNX."""
+        self.motion_policy_contract = None
+        self.motion_obs_builder = None
+        self.motion_reference_adapter = None
+        self.motion_asset_path = None
+        from holomotion.src.motion_tracking import link_fk as link_fk_module
+        from humanoid_policy.link_policy_contract import (
+            build_runtime_link_contract,
+            resolve_v2_link_config,
+        )
+
+        config = resolve_v2_link_config(self.motion_config)
+        mode_path = self.motion_config_dir / "link_command_modes.json"
+        exported_dir = Path(self.motion_onnx_path).resolve().parent
+        if (
+            exported_dir.name != "exported"
+            or exported_dir.parent != self.motion_config_dir.resolve()
+        ):
+            raise ValueError("V2 ONNX must be in the config/mode bundle exported directory")
+        mode_record = json.loads(mode_path.read_text())
+        relative_asset = Path(config["robot"]["asset"]["urdf_file"])
+        bundled_asset = self.motion_config_dir / relative_asset
+        source_asset = Path(link_fk_module.__file__).resolve().parents[3] / relative_asset
+        asset = bundled_asset if bundled_asset.is_file() else source_asset
+        if not asset.is_file():
+            raise FileNotFoundError(f"V2 FK asset is missing: {relative_asset}")
+        inputs = {item.name: item for item in self.motion_policy_session.get_inputs()}
+        outputs = {item.name: item for item in self.motion_policy_session.get_outputs()}
+        if self.motion_input_name not in inputs or self.motion_output_name not in outputs:
+            raise ValueError("Motion ONNX observation/action endpoints are missing")
+        self.motion_policy_contract = build_runtime_link_contract(
+            config=config,
+            mode_record=mode_record,
+            asset_path=asset,
+            session=self.motion_policy_session,
+            onnx_joint_names=self.motion_dof_names_onnx,
+            default_joint_pos_onnx=self.motion_default_angles_onnx,
+            obs_shape=inputs[self.motion_input_name].shape,
+            actions_shape=outputs[self.motion_output_name].shape,
+        )
+        self.motion_asset_path = asset
+        self.link_control_mode_active = self.deployment_config.link_control_mode
+        if self.link_control_mode_active not in self.motion_policy_contract["modes"]:
+            raise ValueError(
+                f"Unsupported link control mode {self.link_control_mode_active!r}"
+            )
+        self.get_logger().info(
+            "V2 motion link policy ready: "
+            f"obs={self.motion_policy_contract['actor_dim']}, "
+            f"mode={self.link_control_mode_active}"
+        )
+
+    def _build_motion_observation(self):
+        """Adapt the existing VR application, then call the source-independent policy API."""
+        queue = self._vr_reference
+        future_count = len(self.motion_policy_contract["frame_offsets"])
+        gpu_builder = self.motion_obs_builder
+        adapter = self.motion_reference_adapter
+        if gpu_builder is None or adapter is None:
+            raise ValueError("V2 CUDA observation is unavailable; CPU FK fallback is unsupported")
+        if queue is None or not queue.has_future_sequence(
+            future_count, include_derivative_tail=True
+        ):
+            raise ValueError("V2 reference future queue is not ready")
+        evaluator = self.observation_evaluator
+        if self._lowstate_msg is None:
+            raise ValueError("Robot lowstate is unavailable")
+        if not evaluator._motion_ref_yaw_alignment_ready:
+            raise ValueError("Motion-entry yaw alignment is unavailable")
+        alignment = evaluator._motion_ref_yaw_alignment_quat_wxyz
+        if self.reference_source == "pico_local":
+            sequence, _ = queue.device_observation_sequence(
+                n_frames=future_count,
+                fps=float(1.0 / self.dt),
+                include_derivative_tail=True,
+            )
+            reference = adapter.from_device_sequence(sequence, yaw_alignment_wxyz=alignment)
+        else:
+            sequence, _ = queue.observation_sequence(
+                n_frames=future_count,
+                fps=float(1.0 / self.dt),
+                include_derivative_tail=True,
+            )
+            reference = adapter.from_host_sequence(sequence, yaw_alignment_wxyz=alignment)
+        self._consumed_device_sequence = sequence
+        return gpu_builder.build(
+            mode=self.link_control_mode_active,
+            reference=reference,
+            robot_root_quat_wxyz=evaluator.robot_root_rot_quat_wxyz,
+            robot_dof_pos_onnx=evaluator._real_dof_pos_buffer[
+                evaluator.motion_dof_real_indices_np
+            ],
+            robot_dof_vel_onnx=evaluator._real_dof_vel_buffer[
+                evaluator.motion_dof_real_indices_np
+            ],
+            projected_gravity=evaluator._get_obs_projected_gravity(),
+            root_ang_vel_local=evaluator.robot_root_ang_vel,
+            last_action_onnx=self.runtime.state.actions_onnx,
+        )
+
 
     def _init_gpu_motion_observation(self) -> None:
-        self.gpu_motion_obs_builder = None
+        """Initialize the v2.0 CUDA path; no legacy actor or CPU fallback."""
         requested = self.deployment_config.motion_observation_backend.strip().lower()
-        self.motion_observation_backend_active = "cpu"
-        if requested == "cpu":
-            if self.reference_source == "pico_local":
-                raise RuntimeError(
-                    "reference_source=pico_local requires Warp CUDA Observation"
-                )
-            self.get_logger().info("Motion Observation backend: cpu")
-            return
-        try:
-            self.gpu_motion_obs_builder = GpuMotionObservationBuilder(
-                n_future_frames=int(self.n_fut_frames),
-                reference_dof_indices=self.observation_evaluator.ref_to_onnx,
-                default_dof_pos=self.motion_default_angles_onnx,
-                device=str(self.robot_config.device),
-                fps=float(1.0 / self.dt),
-            )
-        except Exception as exc:
-            if requested in {"torch", "warp"} or self.reference_source == "pico_local":
-                raise RuntimeError(
-                    f"Requested motion Observation backend '{requested}' failed"
-                ) from exc
-            self.get_logger().warn(
-                f"GPU motion Observation unavailable; falling back to CPU: {exc}"
-            )
-            return
+        if requested not in {"auto", "warp"}:
+            raise ValueError("V2 requires Warp CUDA FK; CPU/Torch FK fallback is unsupported")
+        from humanoid_policy.observation import PolicyObservationBuilder
+        from humanoid_policy.vr_reference_adapter import VRJointReferenceAdapter
+        from holoretarget.schema import UNITREE_G1_29DOF_NAMES
+
+        self.motion_obs_builder = PolicyObservationBuilder(
+            self.motion_policy_contract, self.motion_asset_path,
+            device=str(self.robot_config.device),
+        )
+        self.motion_reference_adapter = VRJointReferenceAdapter(
+            self.motion_policy_contract, self.motion_asset_path, UNITREE_G1_29DOF_NAMES,
+            device=str(self.robot_config.device),
+        )
+        # Compile adapter, measured-state FK and packing before accepting Start/A/B.
+        self.motion_obs_builder.warmup(self.motion_reference_adapter.warmup_reference())
         self.motion_observation_backend_active = "warp"
         if self.reference_source == "pico_local":
-            self._vr_reference = GpuReferenceQueue(
+            self._vr_reference = ReferenceQueue(
                 n_future_frames=int(self.n_fut_frames),
                 device=str(self.robot_config.device),
                 fps=float(1.0 / self.dt),
             )
+            self._vr_reference.warmup()
             if self._reference_telemetry is not None:
                 self._reference_snapshotter = AsyncDeviceQposSnapshotter(
                     device=str(self.robot_config.device),
-                    max_hz=self.deployment_config.reference_telemetry_hz,
+                    max_hz=max(
+                        self.deployment_config.reference_telemetry_hz if self._reference_telemetry is not None else 0.0,
+                        getattr(self.deployment_config, "teleop_record_hz", 10.0) if getattr(self, "_teleop_recorder", None) is not None else 0.0,
+                    ),
                 )
-        self.get_logger().info(
-            "Motion Observation backend: shared Warp CUDA kernel "
-            "with direct TensorRT I/O binding"
-        )
+        self.get_logger().info(f"Motion Observation backend: {self.motion_observation_backend_active}")
 
     def load_policy(self):
         """Load both velocity and motion policy models using ONNX Runtime."""
@@ -693,22 +812,16 @@ class HoloMotionPolicyNode(Node):
 
         self.get_logger().info(f"Loading motion model config from {motion_config_path}")
         self.motion_config = OmegaConf.load(motion_config_path)
-        self.actor_place_holder_ndim = (
-            self.observation_evaluator._find_actor_place_holder_ndim()
-        )
-        self.n_fut_frames = int(self.motion_config.obs.n_fut_frames)
+        self.motion_config_dir = Path(motion_config_dir)
+        # Reject legacy motion models before constructing either ONNX session.
+        self.n_fut_frames = motion_reference_horizon(self.motion_config)
+        self.actor_place_holder_ndim = 0
         self.torso_body_idx = self.motion_config.robot.body_names.index("torso_link")
         self.get_logger().info("Both model configs loaded successfully")
-
     def _warmup_motion_policy(self, num_iters: int = 2) -> None:
         if self.velocity_policy_session is not None:
-            velocity_obs_dim = None
-            try:
-                velocity_obs_dim = int(
-                    self.velocity_obs_builder.build_policy_obs().shape[0]
-                )
-            except Exception:
-                velocity_obs_dim = None
+            # Warm the session without appending synthetic sensor history.
+            velocity_obs_dim = int(self.velocity_policy_session.get_inputs()[0].shape[-1])
             try:
                 velocity_iterations = warmup_policy_session(
                     session=self.velocity_policy_session,
@@ -728,11 +841,7 @@ class HoloMotionPolicyNode(Node):
         if self.motion_policy_session is None:
             return
 
-        motion_obs_dim = None
-        try:
-            motion_obs_dim = int(self.motion_obs_builder.build_policy_obs().shape[0])
-        except Exception:
-            motion_obs_dim = None
+        motion_obs_dim = int(self.motion_policy_contract["actor_dim"])
 
         try:
             iterations = warmup_motion_policy(
@@ -760,7 +869,6 @@ class HoloMotionPolicyNode(Node):
                 self.motion_kv_cache.fill(0)
             self.motion_step_idx = 0
             self.get_logger().warn(f"[Warmup] Motion policy warmup skipped: {exc}")
-
     def update_config_parameters(self):
         """Update configuration parameters from loaded configs."""
         # Check if both models have the same basic parameters
@@ -778,7 +886,7 @@ class HoloMotionPolicyNode(Node):
             )
 
         if velocity_dof_names != motion_dof_names:
-            self.get_logger().warn(f"Different dof_names between models")
+            self.get_logger().warn("Different dof_names between models")
             self.get_logger().warn(f"Velocity dof_names: {len(velocity_dof_names)} items")
             self.get_logger().warn(f"Motion dof_names: {len(motion_dof_names)} items")
 
@@ -949,22 +1057,13 @@ class HoloMotionPolicyNode(Node):
     def _setup_timers(self):
         """Set up ROS2 timer for main execution loop."""
         # Create a one-time timer to call setup after ROS2 initialization
-        self.create_timer(0.1, self._delayed_setup)
+        self._setup_timer = self.create_timer(0.1, self._delayed_setup)
         self.create_timer(self.dt, self.run)
 
 
     def _delayed_setup(self):
         """Call setup after ROS2 initialization is complete."""
-        if not hasattr(self, '_setup_completed'):
-            self.get_logger().info("Starting policy node setup...")
-            try:
-                self.setup()
-                self._setup_completed = True
-                self.get_logger().info("Policy node setup completed successfully")
-            except Exception as e:
-                self.get_logger().error(f"Policy node setup failed: {e}")
-                # Cancel the timer to avoid repeated attempts
-                return
+        run_initial_setup_once(self)
 
 
     def _robot_state_callback(self, msg: String):
@@ -1089,7 +1188,7 @@ class HoloMotionPolicyNode(Node):
             self.runtime.mark_vr_queue_ready()
 
     def _poll_local_retarget_reference(self):
-        """Run local Retarget once from the latest Pico pose on this policy tick."""
+        """Consume a coherent result produced by the independent Pico worker."""
         source = self._local_retarget_source
         if source is None:
             return
@@ -1104,6 +1203,7 @@ class HoloMotionPolicyNode(Node):
             current_time=current_time,
             sample_time=current_time,
             frame_index=frame_index,
+            source_meta=sample_meta,
         )
         if not stored:
             self.get_logger().error("Local Retarget returned invalid reference qpos")
@@ -1117,39 +1217,189 @@ class HoloMotionPolicyNode(Node):
             self.runtime.mark_vr_queue_ready()
 
     def _flush_reference_telemetry(self, *, control_elapsed: float) -> None:
-        """Poll/schedule asynchronous snapshots after the action-producing path."""
+        """Optional debug publisher; recording has a separate exact-input snapshot."""
         publisher = self._reference_telemetry
         snapshotter = self._reference_snapshotter
         pending = self._pending_reference_telemetry
         self._pending_reference_telemetry = None
         if publisher is None or snapshotter is None:
             return
-        min_slack = (
-            float(self.deployment_config.reference_telemetry_min_slack_ms)
-            * 1.0e-3
-        )
-        if float(control_elapsed) + min_slack >= self.dt:
+        min_slack = self.deployment_config.reference_telemetry_min_slack_ms * 1.0e-3
+        if control_elapsed + min_slack >= self.dt:
             publisher.note_deadline_pressure()
             return
         try:
-            for reference_qpos, frame_index, sample_meta in snapshotter.poll_completed():
-                publisher.submit(
-                    reference_qpos,
-                    frame_index=frame_index,
-                    sample_meta=sample_meta,
-                )
+            for qpos, frame_index, meta in snapshotter.poll_completed():
+                publisher.submit(qpos, frame_index=frame_index, sample_meta=meta)
             if pending is not None:
-                reference_qpos, frame_index, sample_meta = pending
-                snapshotter.offer(
-                    reference_qpos,
-                    frame_index=frame_index,
-                    sample_meta=sample_meta,
-                )
+                qpos, frame_index, meta = pending
+                snapshotter.offer(qpos, frame_index=frame_index, sample_meta=meta)
         except Exception as exc:
             self._reference_snapshotter = None
-            self.get_logger().error(
-                f"[Telemetry] device snapshot disabled after failure: {exc}"
-            )
+            self.get_logger().error(f"[Telemetry] device snapshot disabled: {exc}")
+
+    def _capture_teleop_policy_inputs(self, policy_obs, *, step_index,
+                                     pre_kv_cache, reset_epoch):
+        """Latch exact CPU ONNX inputs before infer; never read GPU on this path."""
+        recorder = getattr(self, "_teleop_recorder", None)
+        self._teleop_record_inputs = None
+        if recorder is None or recorder.failed:
+            return
+        state = self.runtime.state
+        if state.current_policy_mode != "motion":
+            return
+        self._teleop_sample_sequence += 1
+        recorder.attempted += 1
+        # Policy-rate recording selects every tick, including early/jittery ticks.
+        self._teleop_record_phase += self.deployment_config.teleop_record_hz * self.dt
+        if self._teleop_record_phase < 1.0 - 1.0e-8:
+            return
+        self._teleop_record_phase -= 1.0
+        try:
+            builder = self.motion_obs_builder
+            if builder is None or not getattr(policy_obs, "is_cuda", False):
+                raise ValueError("Exact recording requires V2 Warp observation")
+            row = self._vr_reference.sequence_record_metadata()
+            latest = self._vr_reference._record_meta_ring[
+                (self._vr_reference._write_slot - 1) % self._vr_reference.sequence_frames]
+            source = latest["source"] or {}
+            row.update({
+                "sample_sequence": self._teleop_sample_sequence,
+                "policy_step_index": int(step_index),
+                "policy_reset_epoch": int(reset_epoch),
+                "pre_kv_cache": (np.empty(0, dtype=np.float32) if pre_kv_cache is None
+                                 else np.asarray(pre_kv_cache).copy()),
+                "measured_state_inputs": builder.host_numpy.copy(),
+                "yaw_alignment_wxyz": builder.host_numpy[97:101].copy(),
+                "pico_body_poses": np.asarray(source["body_poses"], dtype=np.float32).copy(),
+                "pico_sdk_timestamp_ns": int(source["timestamp_ns"]),
+                "pico_received_realtime": float(source["timestamp_realtime"]),
+                "pico_received_monotonic": float(source["timestamp_monotonic"]),
+                "retarget_frame_index": int(latest["frame_index"]),
+                "retarget_realtime": float(latest["retarget_realtime"]),
+                "retarget_monotonic": float(latest["retarget_monotonic"]),
+                "infer_start_monotonic": time.monotonic(),
+                "control_mode": str(self.link_control_mode_active),
+            })
+            self._teleop_record_inputs = ({
+                "actor_observation": policy_obs.array,
+                "consumed_reference_qpos": self._consumed_device_sequence,
+                "retarget_qpos": self._vr_reference.latest_device_qpos,
+            }, row)
+        except Exception as exc:
+            recorder.failed = True
+            self.get_logger().error(f"[Recording] disabled; policy unaffected: {exc}")
+
+    def _flush_policy_recording(self, *, control_elapsed):
+        """After action publish, freeze current inputs and enqueue completed rows."""
+        recorder = getattr(self, "_teleop_recorder", None)
+        snapshotter = getattr(self, "_policy_record_snapshotter", None)
+        pending = self._teleop_record_inputs
+        self._teleop_record_inputs = None
+        if recorder is None or recorder.failed or snapshotter is None:
+            return
+        min_slack = self.deployment_config.reference_telemetry_min_slack_ms * 1.0e-3
+        if control_elapsed + min_slack >= self.dt:
+            if pending is not None:
+                recorder.budget_skipped += 1
+            return
+        try:
+            for row in snapshotter.poll_completed():
+                recorder.submit_row(row)
+            if pending is not None:
+                sources, row = pending
+                state = self.runtime.state
+                row.update({
+                    "policy_action_onnx": state.actions_onnx.copy(),
+                    "policy_target_real": state.target_dof_pos_real.copy(),
+                    "policy_frame_index": int(state.motion_frame_idx),
+                    "policy_publish_monotonic": float(self._teleop_record_action_stamp),
+                    "sample_realtime": time.time(), "sample_monotonic": time.monotonic(),
+                })
+                if not snapshotter.offer(sources, row):
+                    recorder.snapshot_dropped += 1
+        except Exception as exc:
+            recorder.failed = True
+            self.get_logger().error(f"[Recording] disabled; policy unaffected: {exc}")
+
+    def _init_teleop_recorder(self):
+        directory = getattr(self.deployment_config, "teleop_record_dir", "")
+        if not directory:
+            return
+        if self.reference_source != "pico_local":
+            self.get_logger().warn("[Recording] local Pico reference is required; recording disabled")
+            return
+        try:
+            # Cold setup only: no model hashing or filesystem work in callbacks.
+            import hashlib
+            digest = hashlib.sha256()
+            with Path(self.motion_onnx_path).open("rb") as stream:
+                for part in iter(lambda: stream.read(1024 * 1024), b""):
+                    digest.update(part)
+            io_contract = lambda args: [
+                {"name": item.name, "shape": item.shape, "type": item.type}
+                for item in args]
+            self._teleop_recorder = TeleopRecorder(directory, logger=self.get_logger(), metadata={
+                "schema": "holomotion_teleop_policy_replay_v1", "record_hz": self.deployment_config.teleop_record_hz,
+                "policy_hz": 1.0 / self.dt, "future_frames": int(self.n_fut_frames),
+                "model_path": str(self.motion_onnx_path), "initial_control_mode": str(self.link_control_mode_active),
+                "pico_body_poses": "Unmodified XRoboToolkit SDK 24x7 body poses; SDK coordinate/quaternion convention",
+                "retarget_qpos": "36 values: root world xyz (m), quaternion wxyz, then 29 joint angles (rad)",
+                "retarget_joint_names": list(self.dof_names_ref_motion),
+                "policy_action_onnx": "Raw normalized 29D ONNX actions; ONNX joint order",
+                "onnx_joint_names": list(self.motion_dof_names_onnx),
+                "policy_target_real": "Final published 29 joint positions (rad); real robot joint order",
+                "policy_frame_index": "Completed motion-output count after publication, not an exact input-reference-frame index",
+                "real_joint_names": list(self.real_dof_names),
+                "alignment": "actor_observation, pre_kv_cache and policy_step_index are the actual ONNX input for the corresponding published action. consumed_reference_qpos is the exact F+3 queue used by its observation builder; latest raw Pico/retarget are separately identified, not mislabeled as the current reference.",
+                "replay_scope": "Independent ONNX/action-postprocess replay; not a guarantee of identical closed-loop robot/MuJoCo physical trajectories. Any missing sample_sequence is a recorded gap, never interpolated.",
+                "reference_sequence_order": "prev at 0, current at 1, F future frames at 2..F+1, derivative tail at F+2; nominal offsets are fixed, real source/producer times recorded separately",
+                "measured_state_inputs": "101 float32: root quaternion wxyz[0:4], q_ONNX rad[4:33], dq_ONNX rad/s[33:62], projected gravity[62:65], local angular velocity rad/s[65:68], previous action[68:97], yaw alignment wxyz[97:101]",
+                "pre_kv_cache": "CPU KV cache after any reset and before this exact inference; saved every selected tick, permitting independent replay even after a gap",
+                "policy_step_index": "Exact infer-time step index, after possible RoPE reset and before increment; -1 if no step input",
+                "policy_reset_epoch": "Incremented on mode-entry/manual/RoPE cache reset",
+                "sample_sequence": "Monotonic actual motion-inference tick ID within recording session; gaps represent not-selected/budget/slot/queue losses",
+                "actor_contract": self.motion_policy_contract,
+                "onnx_sha256": digest.hexdigest(),
+                "onnx_inputs": io_contract(self.motion_policy_session.get_inputs()),
+                "onnx_outputs": io_contract(self.motion_policy_session.get_outputs()),
+                "onnx_execution_providers": self.motion_policy_session.get_providers(),
+                "kv_shape": list(self.motion_kv_shape) if self.use_kv_cache else [],
+                "kv_dtype": str(np.dtype(self.motion_kv_dtype)) if self.use_kv_cache else None,
+                "clock_domains": "Pico SDK nanoseconds, host realtime, and host monotonic are distinct clocks; do not subtract across domains",
+                "minimum_slack_ms": self.deployment_config.reference_telemetry_min_slack_ms,
+                "onnx_input_name": self.motion_input_name,
+                "onnx_output_name": self.motion_output_name,
+                "kv_input_name": self.motion_kv_input_name,
+                "kv_output_name": self.motion_kv_output_name,
+                "step_input_name": self.motion_step_idx_input_name,
+                "action_scale": np.asarray(self.motion_action_scale_onnx).tolist(),
+                "default_angles": np.asarray(self.motion_default_angles_onnx).tolist(),
+                "onnx_to_real": np.asarray(self.motion_onnx_to_real).tolist(),
+                "snapshot_slots": 2, "writer_queue_capacity": 128, "chunk_rows": 64,
+                "strict_50hz_candidate": abs(self.deployment_config.teleop_record_hz * self.dt - 1.0) < 1.0e-6,
+            })
+            self.get_logger().info(f"[Recording] enabled {self.deployment_config.teleop_record_hz:g}Hz: {self._teleop_recorder.directory}")
+        except Exception as exc:
+            self.get_logger().error(f"[Recording] disabled during setup: {exc}")
+
+    def _init_policy_record_snapshotter(self):
+        recorder = getattr(self, "_teleop_recorder", None)
+        if recorder is None:
+            return
+        try:
+            from humanoid_policy.teleop_recorder import AsyncPolicySnapshotter
+            if self.motion_obs_builder is None:
+                raise ValueError("Exact recording requires the V2 Warp observation path")
+            self._policy_record_snapshotter = AsyncPolicySnapshotter(
+                device=str(self.robot_config.device), shapes={
+                    "actor_observation": (1, self.motion_obs_builder.actor_dim),
+                    "consumed_reference_qpos": (1, int(self.n_fut_frames) + 3, 36),
+                    "retarget_qpos": (36,),
+                })
+        except Exception as exc:
+            recorder.failed = True
+            self.get_logger().error(f"[Recording] disabled during snapshot setup: {exc}")
 
     def _publish_reference(self):
         """Publish the latest reference qpos for debugging or reuse."""
@@ -1168,7 +1418,7 @@ class HoloMotionPolicyNode(Node):
         """Apply PD/scale/defaults from ONNX metadata as authoritative values.
         Load separate metadata for velocity and motion models."""
         # Load velocity model metadata
-        velocity_meta = read_onnx_metadata(self.velocity_onnx_path)
+        velocity_meta = read_onnx_metadata(self.velocity_onnx_path, session=self.velocity_policy_session)
         self.velocity_dof_names_onnx = velocity_meta["joint_names"]
         self.velocity_action_scale_onnx = velocity_meta["action_scale"].astype(np.float32)
         self.velocity_kps_onnx = velocity_meta["kps"].astype(np.float32)
@@ -1176,7 +1426,7 @@ class HoloMotionPolicyNode(Node):
         self.velocity_default_angles_onnx = velocity_meta["default_joint_pos"].astype(np.float32)
 
         # Load motion model metadata
-        motion_meta = read_onnx_metadata(self.motion_onnx_path)
+        motion_meta = read_onnx_metadata(self.motion_onnx_path, session=self.motion_policy_session)
         self.motion_dof_names_onnx = motion_meta["joint_names"]
         self.motion_action_scale_onnx = motion_meta["action_scale"].astype(np.float32)
         self.motion_kps_onnx = motion_meta["kps"].astype(np.float32)
@@ -1379,6 +1629,8 @@ class HoloMotionPolicyNode(Node):
             self.get_logger().error("Action contains NaN values")
 
         self.action_pub.publish(action_msg)
+        if getattr(self, "_teleop_recorder", None) is not None:
+            self._teleop_record_action_stamp = time.monotonic()
 
     def setup(self):
         """Set up the evaluator by loading all required components."""
@@ -1389,22 +1641,23 @@ class HoloMotionPolicyNode(Node):
             self.get_logger().info(f"[Policy] main thread pinned to CPUs {main_affinity}")
         self.load_model_config()  # Load config first
         self.update_config_parameters()  # Update parameters from config
-        self.load_policy()        # Then load policies
+        load_policy_after_reference_validation(self)
         self._apply_onnx_metadata()
+        self._init_motion_policy_contract()
         self._init_obs_buffers()
         self._build_dof_mappings()
+        self._init_teleop_recorder()
         self._init_gpu_motion_observation()
+        self._init_policy_record_snapshotter()
         self._warmup_motion_policy()
-        self.observation_evaluator._init_keybody_indices_cache()
         if self.reference_source == "pico_local":
-            self._local_retarget_source = LocalPicoRetargetSource(
+            self._local_retarget_source = LocalPicoRetargetProcessSource(
                 logger=self.get_logger(),
                 asset_root=self.deployment_config.local_retarget_asset_root,
                 max_source_age=self.max_data_age,
+                device=str(self.robot_config.device),
             )
             self._local_retarget_source.start()
-        # Always load motion data since we support both modes
-        self.load_motion_data()
         self.get_logger().info("Synchronous root-only policy setup completed")
 
     def destroy_node(self):
@@ -1424,6 +1677,21 @@ class HoloMotionPolicyNode(Node):
         except Exception:
             pass
 
+        recorder = getattr(self, "_teleop_recorder", None)
+        if recorder is not None:
+            # Only shutdown may briefly drain; the active policy path never waits.
+            snapshotter = getattr(self, "_policy_record_snapshotter", None)
+            deadline = time.monotonic() + 0.1
+            if snapshotter is not None:
+                while snapshotter.pending and time.monotonic() < deadline:
+                    for row in snapshotter.poll_completed():
+                        recorder.submit_row(row)
+                    if snapshotter.pending:
+                        time.sleep(0.002)
+                recorder.snapshot_tail_dropped = sum(
+                    int(slot["busy"]) for slot in snapshotter._slots)
+            recorder.close(timeout=0.9)
+
         super().destroy_node()
 
 
@@ -1431,7 +1699,14 @@ def main():
     """Main entry point for the policy node."""
     rclpy.init()
     policy_node = HoloMotionPolicyNode()
-    rclpy.spin(policy_node)
+    try:
+        rclpy.spin(policy_node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        policy_node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == "__main__":

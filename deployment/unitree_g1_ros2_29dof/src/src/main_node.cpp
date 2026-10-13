@@ -18,6 +18,9 @@
  #include <vector>
  #include <yaml-cpp/yaml.h>
  #include <thread>
+ #include <chrono>
+ #include <cmath>
+ #include "common/policy_start_guard.h"
  
  #define INFO_IMU 0   // Set 1 to info IMU states
  #define INFO_MOTOR 0 // Set 1 to info motor states
@@ -28,7 +31,7 @@
  
  const int G1_NUM_MOTOR = 29;
  
- enum class RobotState { ZERO_TORQUE, MOVE_TO_DEFAULT, EMERGENCY_STOP, POLICY };
+ enum class RobotState { ZERO_TORQUE, MOVE_TO_DEFAULT, EMERGENCY_STOP, POLICY, POLICY_HOLD };
  enum class EmergencyStopPhase { DAMPING, DISABLE };  // New enum for emergency stop phases
  
  // Create a humanoid_controller class for low state receive
@@ -101,6 +104,15 @@
    RemoteController remote_controller;
    std::map<std::string, double> target_dof_pos;
    std::vector<float> policy_action_data;
+   bool policy_action_received_ = false;
+   std::chrono::steady_clock::time_point last_policy_action_time_{};
+   static constexpr double policy_action_timeout_sec_ = 0.1;
+
+   bool hasFreshPolicyAction() const {
+     const double age = std::chrono::duration<double>(
+         std::chrono::steady_clock::now() - last_policy_action_time_).count();
+     return holomotion::fresh_policy_action(policy_action_received_, age, policy_action_timeout_sec_);
+   }
  
    // Optional arrays from YAML for start (MOVE_TO_DEFAULT) behavior
    bool has_joint_arrays_ = false;
@@ -112,6 +124,10 @@
    std::map<std::string, double> move_to_default_kps;
    std::map<std::string, double> move_to_default_kds;
  
+   std::map<std::string, double> hold_targets_;
+   std::map<std::string, double> hold_kps_;
+   std::map<std::string, double> hold_kds_;
+
    RobotState current_state_ = RobotState::ZERO_TORQUE;
  
    bool should_shutdown_ = false;
@@ -367,7 +383,7 @@
  
      // Start button only works in ZERO_TORQUE state
      if (remote_controller.button[KeyMap::start] == 1) {
-         if (current_state_ == RobotState::ZERO_TORQUE) {
+         if (current_state_ == RobotState::ZERO_TORQUE || current_state_ == RobotState::POLICY_HOLD) {
              RCLCPP_INFO(this->get_logger(), "Switching to MOVE_TO_DEFAULT state");
              current_state_ = RobotState::MOVE_TO_DEFAULT;
              time_ = 0.0;
@@ -391,6 +407,18 @@
                  return;
              }
              
+             if (!holomotion::default_transition_finished(time_, duration_)) {
+                 RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
+                                     "Stand transition is still running (%.2f/%.2f s); POLICY rejected.", time_, duration_);
+                 return;
+             }
+
+             if (!hasFreshPolicyAction()) {
+                 RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
+                                     "POLICY rejected: waiting for a fresh finite policy action (<=100 ms).");
+                 return;
+             }
+
              // Check lower body joint positions before allowing transition
              bool positions_ok = true;
              std::stringstream deviation_msg;
@@ -398,8 +426,8 @@
  
              // List of lower body joints to check
              std::vector<std::string> lower_body_joints = {
-                 "left_hip_yaw", "left_hip_roll", "left_hip_pitch", "left_knee", "left_ankle_pitch", "left_ankle_roll",
-                 "right_hip_yaw", "right_hip_roll", "right_hip_pitch", "right_knee", "right_ankle_pitch", "right_ankle_roll"
+                 "left_hip_yaw_joint", "left_hip_roll_joint", "left_hip_pitch_joint", "left_knee_joint", "left_ankle_pitch_joint", "left_ankle_roll_joint",
+                 "right_hip_yaw_joint", "right_hip_roll_joint", "right_hip_pitch_joint", "right_knee_joint", "right_ankle_pitch_joint", "right_ankle_roll_joint"
              };
  
              for (int i = 0; i < G1_NUM_MOTOR; ++i) {
@@ -410,7 +438,7 @@
                      continue;
                  }
  
-                 double current_pos = motor[i].q;
+                 double current_pos = motor[dof2motor_idx.at(dof_name)].q;
                  double default_pos = default_dof_pos[dof_name];
                  double diff = std::abs(current_pos - default_pos);
  
@@ -453,6 +481,12 @@
              lowcmd_publisher_->publish(low_command);
              break;
  
+         case RobotState::POLICY_HOLD:
+             SendPolicyHoldCommand();
+             get_crc(low_command);
+             lowcmd_publisher_->publish(low_command);
+             break;
+
          case RobotState::POLICY:
              SendPolicyCommand();
              get_crc(low_command);
@@ -551,7 +585,7 @@
          double target_pos = (1. - ratio) * motor[i].q + ratio * default_dof_pos[dof_name];
  
          // Current state
-         double current_pos = motor[i].q;
+         double current_pos = motor[dof2motor_idx.at(dof_name)].q;
          double current_vel = motor[i].dq;
  
          // Use default MoveToDefault gains with torque limiting
@@ -593,6 +627,12 @@
        return;
      }
  
+     if (!hasFreshPolicyAction()) {
+       EnterPolicyHold("Policy action stale (>100 ms)");
+       SendPolicyHoldCommand();
+       return;
+     }
+
      for (const auto &pair : target_dof_pos) {
        const std::string &dof_name = pair.first;
        const double &target_pos = pair.second;
@@ -619,6 +659,38 @@
      }
    }
  
+   void EnterPolicyHold(const char *reason) {
+     if (current_state_ == RobotState::POLICY_HOLD) return;
+     for (const auto &name : complete_dof_order) {
+       const int index = dof2motor_idx.at(name);
+       const double measured = motor[index].q;
+       hold_targets_[name] = std::isfinite(measured) ? measured : default_dof_pos.at(name);
+       const double kp = kps.count(name) ? kps.at(name) : move_to_default_kps.at(name);
+       const double kd = kds.count(name) ? kds.at(name) : move_to_default_kds.at(name);
+       hold_kps_[name] = std::isfinite(kp) && kp > 0.0 ? kp : move_to_default_kps.at(name);
+       hold_kds_[name] = std::isfinite(kd) && kd >= 0.0 ? kd : move_to_default_kds.at(name);
+     }
+     current_state_ = RobotState::POLICY_HOLD;
+     RCLCPP_ERROR(this->get_logger(),
+                  "%s; POLICY_HOLD keeps position PD enabled. No automatic motor disable. Press Start to return to default pose before A.", reason);
+     publishRobotState();
+   }
+
+   void SendPolicyHoldCommand() {
+     low_command.mode_pr = mode_;
+     low_command.mode_machine = mode_machine;
+     for (const auto &name : complete_dof_order) {
+       const int index = dof2motor_idx.at(name);
+       auto &command = low_command.motor_cmd[index];
+       command.mode = 1;
+       command.q = hold_targets_.at(name);
+       command.dq = 0.0;
+       command.tau = 0.0;
+       command.kp = hold_kps_.at(name);
+       command.kd = hold_kds_.at(name);
+     }
+   }
+
    void SendDampedEmergencyStop() {
      low_command.mode_pr = mode_;
      low_command.mode_machine = mode_machine;
@@ -690,6 +762,19 @@
        return;
      }
  
+     for (float value : policy_action_data) {
+       if (!std::isfinite(value)) {
+         RCLCPP_ERROR(this->get_logger(), "Non-finite policy target rejected; entering emergency stop.");
+         current_state_ = RobotState::EMERGENCY_STOP;
+         emergency_stop_phase_ = EmergencyStopPhase::DAMPING;
+         emergency_stop_time_ = 0.0;
+         publishRobotState();
+         return;
+       }
+     }
+     policy_action_received_ = true;
+     last_policy_action_time_ = std::chrono::steady_clock::now();
+
      // set target dof pos
      for (size_t i = 0; i < policy_dof_order.size(); i++) {
        const auto &dof_name = policy_dof_order[i];
@@ -788,6 +873,8 @@
          return "EMERGENCY_STOP";
        case RobotState::POLICY:
          return "POLICY";
+       case RobotState::POLICY_HOLD:
+         return "POLICY_HOLD";
        default:
          return "UNKNOWN";
      }

@@ -20,13 +20,13 @@ camera_distance:
 camera_azimuth: 150.0 # default viewer/offscreen azimuth (deg), side-ish view
 camera_elevation: -20.0 # default viewer/offscreen elevation (deg), slight downward angle
 
-# Offline evaluation pipeline (dataset mode)
+# Legacy NPZ dataset pipeline (Ray/dump/report/DoF options are NPZ-only)
 motion_npz_dir: null
 dump_npzs: true
 dump_onnx_io_npy: false
 calc_per_clip_metrics: false
 generate_report: false
-metric_calculation: "per_clip" # "per_clip" (Macro) or "per_frame" (Micro)
+metric_calculation: "per_clip" # HDF5 v2 requires per_clip; NPZ also accepts per_frame
 dof_mode: "23" # "29" for full DoF, "23" for reduced DoF
 failure_pos_err_thresh_m: 0.25
 ray_actors_per_gpu: 16 # persistent Ray actors per GPU for batch eval
@@ -59,3 +59,30 @@ isaac_action_playback: false # when true, use per-frame actions recorded from Is
 robot_xml_path: ???
 
 use_gpu: true
+
+# HDF5 link-policy evaluation (NPZ defaults above stay unchanged).
+link_eval:
+  mask_mode: all14 # custom selects the names below
+  active_link_names: null # e.g. [pelvis, left_wrist_yaw_link, right_wrist_yaw_link]
+evaluation_data:
+  backend: npz # hdf5_v2: compact root/DOF + FK, same format as training
+  expected_clips: null
+  require_manifest_fingerprint: false
+  manifest_path: null # path to the original compact HDF5 manifest.json
+  selection_path: null # explicit full-group selection JSON
+  clip_names: null # alternative to selection_path
+  fk_robot_file_path: null # the checkpoint's reference FK URDF
+  expected_dof_names: null # use the checkpoint's ordered DOF names
+  reference_horizon: 5 # match the checkpoint's maximum future-frame offset
+
+evaluation_run:
+  output_dir: null # required fresh directory, never checkpoint/data directory
+  model_label: null
+  phase: default
+  groups: null # optional [{name: ..., link_eval: {mask_mode: custom, active_link_names: [...]}}]
+  workers: 1 # parallel rollout subprocesses
+  gpus: 1
+  seed: 20260912
+  rollout_tf32: true
+
+ckpt_onnx_path: null

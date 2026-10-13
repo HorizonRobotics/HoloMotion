@@ -47,6 +47,7 @@ otherwise; tensor shapes are noted explicitly in type annotations.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
@@ -54,7 +55,7 @@ import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from functools import partial
 from pathlib import Path
 from typing import (
@@ -79,6 +80,12 @@ from tqdm import tqdm
 
 from holomotion.src.utils import torch_utils
 from holomotion.src.training.reference_fk import TrainingReferenceFK
+from holomotion.src.training.source_adaptive_sampling import (
+    FixedSourceWeights,
+    SourceAdaptiveConfig,
+    SourceAdaptiveInfiniteSampler,
+    SourceAdaptiveWeights,
+)
 
 Tensor = torch.Tensor
 
@@ -319,6 +326,166 @@ def _configure_weighted_bins(
         )
 
     return bin_indices, all_ratios, specs
+
+
+def _source_id_for_window(dataset: Any, window_index: int, field: str) -> str:
+    window = dataset.windows[int(window_index)]
+    key = getattr(window, "raw_motion_key", None)
+    if key is None:
+        key = getattr(window, "motion_key", "").split("__start_", 1)[0]
+    clip = dataset.clips.get(key)
+    if clip is None:
+        raise ValueError(f"Window references an unknown clip {key!r}")
+    metadata = clip.get("metadata", {})
+    if not isinstance(metadata, Mapping):
+        raise ValueError(f"Invalid metadata for clip {key!r}")
+    source = metadata.get(field)
+    if not isinstance(source, str) or not source.strip():
+        raise ValueError(f"Clip {key!r} lacks stable metadata {field!r}")
+    return source
+
+
+def _configure_source_baseline(
+    dataset: Any,
+    source_probabilities: Mapping[str, float],
+    *,
+    group_by: str = "source_id",
+) -> Tuple[List[str], List[List[int]], List[float]]:
+    """Group training windows by source and require exact coverage."""
+    if not isinstance(group_by, str) or not group_by.strip():
+        raise ValueError("group_by must name a stable metadata field")
+    if (
+        not isinstance(source_probabilities, Mapping)
+        or not source_probabilities
+    ):
+        raise ValueError("source_sampling.probabilities must be a mapping")
+    if any(
+        not isinstance(name, str) or not name.strip()
+        for name in source_probabilities
+    ):
+        raise ValueError("Source probability names must be nonempty strings")
+
+    source_windows: Dict[str, List[int]] = {}
+    for window_index in range(len(dataset.windows)):
+        source = _source_id_for_window(dataset, window_index, group_by)
+        source_windows.setdefault(source, []).append(window_index)
+    source_names = sorted(source_windows)
+    if not source_names:
+        raise ValueError("Source sampling requires training windows")
+    configured_names = set(source_probabilities)
+    observed_names = set(source_names)
+    if configured_names != observed_names:
+        missing = sorted(observed_names - configured_names)
+        unknown = sorted(configured_names - observed_names)
+        raise ValueError(
+            "Configured source probabilities must exactly cover training "
+            f"sources; missing={missing}, unknown={unknown}"
+        )
+
+    values: List[float] = []
+    for name in source_names:
+        value = source_probabilities[name]
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+            or value <= 0.0
+        ):
+            raise ValueError(
+                f"Invalid source probability for {name!r}: {value!r}"
+            )
+        values.append(float(value))
+    probabilities = torch.tensor(values, dtype=torch.float64)
+    probabilities /= probabilities.sum()
+    return (
+        source_names,
+        [source_windows[name] for name in source_names],
+        probabilities.tolist(),
+    )
+
+
+def _source_adaptive_identity(
+    dataset: Any,
+    *,
+    group_by: str,
+    source_names: Sequence[str],
+    source_window_indices: Sequence[Tensor],
+    base_probabilities: Sequence[float],
+    config: SourceAdaptiveConfig,
+    cache_size: int,
+) -> str:
+    """Bind a checkpoint to the public fixed-source contract and window order.
+
+    This is intentionally a new identity namespace. A checkpoint made with
+    the legacy weighted-bin configuration cannot be restored as if it
+    were a checkpoint produced by this public fixed-source configuration.
+    """
+    if len(source_names) != len(source_window_indices):
+        raise ValueError("Source names and groups must be aligned")
+    path_lists: Dict[str, List[str]] = {}
+    for field in ("_manifest_paths", "_shard_paths"):
+        raw_paths = getattr(dataset, field, None)
+        if not isinstance(raw_paths, (list, tuple)) or not raw_paths:
+            raise ValueError(f"Source-adaptive dataset lacks {field}")
+        normalized_paths = []
+        for path in raw_paths:
+            if not isinstance(path, (str, os.PathLike)):
+                raise ValueError(f"Invalid source-adaptive {field} entry")
+            value = os.fspath(path)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"Invalid source-adaptive {field} entry")
+            normalized_paths.append(os.path.realpath(os.path.abspath(value)))
+        path_lists[field] = normalized_paths
+    group_digests = []
+    for group in source_window_indices:
+        group_digest = hashlib.sha256()
+        for index in group.tolist():
+            group_digest.update(f"{int(index)},".encode())
+        group_digests.append(group_digest.hexdigest())
+    header = {
+        "schema": "public_fixed_source_adaptive_v2",
+        "group_by": group_by,
+        "source_names": list(source_names),
+        "source_groups": list(zip(source_names, group_digests, strict=True)),
+        "base_probabilities": list(base_probabilities),
+        "manifest_paths": path_lists["_manifest_paths"],
+        "shard_paths": path_lists["_shard_paths"],
+        "source_adaptive": asdict(config),
+        "cache_size": int(cache_size),
+        "window_count": len(dataset.windows),
+    }
+    digest = hashlib.sha256()
+    digest.update(
+        json.dumps(header, sort_keys=True, separators=(",", ":")).encode()
+    )
+    for index, window in enumerate(dataset.windows):
+        key = getattr(window, "raw_motion_key", None)
+        shard = getattr(window, "shard_index", None)
+        start = getattr(window, "start", None)
+        length = getattr(window, "length", None)
+        if (
+            not isinstance(key, str)
+            or not key
+            or any(type(value) is not int for value in (shard, start, length))
+            or shard < 0
+            or shard >= len(path_lists["_shard_paths"])
+            or start < 0
+            or length <= 0
+        ):
+            raise ValueError(
+                f"Source-adaptive window {index} lacks stable identity fields"
+            )
+        record = [
+            index,
+            key,
+            shard,
+            start,
+            length,
+            _source_id_for_window(dataset, index, group_by),
+        ]
+        digest.update(b"\n")
+        digest.update(json.dumps(record, separators=(",", ":")).encode())
+    return digest.hexdigest()
 
 
 def _normalize_dataset_id(value: Any) -> str:
@@ -2554,6 +2721,14 @@ class MotionClipBatchCache:
             "cache_curriculum_window_scores"
         )
         self._cache_curriculum_last_dump_swap: int = -1
+        # Opt-in fixed source-budget sampling state.
+        self._source_fixed: Optional[FixedSourceWeights] = None
+        self._source_adaptive: Optional[SourceAdaptiveWeights] = None
+        self._source_names: Tuple[str, ...] = ()
+        self._source_window_indices: Tuple[Tensor, ...] = ()
+        self._source_base_probabilities: Optional[Tensor] = None
+        self._window_to_source: Optional[Tensor] = None
+        self._window_to_source_device: Dict[torch.device, Tensor] = {}
 
         # Async GPU staging helpers
         self._copy_stream = None
@@ -2675,6 +2850,10 @@ class MotionClipBatchCache:
             raise ValueError(
                 "weighted-bin and cache curriculum sampling cannot be enabled together."
             )
+        if self.source_sampling_enabled:
+            raise ValueError(
+                "fixed-source and weighted-bin samplers are mutually exclusive"
+            )
 
         dataset = self._datasets.get("train")
         if dataset is None:
@@ -2737,12 +2916,223 @@ class MotionClipBatchCache:
         self._build_dataloader()
         self._prime_buffers()
 
+    @property
+    def source_sampling_enabled(self) -> bool:
+        return self.source_sampling_controller is not None
+
+    @property
+    def source_sampling_controller(
+        self,
+    ) -> Optional[FixedSourceWeights | SourceAdaptiveWeights]:
+        return (
+            self._source_adaptive
+            if self._source_adaptive is not None
+            else self._source_fixed
+        )
+
+    @property
+    def adaptive_sampling_enabled(self) -> bool:
+        return self._source_adaptive is not None
+
+    @property
+    def adaptive_sampling_kind(self) -> Optional[str]:
+        return "source_adaptive" if self.adaptive_sampling_enabled else None
+
+    @property
+    def adaptive_controller(self) -> Optional[SourceAdaptiveWeights]:
+        return self._source_adaptive
+
+    def adaptive_sampling_state_dict(self) -> Optional[Dict[str, Any]]:
+        if self._source_adaptive is None:
+            return None
+        return self._source_adaptive.state_dict()
+
+    def load_adaptive_sampling_state_dict(
+        self, state: Mapping[str, Any]
+    ) -> None:
+        if self._source_adaptive is None:
+            raise ValueError(
+                "Checkpoint has source-adaptive state but it is disabled"
+            )
+        self._source_adaptive.load_state_dict(state)
+
+    def adaptive_sampling_metrics(self) -> Optional[Dict[str, float]]:
+        if self._source_adaptive is None or self._mode != "train":
+            return None
+        return self._source_adaptive.metrics()
+
+    def source_sampling_metrics(self) -> Optional[Dict[str, float]]:
+        if not self.source_sampling_enabled or self._mode != "train":
+            return None
+        result = self.source_sampling_controller.metrics()
+        result["source_adaptive_enabled"] = float(
+            self.adaptive_sampling_enabled
+        )
+        return result
+
+    def _configure_source_contract(
+        self,
+        dataset: Any,
+        source_probabilities: Mapping[str, float],
+        group_by: str,
+    ) -> List[float]:
+        names, groups, probabilities = _configure_source_baseline(
+            dataset, source_probabilities, group_by=group_by
+        )
+        self._source_names = tuple(names)
+        self._source_window_indices = tuple(
+            torch.tensor(group, dtype=torch.long) for group in groups
+        )
+        self._source_base_probabilities = torch.tensor(
+            probabilities, dtype=torch.float64
+        )
+        self._window_to_source_device.clear()
+        self._window_to_source = torch.full(
+            (len(dataset),), -1, dtype=torch.long
+        )
+        for source_index, indices in enumerate(self._source_window_indices):
+            self._window_to_source[indices] = source_index
+        if bool((self._window_to_source < 0).any()):
+            raise RuntimeError("Source contract omitted training windows")
+        return probabilities
+
+    def enable_source_fixed_sampling(
+        self,
+        *,
+        source_probabilities: Mapping[str, float],
+        group_by: str = "source_id",
+    ) -> None:
+        """Draw source probabilities, then sample windows uniformly."""
+        if (
+            self._weighted_bin_enabled
+            or self._cache_curriculum_enabled
+            or self._source_adaptive is not None
+        ):
+            raise ValueError(
+                "fixed-source, weighted-bin and curriculum samplers are "
+                "mutually exclusive"
+            )
+        dataset = self._datasets.get("train")
+        if dataset is None:
+            raise ValueError("Source sampling requires a training dataset")
+        self._configure_source_contract(
+            dataset, source_probabilities, group_by
+        )
+        self._source_fixed = FixedSourceWeights(
+            size=len(dataset),
+            source_names=self._source_names,
+            source_window_indices=self._source_window_indices,
+            base_probabilities=self._source_base_probabilities,
+        )
+        logger.info(
+            "SOURCE_FIXED: {} sources, stochastic with-replacement draws",
+            len(self._source_names),
+        )
+        self._build_dataloader()
+        self._prime_buffers()
+
+    def enable_source_adaptive_sampling(
+        self,
+        *,
+        source_probabilities: Mapping[str, float],
+        source_adaptive_cfg: Mapping[str, Any],
+        group_by: str = "source_id",
+    ) -> None:
+        """Enable bounded source/window adaptation over a fixed baseline."""
+        if (
+            self._weighted_bin_enabled
+            or self._cache_curriculum_enabled
+            or self.source_sampling_enabled
+        ):
+            raise ValueError(
+                "source-adaptive, fixed-source, weighted-bin and curriculum "
+                "samplers are mutually exclusive"
+            )
+        config = SourceAdaptiveConfig.parse(source_adaptive_cfg)
+        if config is None:
+            raise ValueError("source_adaptive.enabled=true is required")
+        if group_by != config.group_by:
+            raise ValueError(
+                "source_adaptive.group_by and source_sampling.group_by differ"
+            )
+        dataset = self._datasets.get("train")
+        if dataset is None:
+            raise ValueError("Source sampling requires a training dataset")
+        probabilities = self._configure_source_contract(
+            dataset, source_probabilities, group_by
+        )
+        identity = _source_adaptive_identity(
+            dataset,
+            group_by=group_by,
+            source_names=self._source_names,
+            source_window_indices=self._source_window_indices,
+            base_probabilities=probabilities,
+            config=config,
+            cache_size=self._batch_size,
+        )
+        self._source_adaptive = SourceAdaptiveWeights(
+            size=len(dataset),
+            source_names=self._source_names,
+            source_window_indices=self._source_window_indices,
+            base_probabilities=self._source_base_probabilities,
+            config=config,
+            identity=identity,
+        )
+        logger.info(
+            "SOURCE_ADAPTIVE: {} sources, identity={}",
+            len(self._source_names),
+            identity,
+        )
+        self._build_dataloader()
+        self._prime_buffers()
+
+    @property
+    def source_names(self) -> Tuple[str, ...]:
+        return self._source_names
+
+    def source_base_probabilities(self, device=None) -> Tensor:
+        if self._source_base_probabilities is None:
+            raise RuntimeError("Source contract is not configured")
+        return self._source_base_probabilities.to(device=device)
+
+    def source_upper_probabilities(
+        self, upper_multiplier: float, device=None
+    ) -> Tensor:
+        if (
+            isinstance(upper_multiplier, bool)
+            or not math.isfinite(float(upper_multiplier))
+            or float(upper_multiplier) < 1.0
+        ):
+            raise ValueError("Source upper multiplier must be finite and >= 1")
+        return torch.clamp(
+            self.source_base_probabilities(device=device)
+            * float(upper_multiplier),
+            max=1.0,
+        )
+
+    def source_indices_for_indices(self, clip_indices: Tensor) -> Tensor:
+        if self._window_to_source is None:
+            raise RuntimeError("Source contract is not configured")
+        window_indices = self.window_indices_for_indices(clip_indices)
+        if window_indices.device.type == "cpu":
+            lookup = self._window_to_source
+        else:
+            lookup = self._window_to_source_device.get(window_indices.device)
+            if lookup is None:
+                lookup = self._window_to_source.to(window_indices.device)
+                self._window_to_source_device[window_indices.device] = lookup
+        return lookup[window_indices]
+
     def enable_cache_curriculum_sampling(
         self, cfg: Optional[Dict[str, Any]] = None
     ) -> None:
         if self._weighted_bin_enabled:
             raise ValueError(
                 "cache curriculum and weighted-bin sampling cannot be enabled together."
+            )
+        if self.source_sampling_enabled:
+            raise ValueError(
+                "fixed-source and curriculum samplers are mutually exclusive"
             )
         self._cache_curriculum_enabled = True
         self._cache_curriculum_cfg = dict(cfg or {})
@@ -3052,6 +3442,53 @@ class MotionClipBatchCache:
         tensor = batch.tensors[tensor_name]
         return tensor[selected_clips[:, None], gather_timesteps, ...]
 
+    def gather_tensor_offsets(
+        self,
+        tensor_name: str,
+        *,
+        clip_indices: Tensor,
+        frame_indices: Tensor,
+        frame_offsets: Sequence[int] | Tensor,
+    ) -> Tuple[Tensor, Tensor]:
+        """Gather arbitrary integer offsets and their actual frame validity.
+
+        Returns values ``[B, K, ...]`` and a boolean ``[B, K]`` mask. Out-of-
+        window positions read a safe boundary value but are marked invalid;
+        callers must mask them instead of treating clamping as a real future.
+        Offset order and duplicates are preserved.
+        Negative offsets are allowed.
+        This does not change the continuous gather used by one-step rewards.
+        """
+        batch = self.current_batch
+        if tensor_name not in batch.tensors:
+            raise KeyError(
+                f"Tensor '{tensor_name}' is not present in current_batch"
+            )
+        if clip_indices.ndim != 1 or frame_indices.shape != clip_indices.shape:
+            raise ValueError(
+                "clip_indices and frame_indices must have shape [B]"
+            )
+        device = batch.lengths.device
+        offsets = torch.as_tensor(frame_offsets, device=device)
+        if offsets.ndim != 1 or offsets.numel() == 0:
+            raise ValueError("frame_offsets must be a nonempty 1D sequence")
+        if (
+            offsets.dtype == torch.bool
+            or offsets.is_floating_point()
+            or offsets.is_complex()
+        ):
+            raise TypeError("frame_offsets must contain integer frame offsets")
+        selected = clip_indices.to(device=device, dtype=torch.long)
+        frames = frame_indices.to(device=device, dtype=torch.long)
+        requested = frames[:, None] + offsets.to(torch.long)[None, :]
+        lengths = batch.lengths.index_select(0, selected)
+        valid = (requested >= 0) & (requested < lengths[:, None])
+        safe = torch.minimum(
+            requested.clamp(min=0), (lengths - 1).clamp(min=0)[:, None]
+        )
+        values = batch.tensors[tensor_name][selected[:, None], safe, ...]
+        return values, valid
+
     def lengths_for_indices(self, clip_indices: Tensor) -> Tensor:
         lengths = self.current_batch.lengths.to(clip_indices.device)
         return lengths.index_select(0, clip_indices.long())
@@ -3290,7 +3727,11 @@ class MotionClipBatchCache:
         # Clamp batch size to dataset length to avoid empty iterator when drop_last is disabled
         effective_batch_size = self._batch_size
         ds_len = len(dataset)
-        if isinstance(ds_len, int) and ds_len > 0:
+        if (
+            isinstance(ds_len, int)
+            and ds_len > 0
+            and not (self._mode == "train" and self.source_sampling_enabled)
+        ):
             effective_batch_size = max(1, min(self._batch_size, ds_len))
 
         # Sampler selection: validation uses standard distributed/sequential samplers;
@@ -3324,6 +3765,17 @@ class MotionClipBatchCache:
                 )
                 self._cache_curriculum_last_dump_swap = -1
                 self._sampler = self._cache_curriculum_sampler
+            elif self.source_sampling_enabled:
+                # TODO: Centralize the inherited 100003 rank stride and review
+                # cross-rank seed reuse before changing the sampling sequence.
+                seed = self._seed + self._sampler_rank * 100003
+                self._sampler = SourceAdaptiveInfiniteSampler(
+                    source_window_indices=self._source_window_indices,
+                    controller=self.source_sampling_controller,
+                    batch_size=effective_batch_size,
+                    seed=seed,
+                )
+                self._cache_curriculum_sampler = None
             elif (
                 self._weighted_bin_enabled
                 and self._weighted_bin_bins is not None

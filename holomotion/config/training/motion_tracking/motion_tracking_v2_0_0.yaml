@@ -1,0 +1,238 @@
+# @package _global_
+
+# v2.0: rough terrain, named sparse-control modes, adaptive source sampling,
+# same-motion failure replay, and world-frame tracking rewards.
+# Configure your HDF5 roots and source_sampling.probabilities before training.
+# Process count is provided by the distributed launcher, not this recipe.
+
+defaults:
+- /training: train_base
+- /algo: ppo_tf
+- /robot: unitree/G1/29dof/29dof_training_isaaclab
+- /env: motion_tracking
+- /env/terminations: termination_motion_tracking
+- /env/observations: motion_tracking/obs_motion_tracking_link
+- /env/rewards: motion_tracking/rew_motion_tracking
+- /env/domain_randomization: domain_rand_medium
+- /env/terrain: isaaclab_rough
+- /modules: motion_tracking/motion_tracking_link_tf-moe
+- _self_
+project_name: HoloMotionV2Link
+train_hdf5_roots:
+- root: data/h5v2_datasets/AMASS_test
+  ratio: 1.0
+algo:
+  config:
+    save_interval: 500
+    num_learning_iterations: 18001
+    log_interval: 1
+    load_optimizer: false
+    init_noise_std: 0.3
+    distributed_update:
+      lr_scale:
+        mode: none
+    curriculum:
+      dump_whole_window_scores_json: false
+      dump_whole_window_scores_every_swaps: 10
+    sampling_strategy: source_adaptive
+mujoco_eval:
+  enabled: false
+  robot_xml_path: assets/robots/unitree/G1/29dof/scene_29dof.xml
+  dump_npzs: true
+  calc_per_clip_metrics: true
+  generate_report: true
+  ray_actors_per_gpu: 16
+  ray_multi_ckpt_mode: split
+  ckpt_onnx_names: null
+checkpoint: null
+link_observation:
+  enabled: true
+  schema_version: g1_link_xz6d_v1
+  link_names:
+  - pelvis
+  - left_hip_roll_link
+  - left_knee_link
+  - left_ankle_roll_link
+  - right_hip_roll_link
+  - right_knee_link
+  - right_ankle_roll_link
+  - torso_link
+  - left_shoulder_roll_link
+  - left_elbow_link
+  - left_wrist_yaw_link
+  - right_shoulder_roll_link
+  - right_elbow_link
+  - right_wrist_yaw_link
+  frame_offsets:
+  - 1
+  - 2
+  - 3
+  - 4
+  - 5
+  critic_frame_offsets: ${link_observation.frame_offsets}
+  mask:
+    min_active_links: 14
+    max_active_links: 14
+    full_probability: 1.0
+    strategy: modes
+    mode_candidates:
+      Pelvis-1:
+      - pelvis
+      Keypoint-3:
+      - pelvis
+      - left_wrist_yaw_link
+      - right_wrist_yaw_link
+      Keypoint-5:
+      - pelvis
+      - left_wrist_yaw_link
+      - right_wrist_yaw_link
+      - left_ankle_roll_link
+      - right_ankle_roll_link
+      UpperBody-6:
+      - left_shoulder_roll_link
+      - left_elbow_link
+      - left_wrist_yaw_link
+      - right_shoulder_roll_link
+      - right_elbow_link
+      - right_wrist_yaw_link
+      UpperBody-Mobile-7:
+      - pelvis
+      - left_shoulder_roll_link
+      - left_elbow_link
+      - left_wrist_yaw_link
+      - right_shoulder_roll_link
+      - right_elbow_link
+      - right_wrist_yaw_link
+      WholeBody-14:
+      - pelvis
+      - left_hip_roll_link
+      - left_knee_link
+      - left_ankle_roll_link
+      - right_hip_roll_link
+      - right_knee_link
+      - right_ankle_roll_link
+      - torso_link
+      - left_shoulder_roll_link
+      - left_elbow_link
+      - left_wrist_yaw_link
+      - right_shoulder_roll_link
+      - right_elbow_link
+      - right_wrist_yaw_link
+    # Fixed uniform mode sampling throughout training; S1 adapts data sources.
+    mode_weights: null
+    report_every_resamples: 1000
+    clip_mode_labels: null
+  proprio_noise:
+    projected_gravity:
+      n_min: ${domain_rand.obs_noise.actor_projected_gravity.n_min}
+      n_max: ${domain_rand.obs_noise.actor_projected_gravity.n_max}
+    root_ang_vel:
+      n_min: ${domain_rand.obs_noise.actor_rel_robot_root_ang_vel.n_min}
+      n_max: ${domain_rand.obs_noise.actor_rel_robot_root_ang_vel.n_max}
+    dof_pos:
+      n_min: ${domain_rand.obs_noise.actor_dof_pos.n_min}
+      n_max: ${domain_rand.obs_noise.actor_dof_pos.n_max}
+    dof_vel:
+      n_min: ${domain_rand.obs_noise.actor_dof_vel.n_min}
+      n_max: ${domain_rand.obs_noise.actor_dof_vel.n_max}
+  include_error_terms: true
+env:
+  config:
+    commands:
+      ref_motion:
+        params:
+          link_observation: ${link_observation}
+    seed: 20260912
+    tracking_extensions:
+      enabled: true
+      command_name: ref_motion
+      command_noise:
+        enabled: true
+        distribution: uniform
+        features:
+          target_pos:
+          - -0.05
+          - 0.05
+          position_error:
+          - -0.05
+          - 0.05
+          target_rot6d:
+          - -0.05
+          - 0.05
+          rotation_error6d:
+          - -0.05
+          - 0.05
+      rewards:
+        anchor_height_tracking_exp:
+          weight: 0.5
+          params:
+            std: 0.3
+            anchor_body_name: pelvis
+        global_body_rotation_tracking_exp:
+          weight: 1.0
+          params:
+            std: 0.4
+            body_names:
+            - pelvis
+            - left_hip_roll_link
+            - left_knee_link
+            - left_ankle_roll_link
+            - right_hip_roll_link
+            - right_knee_link
+            - right_ankle_roll_link
+            - torso_link
+            - left_shoulder_roll_link
+            - left_elbow_link
+            - left_wrist_yaw_link
+            - right_shoulder_roll_link
+            - right_elbow_link
+            - right_wrist_yaw_link
+  _target_: holomotion.src.env.mode_masked_motion_tracking.ModeMaskedMotionTrackingEnv
+num_envs: 8192
+headless: true
+rewards:
+  is_alive:
+    weight: 1.0
+  root_pos_xy_tracking_exp:
+    weight: 1.0
+    params:
+      std: 0.5
+      ref_prefix: ${rewards._config.reward_prefix}
+  root_pos_rel_z_tracking_exp:
+    weight: 0.5
+    params:
+      std: 0.3
+      ref_prefix: ${rewards._config.reward_prefix}
+robot:
+  motion:
+    source_adaptive:
+      enabled: true
+      group_by: source_id
+      lower_multiplier: 0.5
+      upper_multiplier: 2.0
+      uniform_fraction_within_source: 0.2
+      difficulty_ema_alpha: 0.2
+      difficulty_scale_m: 0.5
+      min_difficulty_multiplier: 0.5
+      max_difficulty_multiplier: 2.0
+      min_window_weight: 0.05
+      update_interval_swaps: 10
+      warmup_swaps: 10
+      min_observations: 32
+    failure_replay:
+      enabled: true
+      trigger_termination_terms:
+      - ref_gravity_projection_far
+      replay_probability: 0.5
+      max_retries_per_motion: 2
+      replay_start_mode: next_frame
+      backtrack_seconds: 0.75
+      preserve_mode_mask: true
+      count_against_source_budget: true
+      source_budget_upper_multiplier: 2.0
+      source_budget_window_assignments: 65536
+    source_sampling:
+      probabilities: ???
+    val_hdf5_roots: ${val_hdf5_roots}
+    dump_sampled_motion_keys: false
+val_hdf5_roots: ${train_hdf5_roots}

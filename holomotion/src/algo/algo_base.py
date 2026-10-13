@@ -400,14 +400,52 @@ class BaseOnpolicyRL:
         return
 
     def _extra_checkpoint_state(self) -> Dict[str, Any]:
-        """Additional state to save in checkpoints."""
-        return {}
+        """Save source-adaptive state without distributed work in save()."""
+        if self.command_name != "ref_motion":
+            return {}
+        command = self.env._env.command_manager.get_term("ref_motion")
+        cache = getattr(command, "_motion_cache", None)
+        if cache is None or not cache.adaptive_sampling_enabled:
+            return {}
+        return {
+            "source_adaptive_sampling": cache.adaptive_sampling_state_dict()
+        }
 
     def _load_extra_checkpoint_state(
         self, loaded_dict: Dict[str, Any]
     ) -> None:
-        """Load additional checkpoint state if present."""
-        return
+        """Require a matching S1 state for training resume only."""
+        if (
+            self.command_name != "ref_motion"
+            or self.is_offline_eval
+            or str(self.config.get("checkpoint_load_mode", "resume")).lower()
+            != "resume"
+        ):
+            return
+        command = self.env._env.command_manager.get_term("ref_motion")
+        cache = getattr(command, "_motion_cache", None)
+        if cache is None:
+            return
+        key = "source_adaptive_sampling"
+        legacy_key = "adaptive_weighted_bin"
+        if not cache.adaptive_sampling_enabled:
+            if key in loaded_dict or legacy_key in loaded_dict:
+                raise ValueError(
+                    "Checkpoint has adaptive sampling state but current "
+                    "training config disables it"
+                )
+            return
+        if legacy_key in loaded_dict:
+            raise ValueError(
+                "Legacy weighted-bin adaptive state cannot be restored "
+                "into public fixed-source S1"
+            )
+        if key not in loaded_dict:
+            raise ValueError(
+                "Source-adaptive resume requires matching checkpoint state; "
+                "use finetune mode to start adaptation from scratch"
+            )
+        cache.load_adaptive_sampling_state_dict(loaded_dict[key])
 
     def _build_transition(
         self,
@@ -419,7 +457,7 @@ class BaseOnpolicyRL:
             "Subclasses must implement _build_transition."
         )
 
-    def _post_iteration_hook(self, it: int) -> None:
+    def _post_iteration_hook(self, it: int) -> TensorDict | None:
         return
 
     def _post_training_hook(self) -> None:
@@ -630,7 +668,9 @@ class BaseOnpolicyRL:
                 )
                 self._release_cuda_cache()
 
-            self._post_iteration_hook(it)
+            refreshed_obs_td = self._post_iteration_hook(it)
+            if refreshed_obs_td is not None:
+                obs_td = refreshed_obs_td
             self.ep_infos.clear()
             self.accelerator.wait_for_everyone()
 

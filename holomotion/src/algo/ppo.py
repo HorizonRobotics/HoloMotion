@@ -38,6 +38,9 @@ from holomotion.src.algo.algo_utils import (
 from holomotion.src.utils.onnx_export import (
     export_policy_to_onnx as export_policy_to_onnx_common,
 )
+from holomotion.src.training.source_adaptive_runtime import (
+    synchronize_command_sampler,
+)
 from tensordict import TensorDict
 
 
@@ -213,7 +216,12 @@ class PPO(BaseOnpolicyRL):
             sampling_strategy = "uniform"
         else:
             sampling_strategy = str(sampling_strategy_cfg).lower()
-        valid_strategies = {"uniform", "weighted_bin", "curriculum"}
+        valid_strategies = {
+            "uniform",
+            "weighted_bin",
+            "curriculum",
+            "source_adaptive",
+        }
         if sampling_strategy not in valid_strategies:
             raise ValueError(
                 f"Invalid sampling_strategy '{sampling_strategy}'. "
@@ -221,6 +229,13 @@ class PPO(BaseOnpolicyRL):
             )
         self.sampling_strategy: str = sampling_strategy
         self.weighted_bin_cfg = dict(motion_cfg.get("weighted_bin", {}))
+        source_adaptive_cfg = motion_cfg.get("source_adaptive", {}) or {}
+        source_adaptive_enabled = source_adaptive_cfg.get("enabled", False)
+        if type(source_adaptive_enabled) is not bool:
+            raise ValueError("source_adaptive.enabled must be boolean")
+        self.source_adaptive_enabled = bool(
+            sampling_strategy == "source_adaptive" and source_adaptive_enabled
+        )
 
         sym_cfg = self.config.get("symmetry_loss", {})
         self.symmetry_loss_enabled = bool(sym_cfg.get("enabled", False))
@@ -893,12 +908,27 @@ class PPO(BaseOnpolicyRL):
 
         return self.transition_cls(**transition_kwargs)
 
-    def _post_iteration_hook(self, it: int) -> None:
+    def _post_iteration_hook(self, it: int) -> TensorDict | None:
         if self.command_name == "ref_motion":
-            motion_cmd = self.env._env.command_manager.get_term("ref_motion")
-            motion_cmd.apply_cache_swap_if_pending_barrier(
+            isaac_env = self.env._env
+            motion_cmd = isaac_env.command_manager.get_term("ref_motion")
+            if self.source_adaptive_enabled:
+                synchronize_command_sampler(motion_cmd, self.accelerator)
+            swapped = motion_cmd.apply_cache_swap_if_pending_barrier(
                 accelerator=self.accelerator
             )
+            if swapped and hasattr(motion_cmd, "_link_observation_adapter"):
+                isaac_env.scene.write_data_to_sim()
+                isaac_env.sim.forward()
+                env_ids = motion_cmd._filter_env_ids_for_motion_task(
+                    torch.arange(self.env.num_envs, device=self.device)
+                )
+                isaac_env.observation_manager.reset(env_ids)
+                isaac_env.obs_buf = isaac_env.observation_manager.compute(
+                    update_history=True
+                )
+                return self._wrap_obs_dict(isaac_env.obs_buf)
+        return None
 
     def _post_training_hook(self) -> None:
         if self.command_name == "ref_motion":
@@ -973,6 +1003,42 @@ class PPO(BaseOnpolicyRL):
         motion_cmd = self.env._env.command_manager.get_term("ref_motion")
         cache = motion_cmd._motion_cache
         iteration_metrics["1-Perf/Cache/swap_index"] = float(cache.swap_index)
+        source_metrics_fn = getattr(cache, "source_sampling_metrics", None)
+        source_stats = None
+        if callable(source_metrics_fn):
+            source_stats = source_metrics_fn()
+        if source_stats is not None:
+            iteration_metrics.update(
+                {
+                    "1-Perf/Cache/SourceSampling/" + key: float(value)
+                    for key, value in source_stats.items()
+                }
+            )
+        adaptive_metrics_fn = getattr(cache, "adaptive_sampling_metrics", None)
+        adaptive_stats = (
+            adaptive_metrics_fn() if callable(adaptive_metrics_fn) else None
+        )
+        if adaptive_stats is not None:
+            iteration_metrics.update(
+                {
+                    "1-Perf/Cache/Adaptive/" + key: float(value)
+                    for key, value in adaptive_stats.items()
+                }
+            )
+            iteration_metrics[
+                "1-Perf/Cache/Adaptive/source_adaptive_enabled"
+            ] = float(getattr(cache, "adaptive_sampling_enabled", False))
+        replay_metrics_fn = getattr(motion_cmd, "failure_replay_metrics", None)
+        replay_stats = (
+            replay_metrics_fn() if callable(replay_metrics_fn) else None
+        )
+        if replay_stats is not None:
+            iteration_metrics.update(
+                {
+                    "1-Perf/FailureReplay/" + key: float(value)
+                    for key, value in replay_stats.items()
+                }
+            )
         pool_stats = cache.cache_curriculum_pool_statistics()
         if pool_stats is not None:
             core_cache_metric_keys = {

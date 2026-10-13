@@ -578,11 +578,14 @@ def run_with_cuda_observation(
     return io_binding.copy_outputs_to_cpu()
 
 
-def read_onnx_metadata(onnx_model_path: str) -> dict[str, Any]:
-    import onnx
-
-    model = onnx.load(str(onnx_model_path))
-    meta = {prop.key: prop.value for prop in model.metadata_props}
+def read_onnx_metadata(onnx_model_path: str, *, session=None) -> dict[str, Any]:
+    if session is None:
+        import onnx
+        model = onnx.load(str(onnx_model_path))
+        meta = {prop.key: prop.value for prop in model.metadata_props}
+    else:
+        # ORT already parsed these exact model metadata when creating the session.
+        meta = dict(session.get_modelmeta().custom_metadata_map)
 
     def _parse_floats(csv_str: str) -> np.ndarray:
         return np.array(

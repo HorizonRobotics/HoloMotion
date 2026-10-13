@@ -39,7 +39,7 @@ DEFAULT_PROFILE = {
     },
     "policy": {
         "reference_source": "zmq",
-        "reference_zmq_uri": "tcp://192.168.124.29:6001",
+        "reference_zmq_uri": "tcp://127.0.0.1:6001",
         "reference_zmq_topic": "reference_qpos",
         "reference_zmq_mode": "connect",
         "reference_zmq_conflate": True,
@@ -48,6 +48,7 @@ DEFAULT_PROFILE = {
         "enable_teleop_reference": False,
         "inference_backend": "onnx",
         "motion_observation_backend": "auto",
+        "link_control_mode": "Keypoint-5",
         "motion_rope_max_seq_len": 0,
         "motion_rope_reset_margin": 64,
         "timing_debug_enabled": False,
@@ -64,6 +65,8 @@ DEFAULT_PROFILE = {
         "reference_telemetry_min_slack_ms": 2.0,
         "reference_telemetry_deadline_pause_sec": 5.0,
         "cpu_affinity_reference_telemetry": "",
+        "teleop_record_dir": "",
+        "teleop_record_hz": 50.0,
     },
 }
 
@@ -79,6 +82,7 @@ ROBOT_CONFIG_RUNTIME_FIELDS = (
     "enable_teleop_reference",
     "inference_backend",
     "motion_observation_backend",
+    "link_control_mode",
     "motion_rope_max_seq_len",
     "motion_rope_reset_margin",
     "timing_debug_enabled",
@@ -95,6 +99,8 @@ ROBOT_CONFIG_RUNTIME_FIELDS = (
     "reference_telemetry_min_slack_ms",
     "reference_telemetry_deadline_pause_sec",
     "cpu_affinity_reference_telemetry",
+    "teleop_record_dir",
+    "teleop_record_hz",
     "network_interface",
     "python_executable",
     "enable_recording",

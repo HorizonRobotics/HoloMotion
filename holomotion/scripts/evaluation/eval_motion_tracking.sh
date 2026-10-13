@@ -22,7 +22,7 @@ export CUDA_VISIBLE_DEVICES="0"
 HEADLESS=true
 CONFIG_NAME="eval_isaaclab"
 
-CKPT_PATH="${CKPT_PATH:?Set CKPT_PATH to a trained v1.4.x checkpoint}"
+CKPT_PATH="${CKPT_PATH:?Set CKPT_PATH to a trained motion-tracking checkpoint}"
 
 eval_h5_dataset_path="${EVAL_H5_DATASET_PATH:-['data/h5v2_datasets/lafan1']}"
 

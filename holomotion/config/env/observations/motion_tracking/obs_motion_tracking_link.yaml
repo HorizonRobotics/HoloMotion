@@ -1,0 +1,329 @@
+# @package _global_
+
+obs:
+  context_length: 1
+  n_fut_frames: ${eval:'len(${link_observation.frame_offsets})'}
+  critic_n_fut_frames: ${eval:'len(${link_observation.critic_frame_offsets})'}
+  target_fps: 50
+  actor_obs_prefix: ref_
+  critic_obs_prefix: ref_
+  obs_groups:
+    unified:
+      atomic_obs_list: ${_link_atomic_observation_variants.${_link_error_schema_key}}
+      additional_atomic_obs_list: []
+      enable_corruption: true
+      concatenate_terms: false
+env:
+  config:
+    commands:
+      ref_motion:
+        params:
+          n_fut_frames: ${eval:'max(max(${link_observation.frame_offsets}), max(${link_observation.critic_frame_offsets}))'}
+_link_error_schema_key: errors_${link_observation.include_error_terms}
+_link_atomic_observation_variants:
+  errors_True:
+  - actor_projected_gravity:
+      func: link_feedback
+      params:
+        name: projected_gravity
+        actor: true
+      history_length: ${obs.context_length}
+      flatten_history_dim: false
+  - actor_rel_robot_root_ang_vel:
+      func: link_feedback
+      params:
+        name: root_ang_vel
+        actor: true
+      history_length: ${obs.context_length}
+      flatten_history_dim: false
+  - actor_dof_pos:
+      func: link_feedback
+      params:
+        name: dof_pos
+        actor: true
+      history_length: ${obs.context_length}
+      flatten_history_dim: false
+  - actor_dof_vel:
+      func: link_feedback
+      params:
+        name: dof_vel
+        actor: true
+      history_length: ${obs.context_length}
+      flatten_history_dim: false
+  - actor_last_action:
+      func: link_feedback
+      params:
+        name: last_action
+        actor: true
+      history_length: ${obs.context_length}
+      flatten_history_dim: false
+  - actor_link_reference_height:
+      func: link_command_term
+      params:
+        name: reference_height
+        actor: true
+      history_length: ${obs.context_length}
+      flatten_history_dim: false
+  - actor_link_link_mask:
+      func: link_command_term
+      params:
+        name: link_mask
+        actor: true
+      history_length: ${obs.context_length}
+      flatten_history_dim: false
+  - actor_link_time_valid:
+      func: link_command_term
+      params:
+        name: time_valid
+        actor: true
+      history_length: ${obs.context_length}
+      flatten_history_dim: false
+  - actor_link_target_pos:
+      func: link_command_term
+      params:
+        name: target_pos
+        actor: true
+  - actor_link_position_error:
+      func: link_command_term
+      params:
+        name: position_error
+        actor: true
+  - actor_link_target_rot6d:
+      func: link_command_term
+      params:
+        name: target_rot6d
+        actor: true
+  - actor_link_rotation_error6d:
+      func: link_command_term
+      params:
+        name: rotation_error6d
+        actor: true
+  - actor_link_time_offsets:
+      func: link_command_term
+      params:
+        name: time_offsets
+        actor: true
+  - critic_rel_robot_root_lin_vel:
+      func: rel_robot_root_lin_vel
+  - critic_rel_robot_root_ang_vel:
+      func: rel_robot_root_ang_vel
+  - critic_global_robot_bodylink_lin_vel_flat:
+      func: global_robot_bodylink_lin_vel_flat
+  - critic_global_robot_bodylink_ang_vel_flat:
+      func: global_robot_bodylink_ang_vel_flat
+  - critic_root_rel_robot_bodylink_pos_flat:
+      func: root_rel_robot_bodylink_pos_flat
+  - critic_root_rel_robot_bodylink_rot_mat_flat:
+      func: root_rel_robot_bodylink_rot_mat_flat
+  - critic_dof_pos:
+      func: link_feedback
+      params:
+        name: dof_pos
+        actor: false
+  - critic_dof_vel:
+      func: link_feedback
+      params:
+        name: dof_vel
+        actor: false
+  - critic_last_action:
+      func: link_feedback
+      params:
+        name: last_action
+        actor: false
+  - critic_global_anchor_diff:
+      func: global_anchor_diff
+      params:
+        ref_prefix: ${obs.critic_obs_prefix}
+  - critic_projected_gravity:
+      func: link_feedback
+      params:
+        name: projected_gravity
+        actor: false
+  - critic_root_height:
+      func: link_feedback
+      params:
+        name: root_height
+        actor: false
+  - critic_link_reference_height:
+      func: link_command_term
+      params:
+        name: reference_height
+        actor: false
+  - critic_link_link_mask:
+      func: link_command_term
+      params:
+        name: link_mask
+        actor: false
+  - critic_link_time_valid:
+      func: link_command_term
+      params:
+        name: time_valid
+        actor: false
+  - critic_link_target_pos:
+      func: link_command_term
+      params:
+        name: target_pos
+        actor: false
+  - critic_link_position_error:
+      func: link_command_term
+      params:
+        name: position_error
+        actor: false
+  - critic_link_target_rot6d:
+      func: link_command_term
+      params:
+        name: target_rot6d
+        actor: false
+  - critic_link_rotation_error6d:
+      func: link_command_term
+      params:
+        name: rotation_error6d
+        actor: false
+  - critic_link_time_offsets:
+      func: link_command_term
+      params:
+        name: time_offsets
+        actor: false
+  errors_False:
+  - actor_projected_gravity:
+      func: link_feedback
+      params:
+        name: projected_gravity
+        actor: true
+      history_length: ${obs.context_length}
+      flatten_history_dim: false
+  - actor_rel_robot_root_ang_vel:
+      func: link_feedback
+      params:
+        name: root_ang_vel
+        actor: true
+      history_length: ${obs.context_length}
+      flatten_history_dim: false
+  - actor_dof_pos:
+      func: link_feedback
+      params:
+        name: dof_pos
+        actor: true
+      history_length: ${obs.context_length}
+      flatten_history_dim: false
+  - actor_dof_vel:
+      func: link_feedback
+      params:
+        name: dof_vel
+        actor: true
+      history_length: ${obs.context_length}
+      flatten_history_dim: false
+  - actor_last_action:
+      func: link_feedback
+      params:
+        name: last_action
+        actor: true
+      history_length: ${obs.context_length}
+      flatten_history_dim: false
+  - actor_link_reference_height:
+      func: link_command_term
+      params:
+        name: reference_height
+        actor: true
+      history_length: ${obs.context_length}
+      flatten_history_dim: false
+  - actor_link_link_mask:
+      func: link_command_term
+      params:
+        name: link_mask
+        actor: true
+      history_length: ${obs.context_length}
+      flatten_history_dim: false
+  - actor_link_time_valid:
+      func: link_command_term
+      params:
+        name: time_valid
+        actor: true
+      history_length: ${obs.context_length}
+      flatten_history_dim: false
+  - actor_link_target_pos:
+      func: link_command_term
+      params:
+        name: target_pos
+        actor: true
+  - actor_link_target_rot6d:
+      func: link_command_term
+      params:
+        name: target_rot6d
+        actor: true
+  - actor_link_time_offsets:
+      func: link_command_term
+      params:
+        name: time_offsets
+        actor: true
+  - critic_rel_robot_root_lin_vel:
+      func: rel_robot_root_lin_vel
+  - critic_rel_robot_root_ang_vel:
+      func: rel_robot_root_ang_vel
+  - critic_global_robot_bodylink_lin_vel_flat:
+      func: global_robot_bodylink_lin_vel_flat
+  - critic_global_robot_bodylink_ang_vel_flat:
+      func: global_robot_bodylink_ang_vel_flat
+  - critic_root_rel_robot_bodylink_pos_flat:
+      func: root_rel_robot_bodylink_pos_flat
+  - critic_root_rel_robot_bodylink_rot_mat_flat:
+      func: root_rel_robot_bodylink_rot_mat_flat
+  - critic_dof_pos:
+      func: link_feedback
+      params:
+        name: dof_pos
+        actor: false
+  - critic_dof_vel:
+      func: link_feedback
+      params:
+        name: dof_vel
+        actor: false
+  - critic_last_action:
+      func: link_feedback
+      params:
+        name: last_action
+        actor: false
+  - critic_global_anchor_diff:
+      func: global_anchor_diff
+      params:
+        ref_prefix: ${obs.critic_obs_prefix}
+  - critic_projected_gravity:
+      func: link_feedback
+      params:
+        name: projected_gravity
+        actor: false
+  - critic_root_height:
+      func: link_feedback
+      params:
+        name: root_height
+        actor: false
+  - critic_link_reference_height:
+      func: link_command_term
+      params:
+        name: reference_height
+        actor: false
+  - critic_link_link_mask:
+      func: link_command_term
+      params:
+        name: link_mask
+        actor: false
+  - critic_link_time_valid:
+      func: link_command_term
+      params:
+        name: time_valid
+        actor: false
+  - critic_link_target_pos:
+      func: link_command_term
+      params:
+        name: target_pos
+        actor: false
+  - critic_link_target_rot6d:
+      func: link_command_term
+      params:
+        name: target_rot6d
+        actor: false
+  - critic_link_time_offsets:
+      func: link_command_term
+      params:
+        name: time_offsets
+        actor: false

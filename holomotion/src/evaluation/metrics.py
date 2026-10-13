@@ -36,6 +36,7 @@ from tabulate import tabulate
 from tqdm import tqdm
 
 
+DEFAULT_ROOT_HEIGHT_THRESHOLD_M = 0.25
 DEFAULT_ROBOT_CONTROL_DT = 1.0 / 50.0
 TORQUE_JUMP_RATIO_EPS = 1e-6
 MIN_WELCH_SAMPLES = 8
@@ -44,6 +45,38 @@ TOUCHDOWN_WINDOW_SECONDS = 0.05
 ROOT_BODY_INDEX = 0
 PROBABILITY_EPS = 1e-12
 TURNING_YAW_RANGE_THRESHOLD_RAD = 0.3
+
+
+def compute_position_error(
+    robot_positions, reference_positions, *, root_index=None
+):
+    """Per-point Euclidean error in meters for matching [..., links, 3] arrays.
+
+    With root_index, remove each pose's root translation but retain orientation
+    error. Legacy root-rotation alignment remains the caller's responsibility.
+    """
+    delta = np.asarray(robot_positions) - np.asarray(reference_positions)
+    if root_index is not None:
+        delta = delta - delta[..., [root_index], :]
+    return np.linalg.norm(delta, axis=-1)
+
+
+def compute_root_height_error(robot_height, reference_height):
+    """Return same-frame absolute root-height error in meters."""
+    return np.abs(np.asarray(robot_height) - np.asarray(reference_height))
+
+
+def root_height_success(
+    max_height_error_m: float,
+    failure_pos_err_thresh_m: float = DEFAULT_ROOT_HEIGHT_THRESHOLD_M,
+) -> bool:
+    """Use the v1.4.1 clip-success criterion with a configurable threshold."""
+    threshold = float(failure_pos_err_thresh_m)
+    if not np.isfinite(threshold) or threshold < 0:
+        raise ValueError(
+            "Root-height threshold must be finite and nonnegative"
+        )
+    return bool(max_height_error_m <= threshold)
 
 
 def quat_inv(q):
@@ -773,13 +806,13 @@ def _per_frame_metrics_from_npz(
 
     # Global MPJPE [mm]
     mpjpe_g = (
-        np.mean(np.linalg.norm(jpos_gt - jpos_pred, axis=2), axis=1) * 1000.0
+        compute_position_error(jpos_pred, jpos_gt).mean(axis=1) * 1000.0
     )
 
-    # Per-frame maximum body-link position error [m] (used for failure criterion)
-    # per_joint_err = np.linalg.norm(jpos_pred - jpos_gt, axis=2)
-    # frame_max_body_pos_err = np.max(per_joint_err, axis=1)
-    frame_max_body_pos_err = np.abs(jpos_pred[:, 0, 2] - jpos_gt[:, 0, 2])
+    # Legacy output name; the actual SR criterion is root-height error [m].
+    frame_max_body_pos_err = compute_root_height_error(
+        jpos_pred[:, 0, 2], jpos_gt[:, 0, 2]
+    )
 
     # Localize by root (index 0)
     jpos_gt_local = jpos_gt - jpos_gt[:, [0]]
@@ -794,12 +827,9 @@ def _per_frame_metrics_from_npz(
     )
 
     mpjpe_l = (
-        np.mean(
-            np.linalg.norm(
-                robot_body_pos_root_rel - ref_body_pos_root_rel, axis=2
-            ),
-            axis=1,
-        )
+        compute_position_error(
+            robot_body_pos_root_rel, ref_body_pos_root_rel
+        ).mean(axis=1)
         * 1000.0
     )
 
@@ -867,7 +897,7 @@ def _per_frame_metrics_from_npz(
     )
 
     # Root height error [m]
-    root_height_error = np.abs(root_pos_pred[:, 2] - root_pos_gt[:, 2])
+    root_height_error = frame_max_body_pos_err
 
     # Robot low-level magnitudes (optional)
     mean_dof_vel = np.full((num_frames,), np.nan, dtype=float)
@@ -962,7 +992,7 @@ def _per_frame_metrics_from_npz(
 def offline_evaluate_dumped_npzs(
     npz_dir: str,
     output_json_path: str,
-    failure_pos_err_thresh_m: float = 0.25,
+    failure_pos_err_thresh_m: float = DEFAULT_ROOT_HEIGHT_THRESHOLD_M,
     metric_calculation: str = "per_clip",
     dof_mode: str = "29",
     threadpool_max_workers: Optional[int] = None,
@@ -1057,7 +1087,7 @@ def offline_evaluate_dumped_npzs(
                 low_level_contact_dt=low_level_contact_dt,
             )
 
-            # Clip-level info and failure criterion (max body-link pos error > threshold)
+            # Clip-level success uses maximum root-height error over all frames.
             num_frames_clip = int(df_frames.shape[0])
             clip_length = int(
                 metadata.get(
@@ -1067,7 +1097,9 @@ def offline_evaluate_dumped_npzs(
             max_body_err = float(
                 np.nanmax(df_frames["frame_max_body_pos_err"].to_numpy())
             )
-            success = 1.0 if max_body_err <= failure_pos_err_thresh_m else 0.0
+            success = float(
+                root_height_success(max_body_err, failure_pos_err_thresh_m)
+            )
             clip_meta_entry = {
                 "motion_key": motion_key,
                 "num_frames": num_frames_clip,
@@ -1436,7 +1468,7 @@ def parse_ckpt_and_dataset_from_eval_dirname(
 def run_evaluation(
     npz_dir: str,
     dataset_suffix: str,
-    failure_pos_err_thresh_m: float = 0.25,
+    failure_pos_err_thresh_m: float = DEFAULT_ROOT_HEIGHT_THRESHOLD_M,
     metric_calculation: str = "per_clip",
     dof_mode: str = "29",
     threadpool_max_workers: Optional[int] = None,
@@ -1597,7 +1629,9 @@ if __name__ == "__main__":
         required=True,
     )
     argument_parser.add_argument(
-        "--failure_pos_err_thresh_m", type=float, default=0.25
+        "--failure_pos_err_thresh_m",
+        type=float,
+        default=DEFAULT_ROOT_HEIGHT_THRESHOLD_M,
     )
     argument_parser.add_argument(
         "--metric_calculation",

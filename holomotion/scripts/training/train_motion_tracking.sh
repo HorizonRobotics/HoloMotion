@@ -31,18 +31,20 @@ else
 fi
 
 
-config_name="${CONFIG_NAME:-motion_tracking_v1_4_0}"
-
-num_envs="${NUM_ENVS:-4096}"
+config_name="${CONFIG_NAME:-motion_tracking_v2_0_0}"
 
 COMMON_ARGS=(
     "holomotion/src/training/train.py"
     "--config-name=training/motion_tracking/${config_name}"
-    "num_envs=${num_envs}"
     "headless=true"
     "experiment_name=${config_name}"
-    "$@"
 )
+
+# Respect the recipe unless the caller explicitly overrides the environment count.
+if [[ -n "${NUM_ENVS:-}" ]]; then
+    COMMON_ARGS+=("num_envs=${NUM_ENVS}")
+fi
+COMMON_ARGS+=("$@")
 
 LAUNCH_ARGS=()
 if [[ "${USE_MULTI_GPU}" == "true" ]]; then

@@ -1,8 +1,21 @@
 import unittest
 from types import SimpleNamespace
 
+from omegaconf import OmegaConf
+from humanoid_policy.config import motion_reference_horizon
 from humanoid_policy.config import DeploymentConfig
 from humanoid_policy.launch_profile import drop_legacy_policy_fields
+
+
+def test_v2_horizon_does_not_evaluate_training_only_resolver():
+    unresolved = OmegaConf.create({
+        "link_observation": {"schema_version": "g1_link_xz6d_v1", "frame_offsets": [1, 2, 3, 4, 5]},
+        "obs": {"n_fut_frames": "${eval:'len(${link_observation.frame_offsets})'}"},
+    })
+    assert motion_reference_horizon(unresolved) == 5
+    legacy = OmegaConf.create({"obs": {"n_fut_frames": 3}})
+    with unittest.TestCase().assertRaisesRegex(ValueError, 'only HoloMotion v2.0'):
+        motion_reference_horizon(legacy)
 
 
 class FakeNode:

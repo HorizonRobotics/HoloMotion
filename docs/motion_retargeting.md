@@ -1,5 +1,12 @@
 # Motion Retargeting
 
+Complete [environment setup](environment_setup.md), including the licensed body
+models, and run from the repository root:
+
+```bash
+source train.env
+```
+
 This repository uses a two-stage data pipeline for motion tracking training:
 
 ```text
@@ -27,7 +34,7 @@ Packed HoloSMPL H5 keeps frame-major arrays at the shard root and stores `human_
 Convert a raw dataset to canonical HoloSMPL NPZ:
 
 ```bash
-python -m holosmpl convert-canonical \
+"$Train_CONDA_PREFIX/bin/python" -m holosmpl convert-canonical \
   --dataset <dataset_name> \
   --input-root <raw_dataset_root> \
   --output-root <canonical_root> \
@@ -38,7 +45,7 @@ python -m holosmpl convert-canonical \
 Convert canonical clips to HoloSMPL NPZ:
 
 ```bash
-python -m holosmpl convert-formal-npz \
+"$Train_CONDA_PREFIX/bin/python" -m holosmpl convert-formal-npz \
   --canonical-root <canonical_root> \
   --output-root <holosmpl_npz_root> \
   --overwrite
@@ -47,7 +54,7 @@ python -m holosmpl convert-formal-npz \
 Pack HoloSMPL NPZ into HoloSMPL H5:
 
 ```bash
-python -m holosmpl pack-formal-h5 \
+"$Train_CONDA_PREFIX/bin/python" -m holosmpl pack-formal-h5 \
   --formal-npz-root <holosmpl_npz_root> \
   --output-root <holosmpl_h5_root> \
   --compression lzf \
@@ -59,7 +66,7 @@ python -m holosmpl pack-formal-h5 \
 Run HoloRetarget on HoloSMPL H5 and write the existing robot HDF5 v2 format:
 
 ```bash
-python -m holosmpl retarget-holoretarget-h5 \
+"$Train_CONDA_PREFIX/bin/python" -m holosmpl retarget-holoretarget-h5 \
   --holosmpl-h5-root <holosmpl_h5_root> \
   --output-root <robot_h5_root> \
   --compression lzf \
@@ -76,18 +83,28 @@ Training and deployment derive joint velocity, root velocity, projected
 gravity, and local-frame velocity through the shared motion-tracking
 observation module.
 
+The output directory includes a `manifest.json` for these robot HDF5 shards.
+The v2.0 training recipe also requires `metadata.source_id` for every eligible
+clip and matching source-sampling probabilities; retargeting preserves input
+metadata but does not assign those source labels for you. See
+[training data configuration](train_motion_tracking.md#11-configure-your-training-data).
+
+Human-side HoloSMPL NPZ and compact robot HDF5 are different formats from the
+full robot reference NPZ used for interactive sim2sim. Use the
+[evaluation guide](evaluate_motion_tracking.md) to select the appropriate input.
+
 ## Smoke Validation
 
 A quick schema smoke can be run from an existing canonical root:
 
 ```bash
-python -m holosmpl convert-formal-npz \
+"$Train_CONDA_PREFIX/bin/python" -m holosmpl convert-formal-npz \
   --canonical-root <canonical_root> \
   --output-root /tmp/holosmpl_lafan1_formal_npz \
   --overwrite \
   --progress-interval 20
 
-python -m holosmpl pack-formal-h5 \
+"$Train_CONDA_PREFIX/bin/python" -m holosmpl pack-formal-h5 \
   --formal-npz-root /tmp/holosmpl_lafan1_formal_npz \
   --output-root /tmp/holosmpl_lafan1_h5 \
   --compression lzf \

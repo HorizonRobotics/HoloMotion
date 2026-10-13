@@ -6,7 +6,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
     echo "Usage: $0 [MODEL_DIR]"
-    echo "Without MODEL_DIR, use HoloMotion_motion_tracking_model_v1.4.1 from the repository models directory."
+    echo "Without MODEL_DIR, use HoloMotion_motion_tracking_model_v2.0.0 from the repository models directory."
     exit 0
 fi
 if [[ $# -gt 1 ]]; then
@@ -23,7 +23,7 @@ if [[ -n "$model_dir" ]]; then
     printf -v quoted_model_dir '%q' "$model_dir"
     export HOLOMOTION_CONTAINER_COMMAND="cd /home/unitree/holomotion/deployment/unitree_g1_ros2_29dof && exec bash scripts/launch_with_motion_model.sh $quoted_model_dir"
 else
-    echo "Selected repository model: HoloMotion_motion_tracking_model_v1.4.1"
+    echo "Selected repository model: HoloMotion_motion_tracking_model_v2.0.0"
     export HOLOMOTION_CONTAINER_COMMAND="cd /home/unitree/holomotion/deployment/unitree_g1_ros2_29dof && exec bash launch_holomotion_29dof_docker.sh"
 fi
 exec bash "$SCRIPT_DIR/start_container.sh" "$REPO_ROOT"

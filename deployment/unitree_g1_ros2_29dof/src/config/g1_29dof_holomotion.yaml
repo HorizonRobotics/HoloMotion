@@ -7,7 +7,7 @@ action_topic: "/humanoid/action"
 # walking policy
 velocity_tracking_model_folder: "velocity_tracking_model"
 # motion policy
-motion_tracking_model_folder: "HoloMotion_motion_tracking_model_v1.4.1"
+motion_tracking_model_folder: "HoloMotion_motion_tracking_model_v2.0.0"
 
 # motion data
 motion_clip_dir: "motion_data" 
@@ -114,7 +114,7 @@ default_joint_angles:
   left_hip_roll_joint: 0.0
   left_hip_yaw_joint: 0.0
   left_knee_joint: 0.669
-  left_ankle_pitch_joint: -0.33
+  left_ankle_pitch_joint: -0.363
   left_ankle_roll_joint: 0.0
 
   # Right leg joints (indices 6-11)
@@ -122,13 +122,13 @@ default_joint_angles:
   right_hip_roll_joint: 0.0
   right_hip_yaw_joint: 0.0
   right_knee_joint: 0.669
-  right_ankle_pitch_joint: -0.33
+  right_ankle_pitch_joint: -0.363
   right_ankle_roll_joint: 0.0
 
   # Waist joints (indices 12-14)
   waist_yaw_joint: 0.0
   waist_roll_joint: 0.0
-  waist_pitch_joint: 0.2
+  waist_pitch_joint: 0.0
 
   # Left arm joints (indices 15-21)
   left_shoulder_pitch_joint: 0.2

@@ -20,9 +20,13 @@ Verify each boundary and keep visualization outside the control-critical path.
 Before live teleoperation:
 
 1. Complete the current no-action deployment preflight.
-2. Validate the baseline offline policy on the same target and runtime.
+2. Validate the selected policy through the release's supported simulation and
+   non-actuating target-runtime checks. Require offline robot replay only when
+   the current release supports it.
 3. Confirm the selected source, calibration, network, timestamps, and receiving service.
 4. Confirm the resolved profile selects the intended source and processing path.
+   Confirm the selected mode is exposed by the released launcher; model-internal
+   masks may remain experimental even when the model schema contains them.
 5. Prepare the robot in a safe fixture and keep the operator ready to stop it.
 
 Ask for explicit user confirmation immediately before starting any command that
@@ -31,6 +35,9 @@ can send actions or changing robot mode.
 ## Bring up the reference path
 
 1. Resolve and present the exact source and robot-side commands.
+   Verify the official robot controller relinquishes ownership through the
+   supported startup handoff before low-level control begins. Keep its read-only
+   status check separate from the command that releases ownership.
 2. Start the robot-side command only after confirmation.
 3. Connect the selected live source to the resolved service.
 4. Confirm required streams, timestamps, reference validity, and queue readiness.

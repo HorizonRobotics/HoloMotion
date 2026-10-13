@@ -20,6 +20,8 @@ import torch
 
 from typing import Dict, List, Sequence, Any, Optional
 
+from .mujoco_link_adapter import MujocoLinkObsAdapter
+
 
 def get_gravity_orientation(quaternion: np.ndarray) -> np.ndarray:
     """Calculate gravity orientation from quaternion.
@@ -138,8 +140,22 @@ class PolicyObsBuilder:
 
         # Buffers are created lazily after first dimension inference
         self._buffers: Dict[str, _CircularBuffer] = {}
+        self.link_adapter = None
+        if evaluator is not None:
+            link_config = getattr(evaluator, "config", {}).get(
+                "link_observation", {}
+            )
+            if bool(link_config.get("enabled", False)):
+                self.link_adapter = MujocoLinkObsAdapter(
+                    evaluator,
+                    link_config,
+                    evaluator.config.get("link_eval", {}),
+                    self.term_specs,
+                )
 
     def reset(self) -> None:
+        if self.link_adapter is not None:
+            self.link_adapter.reset()
         for buf in self._buffers.values():
             buf._pointer = -1
             buf._num_pushes = 0
@@ -150,6 +166,8 @@ class PolicyObsBuilder:
         name: str,
     ) -> np.ndarray:
         # Prefer evaluator-provided methods; no legacy fallbacks
+        if self.link_adapter is not None and name in self.link_adapter.atomic:
+            return self.link_adapter.atomic[name]
         if self.evaluator is not None:
             meth = getattr(self.evaluator, f"_get_obs_{name}", None)
             if callable(meth):
@@ -162,6 +180,8 @@ class PolicyObsBuilder:
     def build_policy_obs(self) -> np.ndarray:
         """Append one step using evaluator-provided observation terms and return flattened obs."""
         # Compute per-term outputs
+        if self.link_adapter is not None:
+            self.link_adapter.prepare()
         values: Dict[str, np.ndarray] = {}
 
         for spec in self.term_specs:
@@ -209,4 +229,7 @@ class PolicyObsBuilder:
 
         if len(flat_list) == 0:
             return np.zeros(0, dtype=np.float32)
-        return np.concatenate(flat_list, axis=0).astype(np.float32)
+        packed = np.concatenate(flat_list, axis=0).astype(np.float32)
+        if self.link_adapter is not None:
+            self.link_adapter.validate_packed(packed)
+        return packed

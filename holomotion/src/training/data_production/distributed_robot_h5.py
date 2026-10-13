@@ -1,6 +1,6 @@
 """Distributed HoloSMPL-H5 to HoloRetarget robot-H5 production.
 
-This module is intended to run under ``accelerate launch`` on Orchard.  Work is
+This module is intended to run under ``accelerate launch``. Work is
 split at clip granularity because HoloRetarget uses sequence state: previous
 joint positions, quaternion continuity, and sliding ground calibration.
 """
@@ -978,7 +978,6 @@ def _sanitize_run_id(run_id: str | None) -> str:
     value = (
         run_id
         or os.environ.get("TORCHELASTIC_RUN_ID")
-        or os.environ.get("AIDI_JOB_NAME")
         or f"run_{time.strftime('%Y%m%d%H%M%S')}"
     )
     clean = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value)).strip("._-")

@@ -30,6 +30,19 @@ def _declare_value(node, name: str, default: Any) -> Any:
     return node.declare_parameter(name, default).value
 
 
+def motion_reference_horizon(config: Any) -> int:
+    """Require a v2.0 motion model without resolving training-only expressions."""
+    links = config.get("link_observation", {}) if hasattr(config, "get") else {}
+    if links.get("schema_version") != "g1_link_xz6d_v1":
+        raise ValueError(
+            "This deployment supports only HoloMotion v2.0 motion models; "
+            "use the matching v1.4.1 code tag and image for a legacy model"
+        )
+    offsets = links.get("frame_offsets")
+    if offsets is None or len(offsets) == 0:
+        raise ValueError("V2 motion model must define future frame_offsets")
+    return len(offsets)
+
 def _required(raw: dict[str, Any], key: str, path: Path) -> Any:
     if key not in raw:
         raise ValueError(f"Missing required robot config field '{key}' in {path}")
@@ -96,7 +109,7 @@ class DeploymentConfig:
 
     robot_config_path: Path
     reference_source: str = "zmq"
-    reference_zmq_uri: str = "tcp://192.168.124.29:6001"
+    reference_zmq_uri: str = "tcp://127.0.0.1:6001"
     reference_zmq_topic: str = "reference_qpos"
     reference_zmq_mode: str = "connect"
     reference_zmq_conflate: bool = True
@@ -105,6 +118,7 @@ class DeploymentConfig:
     enable_teleop_reference: bool = False
     inference_backend: str = "onnx"
     motion_observation_backend: str = "auto"
+    link_control_mode: str = "Keypoint-5"
     motion_rope_max_seq_len: int = 0
     motion_rope_reset_margin: int = 64
     timing_debug_enabled: bool = False
@@ -121,6 +135,8 @@ class DeploymentConfig:
     reference_telemetry_min_slack_ms: float = 2.0
     reference_telemetry_deadline_pause_sec: float = 5.0
     cpu_affinity_reference_telemetry: str = ""
+    teleop_record_dir: str = ""
+    teleop_record_hz: float = 50.0
 
     @classmethod
     def from_node(cls, node) -> "DeploymentConfig":
@@ -178,6 +194,9 @@ class DeploymentConfig:
                     "motion_observation_backend",
                     cls.motion_observation_backend,
                 )
+            ),
+            link_control_mode=str(
+                _declare_value(node, "link_control_mode", cls.link_control_mode)
             ),
             motion_rope_max_seq_len=int(
                 _declare_value(
@@ -293,6 +312,12 @@ class DeploymentConfig:
                 )
                 or ""
             ),
+            teleop_record_dir=str(
+                _declare_value(node, "teleop_record_dir", cls.teleop_record_dir) or ""
+            ).strip(),
+            teleop_record_hz=float(
+                _declare_value(node, "teleop_record_hz", cls.teleop_record_hz)
+            ),
         )
         config.validate()
         return config
@@ -345,6 +370,10 @@ class DeploymentConfig:
             raise ValueError(
                 "reference_telemetry_deadline_pause_sec must be >= 0"
             )
+        if not np.isfinite(self.teleop_record_hz) or not 0 < self.teleop_record_hz <= 50:
+            raise ValueError("teleop_record_hz must be finite and in (0, 50]")
+        if self.teleop_record_dir and source != "pico_local":
+            raise ValueError("teleop_record_dir requires reference_source=pico_local")
 
     def to_log_dict(self) -> dict[str, Any]:
         return {
@@ -359,6 +388,7 @@ class DeploymentConfig:
             "enable_teleop_reference": self.enable_teleop_reference,
             "inference_backend": self.inference_backend,
             "motion_observation_backend": self.motion_observation_backend,
+            "link_control_mode": self.link_control_mode,
             "motion_rope_max_seq_len": self.motion_rope_max_seq_len,
             "motion_rope_reset_margin": self.motion_rope_reset_margin,
             "timing_debug_enabled": self.timing_debug_enabled,
@@ -381,6 +411,8 @@ class DeploymentConfig:
             "cpu_affinity_reference_telemetry": (
                 self.cpu_affinity_reference_telemetry
             ),
+            "teleop_record_dir": self.teleop_record_dir,
+            "teleop_record_hz": self.teleop_record_hz,
         }
 
 

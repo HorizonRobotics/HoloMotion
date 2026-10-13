@@ -158,6 +158,36 @@ class MirrorFunctions:
 
 class ObservationFunctions:
     @staticmethod
+    def _get_obs_link_command_term(
+        env,
+        name: str,
+        actor: bool = True,
+        ref_motion_command_name: str = "ref_motion",
+    ):
+        command = env.command_manager.get_term(ref_motion_command_name)
+        adapter = getattr(command, "_link_observation_adapter", None)
+        if adapter is None:
+            raise RuntimeError(
+                "link_observation must be enabled for link command terms"
+            )
+        return adapter.get_term(name, actor=actor)
+
+    @staticmethod
+    def _get_obs_link_feedback(
+        env,
+        name: str,
+        actor: bool = True,
+        ref_motion_command_name: str = "ref_motion",
+    ):
+        command = env.command_manager.get_term(ref_motion_command_name)
+        adapter = getattr(command, "_link_observation_adapter", None)
+        if adapter is None:
+            raise RuntimeError(
+                "link_observation must be enabled for shared feedback"
+            )
+        return adapter.get_state(name, actor=actor)
+
+    @staticmethod
     def _get_shared_motion_actor_term(
         env: ManagerBasedRLEnv,
         name: str,

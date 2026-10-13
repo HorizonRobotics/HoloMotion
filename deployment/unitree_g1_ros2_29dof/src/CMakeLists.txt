@@ -60,7 +60,7 @@ ament_python_install_package(humanoid_policy)
 # Install Python scripts as executables
 
 install(PROGRAMS
-  humanoid_policy/policy_node_29dof.py
+  humanoid_policy/policy_node_entrypoint.py
   DESTINATION lib/${PROJECT_NAME}
   RENAME policy_node_29dof
 )

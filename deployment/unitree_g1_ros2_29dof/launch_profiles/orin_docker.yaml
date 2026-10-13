@@ -36,7 +36,8 @@ recording:
 policy:
   # pico_local keeps Pico input, Retarget, Observation and Tracking on Orin.
   reference_source: "pico_local"
-  reference_zmq_uri: "tcp://192.168.124.29:6001"
+  # Set the sender address explicitly when using a remote ZMQ reference source.
+  reference_zmq_uri: "tcp://127.0.0.1:6001"
   reference_zmq_topic: "reference_qpos"
   reference_zmq_mode: "connect"
   reference_zmq_conflate: true
@@ -63,6 +64,9 @@ policy:
   # The deployed legacy motion ONNX predates rope_max_seq_len metadata.
   motion_rope_max_seq_len: 8192
   motion_rope_reset_margin: 64
+  # V2 link motion only; select in velocity mode, then press B to enter motion.
+  # Pelvis-1 | Keypoint-5. Legacy motion ignores this key.
+  link_control_mode: "Keypoint-5"
   timing_debug_enabled: false
   timing_debug_log_interval_sec: 5.0
   timing_debug_log_per_loop: false

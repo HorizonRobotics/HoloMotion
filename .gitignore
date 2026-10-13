@@ -69,6 +69,9 @@ thirdparties/smpl_models/
 
 MUJOCO_LOG.TXT
 
+# Keep transient pre-merge audit reports local.
+**/premerge_audit_*.md
+
 # allow certain files
 !deployment/unitree_g1_ros2/src/models/*.onnx
 !deployment/unitree_g1_ros2/src/motion_data/*.pkl

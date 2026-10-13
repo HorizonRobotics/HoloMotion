@@ -1,28 +1,25 @@
 #include "motor_crc_hg.h"
+#include <cstring>
 
 void get_crc(unitree_hg::msg::LowCmd &msg)
 {
-    LowCmd raw{};
-
-    raw.modePr = msg.mode_pr;
-    raw.modeMachine = msg.mode_machine;
-
-    for (int i = 0; i < 35; i++)
-    {
-        raw.motorCmd[i].mode = msg.motor_cmd[i].mode;
-        raw.motorCmd[i].q = msg.motor_cmd[i].q;
-        raw.motorCmd[i].dq = msg.motor_cmd[i].dq;
-        raw.motorCmd[i].tau = msg.motor_cmd[i].tau;
-        raw.motorCmd[i].Kp = msg.motor_cmd[i].kp;
-        raw.motorCmd[i].Kd = msg.motor_cmd[i].kd;
-
-        raw.motorCmd[i].reserve = msg.motor_cmd[i].reserve;
+    // Encode the official HG wire layout into initialized integer words.
+    // Do not CRC C++ object padding or read float objects through uint32_t*.
+    std::array<uint32_t, 250> words{};
+    words[0] = static_cast<uint32_t>(msg.mode_pr)
+             | (static_cast<uint32_t>(msg.mode_machine) << 8);
+    for (size_t i = 0; i < 35; ++i) {
+        const auto &motor = msg.motor_cmd[i];
+        const size_t base = 1 + i * 7;
+        words[base] = motor.mode;
+        const float values[] = {motor.q, motor.dq, motor.tau, motor.kp, motor.kd};
+        for (size_t j = 0; j < 5; ++j) {
+            std::memcpy(&words[base + 1 + j], &values[j], sizeof(float));
+        }
+        words[base + 6] = motor.reserve;
     }
-
-    memcpy(&raw.reserve[0], &msg.reserve[0], 4);
-
-    raw.crc = crc32_core((uint32_t *)&raw, (sizeof(LowCmd) >> 2) - 1);
-    msg.crc = raw.crc;
+    for (size_t i = 0; i < 4; ++i) words[246 + i] = msg.reserve[i];
+    msg.crc = crc32_core(words.data(), static_cast<uint32_t>(words.size()));
 }
 
 uint32_t crc32_core(uint32_t *ptr, uint32_t len)
