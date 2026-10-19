@@ -22,6 +22,30 @@ Read `holosmpl/README.md` and `docs/motion_retargeting.md` before choosing comma
 
 Keep raw user data outside Git. Do not commit motion datasets, generated HDF5/NPZ files, licensed body models, or personal paths.
 
+## Existing robot motion and paired interactions
+
+Discover task-specific adapters in the selected project's documentation before
+forcing data through the generic human-motion pipeline. Already-retargeted robot
+motion should preserve its named joint/root contract and use the target
+evaluator's kinematics. See the [boxing data workflow](../../../holoboxing/data/README.md)
+for its supported sources and current commands.
+
+Before claiming source coverage or reporting selection totals, verify the full
+upstream inventory through exhausted pagination or a verified pinned catalog.
+A folder preview or a successful download does not establish completeness.
+Keep source-specific annotation, duplicate and duration rules in the owning
+adapter, and recompute results from the actual files.
+
+For paired motion, preserve a shared coordinate frame and fixed origin.
+When height scaling is required, derive it from the original human positions
+and neutral body heights; do not scale an already-scaled robot displacement.
+Validate relative positions across the sequence, including shared translation.
+Retain each person's shape-specific skeleton where the source supplies shape.
+
+Keep official splits and augmentation groups intact. Exercise the actual target
+training reader and its kinematic reconstruction, including split-specific
+manifests; opening an HDF5 file alone does not establish training compatibility.
+
 ## Convert and validate
 
 For a registered source, prefer the end-to-end entry point:

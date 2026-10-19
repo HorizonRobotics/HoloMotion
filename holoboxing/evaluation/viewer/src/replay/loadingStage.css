@@ -1,0 +1,72 @@
+.hb-loading-stage {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  width: min(360px, 85%);
+  margin: auto;
+  text-align: center;
+  font: 12px/1.6 system-ui, sans-serif;
+  color: #92a4b9;
+}
+.hb-loading-stage strong {
+  color: #c3d4e2;
+  font-size: 14px;
+  font-weight: 500;
+}
+.hb-loading-stage progress {
+  appearance: none;
+  display: block;
+  width: 100%;
+  height: 6px;
+  border: 0;
+  border-radius: 5px;
+  overflow: hidden;
+  background: #273647;
+  accent-color: #adddcb;
+}
+.hb-loading-stage progress:indeterminate {
+  background: linear-gradient(
+    90deg,
+    #273647 0%,
+    #273647 30%,
+    #adddcb 50%,
+    #273647 70%,
+    #273647 100%
+  );
+  background-size: 220% 100%;
+  animation: hb-stage-progress 1.6s ease-in-out infinite;
+}
+.hb-loading-stage progress::-webkit-progress-bar {
+  background: transparent;
+}
+.hb-loading-stage progress::-moz-progress-bar {
+  background: #adddcb;
+}
+.hb-loading-stage small {
+  font-size: 11px;
+  color: #8296ad;
+}
+.hb-scene-loading {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #111823;
+}
+@keyframes hb-stage-progress {
+  0% {
+    background-position: 100% 0;
+  }
+  100% {
+    background-position: -100% 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .hb-loading-stage progress:indeterminate {
+    animation: none;
+  }
+}

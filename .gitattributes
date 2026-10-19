@@ -23,3 +23,6 @@ assets/media/holomotion_roadmap.jpg -filter -diff -merge -text
 assets/media/qr_codes.jpg -filter -diff -merge -text
 assets/media/holosmpl_capture_sources.jpg -filter -diff -merge -text
 assets/media/g1_modular_configurations.jpg -filter -diff -merge -text
+
+# Preserve third-party notices exactly as distributed.
+holoboxing/viewer/notices/* -whitespace

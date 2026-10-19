@@ -1,0 +1,22 @@
+{
+  "name": "@holomotion/holoboxing-viewer",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "test:browser": "node tests/replayAudio.browser.mjs && node tests/exportMp4.browser.mjs"
+  },
+  "dependencies": {
+    "@mujoco/mujoco": "3.14.0",
+    "h5wasm": "0.10.3",
+    "mediabunny": "1.61.4",
+    "react": "16.14.0",
+    "react-dom": "16.14.0",
+    "three": "0.180.0"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.11",
+    "playwright-core": "1.55.1"
+  }
+}

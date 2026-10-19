@@ -1,0 +1,526 @@
+{
+  "schema_version": 1,
+  "name": "robostriker-preview-boxing-20251226",
+  "upstream_repository": "https://github.com/yinkangning0124/RoboStriker-Preview",
+  "upstream_revision": "52f54137770ff632391dd091e973ceb098ba3f98",
+  "folder_url": "https://drive.google.com/drive/folders/1v2oOB4LaF-yvxH-V9_-2psPvKUg5gAEO",
+  "format": "robostriker_g1_motion_npz",
+  "files": [
+    {
+      "path": "boxing_20251226/kangning-001.npz",
+      "google_drive_id": "1CpvGj6j1UpDBo5dwpni5AQn92W_hrPSO",
+      "bytes": 2035714,
+      "sha256": "b53df2901e3973888b5f6e4747d24037960f8f13761bc35c68b67792badf9f4a"
+    },
+    {
+      "path": "boxing_20251226/kangning-001_mirror.npz",
+      "google_drive_id": "1ITyBDGv0bmJieHMKTqvK5RNRbG0QD4pV",
+      "bytes": 2035714,
+      "sha256": "cbac8f6fb5a884d88383274cebf685dc9604a00ea6aeeff0b7d288c0a8c35b6b"
+    },
+    {
+      "path": "boxing_20251226/kangning-002.npz",
+      "google_drive_id": "1fRuNsAYyvJxSfFbEiaHG4siXhaldstrH",
+      "bytes": 1182722,
+      "sha256": "cb0d97adb60fe3e381948fbf347ec7e7ba6ac2f69867971775061c05e08d2c63"
+    },
+    {
+      "path": "boxing_20251226/kangning-002_mirror.npz",
+      "google_drive_id": "12pgCPLx8oM5an2wlxTyLMj4KbgunTFv1",
+      "bytes": 1182722,
+      "sha256": "1a4999feb38082cff95a02e7aad411d35f9fac431984189df89e6cde2c798e82"
+    },
+    {
+      "path": "boxing_20251226/kangning-003.npz",
+      "google_drive_id": "1QjPbwVqMOqwObF1efPSpP8kS-_JqqwE4",
+      "bytes": 990978,
+      "sha256": "d1eb559c69fe203096ece6cfa1256876b2b68b38d9e3a44099c8b7d86df91988"
+    },
+    {
+      "path": "boxing_20251226/kangning-003_mirror.npz",
+      "google_drive_id": "11TPVIuWY_Qm-h-zFq6fWjRal9PJiZEAX",
+      "bytes": 990978,
+      "sha256": "6ce85fa9a8180759b8a31440e7c2cd2510d7dc9825e2178b7bc458123b19cc85"
+    },
+    {
+      "path": "boxing_20251226/kangning-004.npz",
+      "google_drive_id": "1sSapPECKAzxMdobDEDq5PgEmrTr3MsbW",
+      "bytes": 1358338,
+      "sha256": "7297801f84ac3f33c50ef7b5dd28f9c97dcd59ac001214087ed2747d4e182b4c"
+    },
+    {
+      "path": "boxing_20251226/kangning-004_mirror.npz",
+      "google_drive_id": "1ib4dm77isqsOg2Trhmlt2Wsg-prnIatr",
+      "bytes": 1358338,
+      "sha256": "c4c753f14cca04c6bb6b446605862f4f36ceabbfc0c646458fb19e5e61f7db36"
+    },
+    {
+      "path": "boxing_20251226/kangning-005.npz",
+      "google_drive_id": "1uGDxwv07uHsV3i9HCgErx-4BqaTZcMJW",
+      "bytes": 1533954,
+      "sha256": "41e9838a94f984f8e2fb499c1ac0b61464096e4c5e2e68a86e6ee9f21d1b60fe"
+    },
+    {
+      "path": "boxing_20251226/kangning-005_mirror.npz",
+      "google_drive_id": "1ZeWibxnv1ptAnKnMdKbZ1Zy1T7zv6uKl",
+      "bytes": 1533954,
+      "sha256": "bf3cc3f119defab70aea91e53644de03f9fab3f17c529a5f3492e225ada73fe2"
+    },
+    {
+      "path": "boxing_20251226/kangning-006.npz",
+      "google_drive_id": "1V-jp2Dp-6L79_2yHMbqtmTrreEy5KBD4",
+      "bytes": 1487362,
+      "sha256": "e7d9ef4f1a2a5cef75826b2c18e85e44b9710441d94ec67e300aa8312e97866f"
+    },
+    {
+      "path": "boxing_20251226/kangning-006_mirror.npz",
+      "google_drive_id": "1QfQWkUmJaHQ6AhV_TIXxl0-5jejuslKm",
+      "bytes": 1487362,
+      "sha256": "43554b33840300a9bb3b33ad8f01ad95d282fb763b25969db072b576b2b44ee1"
+    },
+    {
+      "path": "boxing_20251226/kangning-007.npz",
+      "google_drive_id": "11Z4SUHQ9H-vwpDjxYcYgOtHJGNg83hWT",
+      "bytes": 1403138,
+      "sha256": "de5f7b8d337343243cd7110f43308881f50ee657a93a973522ac66f7a9631736"
+    },
+    {
+      "path": "boxing_20251226/kangning-007_mirror.npz",
+      "google_drive_id": "1v2N98ctJcfzLITFcuC-5tSBjXnFy8xXO",
+      "bytes": 1403138,
+      "sha256": "d379ed267f77603c7adadd90f01cb821e961a2c1d1550bf509f1935a8de7bcf1"
+    },
+    {
+      "path": "boxing_20251226/kangning-008.npz",
+      "google_drive_id": "18NAtr7rvXYSkXZ2Qg0HkGDs_jlUirNh9",
+      "bytes": 2768642,
+      "sha256": "80dc0163bbd89be8baba7adda8d98042a62cecec74b61204e9cd11057f4876a2"
+    },
+    {
+      "path": "boxing_20251226/kangning-008_mirror.npz",
+      "google_drive_id": "1ZO_ArCvlahTvXsaWsoBdl8OoCjzdnrLC",
+      "bytes": 2768642,
+      "sha256": "7fec66fab0e009e06203f155e68b37cecec3edc01aee2d58870abf5fbf1c8339"
+    },
+    {
+      "path": "boxing_20251226/kangning-010.npz",
+      "google_drive_id": "11GWqZLDkmWAJhPXjMCelxZ6fP-VAz996",
+      "bytes": 1614594,
+      "sha256": "e3457d034430808c9e6f58c4b0131e872374b2139fcb65219cd6adf9ccc65eab"
+    },
+    {
+      "path": "boxing_20251226/kangning-010_mirror.npz",
+      "google_drive_id": "1mGnICzqK9--4ivA3l7gUY5OD_ayUMjrJ",
+      "bytes": 1614594,
+      "sha256": "738f1e0bab19816242da331e37538b84d9662adbc24ca5b95a6052dba1e31833"
+    },
+    {
+      "path": "boxing_20251226/kangning-011.npz",
+      "google_drive_id": "1mXvL1RDyW4QdtVTYKI3uCkrA5crHaT5o",
+      "bytes": 1462274,
+      "sha256": "0176680a22dcc2e3cc472143009c9bbee07ee94c9ed4c5fa19a9f7f56297e5e4"
+    },
+    {
+      "path": "boxing_20251226/kangning-011_mirror.npz",
+      "google_drive_id": "1DasFi3Jo6a-iNbcZt9bsGj1hEMtZM3uL",
+      "bytes": 1462274,
+      "sha256": "9cef9d3fbd3cee44de97984a2173edfa793c7a0fbda52e9506715fa9048bd99e"
+    },
+    {
+      "path": "boxing_20251226/kangning-012.npz",
+      "google_drive_id": "19oP-v-pRgmQtFmTaJFA4HcsLyC6Pc_Jf",
+      "bytes": 2653954,
+      "sha256": "6b8b187fe81095d1f9fd902383c1236dde30c23342d543ec3c8fbc1c82550a72"
+    },
+    {
+      "path": "boxing_20251226/kangning-012_mirror.npz",
+      "google_drive_id": "1lop616uIKQFLK7KOgmvGtWIuiPJ8MqyC",
+      "bytes": 2653954,
+      "sha256": "84c61915aad04bff83306741b4a4f2809155942e90ab23acacebec9a32836196"
+    },
+    {
+      "path": "boxing_20251226/kangning-013.npz",
+      "google_drive_id": "115xoRVU4Op3dYCvbblRdHLkWSh66Sh9G",
+      "bytes": 1465858,
+      "sha256": "6377847cadf4df765a485ef18b0a8fc81362c518961e47dd66fec579d5d982da"
+    },
+    {
+      "path": "boxing_20251226/kangning-013_mirror.npz",
+      "google_drive_id": "1iixs0pBCJNpEhXzoX4YdF2NeFeCVNDHl",
+      "bytes": 1465858,
+      "sha256": "135fb31a190c152e4879d1e1c93b283bb3a097703733d4e84afc4afc592c0c01"
+    },
+    {
+      "path": "boxing_20251226/kangning-014.npz",
+      "google_drive_id": "1vs65up3ZizQeP-lXkXsJKhAdXs9DSZbP",
+      "bytes": 1546498,
+      "sha256": "e190d9e53365e1888cbd27f0116eae6d88f1063ecbdef68fdce0aef65951fca5"
+    },
+    {
+      "path": "boxing_20251226/kangning-014_mirror.npz",
+      "google_drive_id": "1L0aZ5CEk0vGD8eztlFM0V27v23AXwgx-",
+      "bytes": 1546498,
+      "sha256": "fe44e4edc68ea2294177f898fc921b357cc3aea4f2916a317c9ff049555f7bba"
+    },
+    {
+      "path": "boxing_20251226/kangning-015.npz",
+      "google_drive_id": "1iKNIrnGtL7ptrSp5KmK-GMFsERJTrGCP",
+      "bytes": 1740034,
+      "sha256": "2c460d97699987410fb70a179646880fac29a2337126925dac4f9163f9083da9"
+    },
+    {
+      "path": "boxing_20251226/kangning-015_mirror.npz",
+      "google_drive_id": "1xA6Ccj6K8Lw9AbMcdRFjMtnh2UDx_-_-",
+      "bytes": 1740034,
+      "sha256": "8daa1d6c90612a600a9ee38eea00be7082c9d2bbbb6dd56eb3e7f61cfe18de84"
+    },
+    {
+      "path": "boxing_20251226/kangning-016.npz",
+      "google_drive_id": "1ezi__6iqqH3FJHqMG25SlWbDplNVXotk",
+      "bytes": 1904898,
+      "sha256": "b2001c31122eede67fc25db396701e463226ee94b0e965f03f7e911b5e54d392"
+    },
+    {
+      "path": "boxing_20251226/kangning-016_mirror.npz",
+      "google_drive_id": "1Masp20hk4ltotFx1NLjEfWglaUkcUkwK",
+      "bytes": 1904898,
+      "sha256": "81cb00bca3820cfa4b19e9a0baea0744f76e22a405b8861cb16d70d839e87c4f"
+    },
+    {
+      "path": "boxing_20251226/kangning-017.npz",
+      "google_drive_id": "1qxwsr74FbkoriKC7mxodEwV3H--ob0wC",
+      "bytes": 1340418,
+      "sha256": "ffc95b15932e0cd528a11b6b0266fb66a1fdd6e77d2a332906bb9eb1e98dcdb7"
+    },
+    {
+      "path": "boxing_20251226/kangning-017_mirror.npz",
+      "google_drive_id": "1cn7v6tNpzPbxNGo7van6AjYFmqucC-8T",
+      "bytes": 1340418,
+      "sha256": "bed13c8ff15b1ac9cd51f494e50e03fb3f990856776e556cd23cf67723ef0061"
+    },
+    {
+      "path": "boxing_20251226/kangning-018.npz",
+      "google_drive_id": "1Yto8CsvxQeujN1TI9kGMQJwCZXTMxWBY",
+      "bytes": 1085954,
+      "sha256": "2a0d86f62230fcd4d39f8da9e6d3a216403047070e9235dfbb1617ab4b4febce"
+    },
+    {
+      "path": "boxing_20251226/kangning-018_mirror.npz",
+      "google_drive_id": "1KNiGfo1pZaJA0DQ9pQfRuQnItzMDZ140",
+      "bytes": 1085954,
+      "sha256": "2c5791400e456b08ad81fefb14b499b7eca7f4514d33943ba3ff8c66465d1b74"
+    },
+    {
+      "path": "boxing_20251226/kangning-019.npz",
+      "google_drive_id": "1mqP-jBuH562nnVjuqBHvS1dzkS04Lt95",
+      "bytes": 994562,
+      "sha256": "8b3dd5c40370c20db8d6ea7ef53589d385a3fa48dbc35459376ca2fe5f150c2d"
+    },
+    {
+      "path": "boxing_20251226/kangning-019_mirror.npz",
+      "google_drive_id": "1_uIgwjkJf6TrFzn1motDkGKLVKe0YQGZ",
+      "bytes": 994562,
+      "sha256": "c33cf7b4169d7b8693374983813bcd751bf3c6d86882be22dc03c59f421bfc33"
+    },
+    {
+      "path": "boxing_20251226/kangning-021.npz",
+      "google_drive_id": "1WKZCzfog2c_9WTvD_AJJ5JuSgLIvlhFc",
+      "bytes": 1071618,
+      "sha256": "c9d84249cad4649c9e34bd53b21f9f9c631912b243ca0fb13deba593dcd0b99e"
+    },
+    {
+      "path": "boxing_20251226/kangning-021_mirror.npz",
+      "google_drive_id": "1mud8nfXQLWlI3HncFDtuzN3z4nMIQ9Z0",
+      "bytes": 1071618,
+      "sha256": "c4a4446976908f343c5e086423e7e2c85b4431ffe8c46ba94e594ed7397d3b01"
+    },
+    {
+      "path": "boxing_20251226/kangning-022.npz",
+      "google_drive_id": "1K1wVwsT0cYbxco_YcV5WzwUzjGnsB21x",
+      "bytes": 2320642,
+      "sha256": "b4ab782bdd5d1be1efd067a801c5d1bb2afa2b80b450a41ad2edc8450e825ec0"
+    },
+    {
+      "path": "boxing_20251226/kangning-022_mirror.npz",
+      "google_drive_id": "1EwqA2gCYdikWpvOIf4CDIo3YMSuJ0VSF",
+      "bytes": 2320642,
+      "sha256": "14e896c22ff72fb6d1080e7d43ab8b911fbff63d5cb3ad1f100c13d747bd6b87"
+    },
+    {
+      "path": "boxing_20251226/kangning-023.npz",
+      "google_drive_id": "13cX98auR5tUKuCKLSKarBhWjLTQmGdnS",
+      "bytes": 1854722,
+      "sha256": "3f456f8d761685e5733cd6d1d379c9c638134b702cfd1c7007b6cf1b5945cae8"
+    },
+    {
+      "path": "boxing_20251226/kangning-023_mirror.npz",
+      "google_drive_id": "1rBRxEI6awX2WtR76yR6YfwO4_3bRyfoY",
+      "bytes": 1854722,
+      "sha256": "13928d92e1eea15c3fb8c49ccfa220918fcaed73de56ff6ef91ac85be0de49fe"
+    },
+    {
+      "path": "boxing_20251226/kangning-025.npz",
+      "google_drive_id": "1RAil9TfyDljdQ7d4sEptgkfLsoqR5JmV",
+      "bytes": 2383362,
+      "sha256": "52a5e01a15a8a552f986aea1a7a573cdc0adb7de196f6683c864a9410d589b16"
+    },
+    {
+      "path": "boxing_20251226/kangning-025_mirror.npz",
+      "google_drive_id": "1eEOaLss123431UDS2MbG1mrN93oOGWkg",
+      "bytes": 2383362,
+      "sha256": "1e917dfa89590bc03d18757c9da150971d6efdfc73de2695ad89e79d8af5d924"
+    },
+    {
+      "path": "boxing_20251226/kangning-026.npz",
+      "google_drive_id": "1Bx2I4sGivbW-y9Q2n0XCL3qx1txoAzP3",
+      "bytes": 2429954,
+      "sha256": "7d069b376c32e46c90fe7ce83b7cd37d7f0d4ff187d8dc57e7a6dfc076cbee3f"
+    },
+    {
+      "path": "boxing_20251226/kangning-026_mirror.npz",
+      "google_drive_id": "1I27TYLexajNcTx_aHlMfaURzDeVM-xwq",
+      "bytes": 2429954,
+      "sha256": "e3d7b7672d08b613cd5dd3c398d42dbcd9579d487a7d2fe672d7036aa86dffc7"
+    },
+    {
+      "path": "boxing_20251226/kangning-027.npz",
+      "google_drive_id": "1W9APeSKP-1kURRSH8j09iirwUv9gLx9-",
+      "bytes": 2612738,
+      "sha256": "61f01c485c252339e3f1782e91ee0dafe0422c8fc84f1f32cc1d62df2d06d852"
+    },
+    {
+      "path": "boxing_20251226/kangning-027_mirror.npz",
+      "google_drive_id": "1CKrVPbMWWrNVVmlo2o9Pnwr5Lgmu2DVX",
+      "bytes": 2612738,
+      "sha256": "b6d9873ac8932ff9baa891696f672c287513f43b16d078efb6fc4d2c6e4d2e9b"
+    },
+    {
+      "path": "boxing_20251226/kangning-028.npz",
+      "google_drive_id": "1qzmCRZtwfLJ4WWyr30gu1p1UF4c8kjB1",
+      "bytes": 2016002,
+      "sha256": "d0d261ed7a493929f3873279ad65615fd802d75ef7ce1d35cc2d35ca1907fb49"
+    },
+    {
+      "path": "boxing_20251226/kangning-028_mirror.npz",
+      "google_drive_id": "1qRit3NUiHO6o3YU1TptteN0uca-bJzk5",
+      "bytes": 2016002,
+      "sha256": "6d6e228e2b09a2fcdab0355ecf79787067244a63220ba7177708a3da2d58366d"
+    },
+    {
+      "path": "boxing_20251226/kangning-029.npz",
+      "google_drive_id": "1NNMBtT-IZAZushk9cMULkaNyYeub0scj",
+      "bytes": 1335042,
+      "sha256": "32bf711596801af92e3b7dc5aebca494d63702a8e4a0a00ba2fc2bcffa438bc7"
+    },
+    {
+      "path": "boxing_20251226/kangning-029_mirror.npz",
+      "google_drive_id": "1pqiJKiM5omtT9PqU2Uj9uYAm_enW78YZ",
+      "bytes": 1335042,
+      "sha256": "57f8f46747bc0e84de888b196708c29f39eef5e66fb9ed1eaa8618c92b869b92"
+    },
+    {
+      "path": "boxing_20251226/kangning-030.npz",
+      "google_drive_id": "1CbFEolQLx7FYPKEyP6QNLwBgN9GfdUzC",
+      "bytes": 1295618,
+      "sha256": "3ff411354380114007544fc24b59a86393c85da000ec44ec73abba377f94a3a0"
+    },
+    {
+      "path": "boxing_20251226/kangning-030_mirror.npz",
+      "google_drive_id": "1ZY3lIn68WezuK5C2fSxTQWBakwuZwyc3",
+      "bytes": 1295618,
+      "sha256": "6ad5eabe0dc20b8fedc5f4b7028290639b3f82d6de29a4ae96268b2b17cb0046"
+    },
+    {
+      "path": "boxing_20251226/kangning-031.npz",
+      "google_drive_id": "1afZROCaPXBlXgraO7UHieB_Duj6FZUf_",
+      "bytes": 1304578,
+      "sha256": "b62f4e8e683a931b1f2100a8d4e54ec37aecc9687a9d3f21fb5459b53e666109"
+    },
+    {
+      "path": "boxing_20251226/kangning-031_mirror.npz",
+      "google_drive_id": "1XtbKha8z7dla-FjVcENpGJ-9hg7A3ejM",
+      "bytes": 1304578,
+      "sha256": "5c08776f2eedb5a483c9b9ec1d585d0e2b5684414ead08b9194b84787200e14f"
+    },
+    {
+      "path": "boxing_20251226/kangning-032.npz",
+      "google_drive_id": "1ewua-q98t5k-DY3hW-u37PG0UzVyBorV",
+      "bytes": 1363714,
+      "sha256": "a1e898b339c7286f262e38912863715f28004ac8f537ee3d218f786fa6a0447a"
+    },
+    {
+      "path": "boxing_20251226/kangning-032_mirror.npz",
+      "google_drive_id": "1JttzS-P51XBETnwPdkzTSf1Qb_XW4Ga2",
+      "bytes": 1363714,
+      "sha256": "a2efa507cf2b299ec46f25f21ac530f9308631cf05374c28a88d023b3667ff7e"
+    },
+    {
+      "path": "boxing_20251226/kangning-033.npz",
+      "google_drive_id": "1A5wL0_kky8flDednCh5krsC9tNpflGsm",
+      "bytes": 1241858,
+      "sha256": "e817b7c901814c738759e37eab9c2a6b0062ce4ecaff12a399fda50079358016"
+    },
+    {
+      "path": "boxing_20251226/kangning-033_mirror.npz",
+      "google_drive_id": "1RUaqKy3q01QjAHVAKUj-NgXy8opx-gq4",
+      "bytes": 1241858,
+      "sha256": "977e52906f95d821bc81f42f978ead4b99cc66f887a087439bda155857ae73de"
+    },
+    {
+      "path": "boxing_20251226/kangning-034.npz",
+      "google_drive_id": "1YR44TcoM8SN6uwaYto0Ewbh494nK3_Vo",
+      "bytes": 1331458,
+      "sha256": "0ae348824831d42aca9976987137ef887fe2545ca64a6bc53c8edbabce5a7fd2"
+    },
+    {
+      "path": "boxing_20251226/kangning-034_mirror.npz",
+      "google_drive_id": "15h9yPw8P-vb3PcinG9ZRvEfcv8fDXhve",
+      "bytes": 1331458,
+      "sha256": "75e1a8b6e4aa430553a32f47053f022db011097281ad5a75fe9b5b13fce10b35"
+    },
+    {
+      "path": "boxing_20251226/kangning-035.npz",
+      "google_drive_id": "1M6aYYgVUt6PN3fT6Ag38FK_k0pq3Hbzc",
+      "bytes": 2412034,
+      "sha256": "9953bc9003bb27a25aaaef2d2bc19ef2ce7dc342273d7453306207ff2f70a369"
+    },
+    {
+      "path": "boxing_20251226/kangning-035_mirror.npz",
+      "google_drive_id": "1DHPBNzxqP93O2UmO5IAihV2XgjoGRgQu",
+      "bytes": 2412034,
+      "sha256": "9d3fcae1c68387fecd7b68f4049ed9da8d27d53d7f512a4b29c8f71fa80c0cbe"
+    },
+    {
+      "path": "boxing_20251226/kangning-036.npz",
+      "google_drive_id": "1frKv5zIcNGCMMISOCFdGAzT06a4nCFNN",
+      "bytes": 2213122,
+      "sha256": "23acb872979ed2e156e7d59aa4e054664d3ef6b54e4701e649b05264fcea120c"
+    },
+    {
+      "path": "boxing_20251226/kangning-036_mirror.npz",
+      "google_drive_id": "1M0hR1PPQEajeBSNEF01GZbavJ-T-CQR7",
+      "bytes": 2213122,
+      "sha256": "a7dc8a347090577f506b4bf381e13c8f556e65de5181bbf1e975cceddb6721ae"
+    },
+    {
+      "path": "boxing_20251226/kangning-037.npz",
+      "google_drive_id": "1lDQe4L7MbhnrU0mDKKiay8Xj-5_BRQET",
+      "bytes": 2541058,
+      "sha256": "5fb08bf087e8acece4342f2739c06b1c20912ce6e1b3494f02aabcfa40d0301c"
+    },
+    {
+      "path": "boxing_20251226/kangning-037_mirror.npz",
+      "google_drive_id": "1S-cb2mLeiPl-nwFYgaoNTyUsZpxY8coq",
+      "bytes": 2541058,
+      "sha256": "5ae82251ac81314e7e90190d8417ef3f28afca6c8cb1ad52bf9efb631e12bfeb"
+    },
+    {
+      "path": "boxing_20251226/kangning-038.npz",
+      "google_drive_id": "1nlCuOrB26Ycf0VM91g4voveRHLgde8-m",
+      "bytes": 1426434,
+      "sha256": "2ca4cc12ab2ed8516d607d02785269359b32a1d202f9a1065850c8cb6366bc06"
+    },
+    {
+      "path": "boxing_20251226/kangning-038_mirror.npz",
+      "google_drive_id": "1B6zEMRWHJwDCHTshIg9QxCOf_efsYTm6",
+      "bytes": 1426434,
+      "sha256": "22c550e1573103d27fcb54578c90eb4696430c9a8404c16bfd4a268fdc1f09f5"
+    },
+    {
+      "path": "boxing_20251226/kangning-039.npz",
+      "google_drive_id": "1EzTNBL0tFE-mVvtqEsjZPutRwgoH_5xX",
+      "bytes": 1480194,
+      "sha256": "ee5d3c89e285d70f68c23a4e43361885eb20b70e491876bd3d99a8e5082f00a3"
+    },
+    {
+      "path": "boxing_20251226/kangning-039_mirror.npz",
+      "google_drive_id": "15B9uG9C-3JdZ7t0DzCOPStGmjcJ-JjdO",
+      "bytes": 1480194,
+      "sha256": "595e906589af08883ccf1ae0b52d17e85855c5547f7c022b1658e244611b7187"
+    },
+    {
+      "path": "boxing_20251226/kangning-040.npz",
+      "google_drive_id": "1kWMRTnwB5-tnVB4DO8Q0BacqtcNRCARF",
+      "bytes": 2093058,
+      "sha256": "910ce1838706234a444fb608b894538ec908cbd64d1ca7d2d6f1671d03cba2bd"
+    },
+    {
+      "path": "boxing_20251226/kangning-040_mirror.npz",
+      "google_drive_id": "1oJUBqXOnGAL2IMh5Im0zOcTfWryl8SGM",
+      "bytes": 2093058,
+      "sha256": "7a6b68da54eb48c36b0fd4a5ba3057a9d41d3f6cfdbb25b424f2ff33e26de9a6"
+    },
+    {
+      "path": "boxing_20251226/kangning-041.npz",
+      "google_drive_id": "1rP8QbI8HoaYG9XanEgR9kcZAAa1FsISx",
+      "bytes": 2286594,
+      "sha256": "1f4f198b20f483266f1ab364da64641c853977b41ee599ac845313452cd32ccf"
+    },
+    {
+      "path": "boxing_20251226/kangning-041_mirror.npz",
+      "google_drive_id": "1mb3jmirYylAASbZC0HRneB5_n2weYrWQ",
+      "bytes": 2286594,
+      "sha256": "5aba573920e0f79e0aa04c526f8e0586cc4dffaa20e4c7a906359dee67ddb546"
+    },
+    {
+      "path": "boxing_20251226/kangning-042.npz",
+      "google_drive_id": "1AEmT7Y-DaNeFOqpAAYZKKjkyYMSSnFhL",
+      "bytes": 2720258,
+      "sha256": "6b92fcaaf392efe40d3f85d17971f42565f62399d0d5b8da472fce4d757a7a8a"
+    },
+    {
+      "path": "boxing_20251226/kangning-042_mirror.npz",
+      "google_drive_id": "1VKl-Zu1k3jNghZ6nH70aZsJ8zAXAR_MI",
+      "bytes": 2720258,
+      "sha256": "6516592882efcc20bfce5c2ddebc88bded94b097744ac60a9f9b9218028f4238"
+    },
+    {
+      "path": "boxing_20251226/kangning-043.npz",
+      "google_drive_id": "1IvzzN75tCjjody64B_kZ7QVJpiwZB9cC",
+      "bytes": 3123458,
+      "sha256": "cfee2d46b7a3b20f0227f4b486e8067f5410c1d444e11686da0192f69f546011"
+    },
+    {
+      "path": "boxing_20251226/kangning-043_mirror.npz",
+      "google_drive_id": "1SZrXsfhuR9xzFKmtSxowN_ATJMdrelPs",
+      "bytes": 3123458,
+      "sha256": "39a12824936a827027483673dc903a52f51cddfcd20f9ad42f41818040ebee30"
+    },
+    {
+      "path": "boxing_20251226/kangning-044.npz",
+      "google_drive_id": "1NMjr1kXZ5pD0k3gZCIt4I5Y7hmsyzcIt",
+      "bytes": 2442498,
+      "sha256": "f94dc4228f55574ffbc9115ee6e26f17776553e97afc074137c18a581d828570"
+    },
+    {
+      "path": "boxing_20251226/kangning-044_mirror.npz",
+      "google_drive_id": "1dqujv06Gz-Y177WuDgQr004VghsxTFvk",
+      "bytes": 2442498,
+      "sha256": "8c0fa83a2f74e2a51abb68b490806df442f2f8ed43b6da28ffc98cb6beb3acfa"
+    },
+    {
+      "path": "boxing_20251226/kangning-045.npz",
+      "google_drive_id": "1js9gXAik9vmgn0GYf6BY-vOTlvtbkhOH",
+      "bytes": 2644994,
+      "sha256": "cb902b674f54caed1a4745a9b6f46c198592cff181bddb6e3c037adce2cf4267"
+    },
+    {
+      "path": "boxing_20251226/kangning-045_mirror.npz",
+      "google_drive_id": "1iPi7WKD_-JlSoMbqNpzIjfudK3zi9yrV",
+      "bytes": 2644994,
+      "sha256": "dc6dca79cab5282c445961ff559fe27e5423f9f0320a26a22f66ee1b8123a285"
+    },
+    {
+      "path": "boxing_20251226/kangning-046.npz",
+      "google_drive_id": "1Qp_47oYLv8dBst7xYmzRf-NX3_WP-4oY",
+      "bytes": 2689794,
+      "sha256": "48aab1fb4a0b9fa6064206bbb6507c0b780f74c866594a9606abacff6626907c"
+    },
+    {
+      "path": "boxing_20251226/kangning-046_mirror.npz",
+      "google_drive_id": "1vHe93RBt4hiqxl6UJbnB7EOLVvQPQA56",
+      "bytes": 2689794,
+      "sha256": "16aeef91611453486922ce319e4afa38240f4799c847e087352394af1fe41c8c"
+    }
+  ]
+}

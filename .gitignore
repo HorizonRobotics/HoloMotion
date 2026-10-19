@@ -25,6 +25,8 @@ log/
 **.LOG
 
 # ignore large files
+!holoboxing/data/
+!holoboxing/data/**
 *.log
 *.pkl
 *.pt
@@ -72,6 +74,9 @@ MUJOCO_LOG.TXT
 # Keep transient pre-merge audit reports local.
 **/premerge_audit_*.md
 
+# Observation graphs are derived and verified during the evaluation image build.
+/holoboxing/evaluation/runtime/compiled/
+
 # allow certain files
 !deployment/unitree_g1_ros2/src/models/*.onnx
 !deployment/unitree_g1_ros2/src/motion_data/*.pkl
@@ -85,3 +90,7 @@ MUJOCO_LOG.TXT
 # macOS system files
 .DS_Store
 **/.DS_Store
+
+# Generated browser dependencies and build output.
+/holoboxing/evaluation/viewer/node_modules
+/holoboxing/evaluation/viewer/dist/

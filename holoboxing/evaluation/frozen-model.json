@@ -1,0 +1,22 @@
+{
+  "repository": "HorizonRobotics/HoloMotion_models",
+  "revision": "e3c90dd1f7483d02d3b4d2e5fb3a359c6ff9c67a",
+  "subdirectory": "HoloMotion_motion_tracking_model_v2.0.0",
+  "version": "2.0_link_10500",
+  "model": "exported/model_10500.onnx",
+  "license_review": "See the published model card and repository license before redistribution.",
+  "files": {
+    "config.yaml": {
+      "bytes": 24553,
+      "sha256": "e8ad79d65bbe9fa030927dd7f32ef777e6ad8fea8ee825310920f438255f4e10"
+    },
+    "exported/model_10500.onnx": {
+      "bytes": 1647887681,
+      "sha256": "b0681976135eed572d1d20aefc52ec65c149bdc636f2594a6436fa7136a3fc86"
+    },
+    "link_command_modes.json": {
+      "bytes": 2650,
+      "sha256": "46053b95428cd8ce5df8403a4e49bd7353442d049b95f656538f047db2ad17ce"
+    }
+  }
+}

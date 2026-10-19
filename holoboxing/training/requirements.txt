@@ -1,0 +1,12 @@
+numpy
+scipy
+trimesh
+torch==2.9.1
+omegaconf
+loguru
+pytorch-kinematics
+mujoco==3.5.0
+mujoco-warp==3.5.0
+warp-lang==1.11.0
+onnx==1.18.0
+onnxruntime-gpu==1.22.0

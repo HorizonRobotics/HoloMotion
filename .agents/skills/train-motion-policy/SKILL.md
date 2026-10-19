@@ -43,6 +43,40 @@ composer.
 
 ## Evaluate and export
 
+For boxing, resolve the participant training documentation separately from
+motion-tracker training. Keep reference-only representation learning,
+standing-opponent warmup, and self-play as distinct stages. Discover which
+stages are implemented before offering a launcher. For a training handoff,
+record rule/resource alignment, completed end-to-end execution, and externally
+scored behavior as separate conclusions. A working legacy trainer does not
+establish effectiveness after rules or robot assets change. Migrate those
+contracts before carrying its success claims into the current evaluator.
+A frozen decoder's good
+reconstruction or encoded-trajectory tracking does not establish that arbitrary
+latent samples or transitions are safe. Store pre-normalization samples and
+their probabilities when optimizing a Gaussian projected onto a sphere.
+Version dataset selection profiles and split original motion groups before
+online augmentation. Verify batch-generated mirrors against independently
+reflected source poses, and check normalization against the equivalent
+balanced population without retaining duplicate training clips.
+
+A passive standing opponent should hold world targets if stationary behavior
+is intended. Repeating a latent does not anchor the resulting physical pose.
+Validate target invariance, physical drift, tilt, and contact response separately;
+do not infer stability from frozen parameters alone.
+
+For distributed training, distinguish environments per rank from the global
+population and from inference batch size. Preserve each environment's recurrent
+state when bounding expert-gather memory with inference batches. Synchronize
+population statistics and gradients, then verify independent-row inference and
+small-versus-batched physics before relying on large-scale learning results.
+Use behavioral evaluation gates for curriculum changes rather than reward or
+process completion alone; keep the frozen action contract across promotion.
+Preserve invalid simulator states for diagnosis. If a training environment
+terminates and resets such trials, count them separately, prevent terminal
+bootstrapping and discriminator contamination, and exclude them from behavioral
+acceptance. Do not turn invalid samples into successful hits or zero-cost steps.
+
 Do not judge a policy from training reward alone.
 
 1. Resolve the evaluator and export contract associated with the selected

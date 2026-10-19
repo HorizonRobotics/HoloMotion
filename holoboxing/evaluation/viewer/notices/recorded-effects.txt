@@ -1,0 +1,15 @@
+Recorded boxing replay effects (CC0 1.0)
+
+Hit: qubodup, Punch, qubodupPunch02 (punching-bag recording).
+Source: https://opengameart.org/content/punch
+License: https://creativecommons.org/publicdomain/zero/1.0/
+Changes: 35 Hz high-pass, 1800 Hz low-pass; mono 48 kHz;
+peak normalized to 0.85; PCM16 conversion. Bundled effect key: hit.
+
+KO: pyro13djt, Random Video Game Vocals (recorded female voice).
+Source: https://freesound.org/people/pyro13djt/sounds/338223/
+License: https://creativecommons.org/publicdomain/zero/1.0/
+Changes: first 1.10 seconds; mono 48 kHz; peak normalized to 0.85;
+PCM16 conversion. Bundled effect key: ko.
+
+No synthesized bell or generated voice is mixed into these effects.

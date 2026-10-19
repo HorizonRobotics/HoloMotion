@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+viewer/node_modules/
+viewer/dist/
+results/
+cache/
+*.onnx
+*.hdf5
+*.mp4

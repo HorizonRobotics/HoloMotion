@@ -51,12 +51,15 @@ git submodule update --init --recursive
 ```
 
 `thirdparties/HoloMotion_assets` is the Hugging Face dataset submodule that
-provides the shared robot meshes and modular G1 component package. If the
+provides the shared robot meshes, modular G1 component package, and boxing resources. If the
 submodule was initialized with LFS downloads disabled, hydrate it explicitly:
 
 ```shell
 git -C thirdparties/HoloMotion_assets lfs pull
 ```
+
+For boxing-only use, follow the [selective resource download instructions](../holoboxing/README.md#download-resources-for-source-use).
+They populate `holoboxing/assets` without downloading unrelated large files.
 
 ### 2.3 Create Asset Symlinks
 

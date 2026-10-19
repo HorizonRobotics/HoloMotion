@@ -23,7 +23,7 @@ Repository = "https://github.com/HorizonRobotics/HoloMotion"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["holomotion*", "holoretarget*", "holosmpl*"]
+include = ["holomotion*", "holoretarget*", "holosmpl*", "holoboxing*"]
 
 
 [tool.ruff]

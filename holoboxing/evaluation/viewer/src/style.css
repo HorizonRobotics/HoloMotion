@@ -1,0 +1,6 @@
+body { margin: 0; background: #0e131b; }
+.viewer-header { padding: 18px 24px; }
+.viewer-header h1 { margin: 0; font-size: 22px; }
+.viewer-header label { display: inline-flex; gap: 12px; align-items: center; }
+.viewer-header input { max-width: 320px; }
+.viewer-header [role="alert"] { color: #ff9e9e; }

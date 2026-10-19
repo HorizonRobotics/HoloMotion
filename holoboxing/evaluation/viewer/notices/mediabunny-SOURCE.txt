@@ -1,0 +1,9 @@
+Mediabunny 1.61.4
+License: Mozilla Public License 2.0; see mediabunny-LICENSE.txt.
+The application bundles the unmodified upstream library.
+Corresponding upstream source is included in the versioned npm package:
+https://registry.npmjs.org/mediabunny/-/mediabunny-1.61.4.tgz
+Project: https://github.com/Vanilagy/mediabunny
+
+Hit and KO effects use procedural synthesis implemented in replayAudio.ts, not recordings
+or samples from this library or another audio source.

@@ -1,0 +1,10 @@
+/raw/
+/filtered/
+/processed/
+/converted/
+/visualized/
+/cache/
+__pycache__/
+*.pkl
+*.npz
+*.h5

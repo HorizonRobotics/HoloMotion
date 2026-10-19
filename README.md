@@ -80,6 +80,7 @@ Start with the [v2.0.0 motion-tracking checkpoint](https://huggingface.co/Horizo
 | --- | --- | --- |
 | Replay a motion in MuJoCo | [Sim2sim](docs/evaluate_motion_tracking.md#2-sim2sim-inspect-a-reference-motion) | ONNX/config bundle and a robot NPZ clip. |
 | Evaluate a motion dataset | [Quantitative evaluation](docs/evaluate_motion_tracking.md#3-quantitative-evaluation-on-your-hdf5-dataset) | ONNX/config bundle, actor weights, and robot HDF5 data. |
+| Validate and test a boxing policy | [HoloBoxing local evaluation](holoboxing/README.md) | Your high-level boxing policy (ONNX), the bundled evaluation image, and a compatible GPU. |
 | Teleoperate a G1 | [Robot deployment](docs/realworld_deployment.md) | G1 29-DOF with Orin, matching deployment image, and PICO / XRoboToolkit. |
 | Train or fine-tune | [Training](docs/train_motion_tracking.md) | Labeled robot HDF5 data and GPU resources; a compatible checkpoint for fine-tuning. |
 
