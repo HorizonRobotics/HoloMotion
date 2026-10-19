@@ -25,14 +25,18 @@ Validation and matches require Linux, Docker, an NVIDIA GPU, and NVIDIA
 Container Toolkit. Playback requires Docker and a browser.
 The image bundles the tracker, robot resources, arena, and player; no separate
 download or host Python environment is needed.
-Use the published Linux/amd64 image [holoboxing-eval-v8-amd64](https://hub.docker.com/r/horizonrobotics/holomotion/tags?name=holoboxing-eval-v8-amd64):
+The v9 image includes the gloved-robot and collision-precision fixes.
+Its published tag is `horizonrobotics/holomotion:holoboxing-eval-v9-amd64`.
+The commands below pin its verified repository digest.
+Pull the published image before running these examples:
 
 ```bash
-export HOLOBOXING_IMAGE="horizonrobotics/holomotion:holoboxing-eval-v8-amd64@sha256:d5532acccf8a1e642b452da1d1a09bbbb1e24301ff61a1ffd5b9a2180fc78ec4"
-docker pull "$HOLOBOXING_IMAGE"
+export HOLOBOXING_IMAGE="horizonrobotics/holomotion@sha256:5c54be599351bafe2392c8fdae2647ba6c107a760228bffa8b2b33dd85e2a67a"
+docker pull --platform linux/amd64 "$HOLOBOXING_IMAGE"
 ```
 
-See the [setup guide](evaluation/README.md#run) for image loading and host requirements.
+See the [setup guide](evaluation/README.md#run) for digest pinning, archive loading, and host requirements.
+Source development uses the [published resource revision](evaluation/README.md#source-resources) pinned by this checkout.
 
 `my_policy.onnx` is your model; `opponent_policy.onnx` is a model to test against.
 Replace both example paths with your actual files.

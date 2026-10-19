@@ -4,6 +4,7 @@ import warp as wp
 import mujoco_warp as mjw
 
 from .onnx_device import require_gpu
+from .collision_precision import install as install_collision_precision
 from .deterministic_physics import (
     OrderedArena,
     check_supported,
@@ -20,6 +21,7 @@ class WarpPhysics:
         self.max_contacts = 4096
         self.max_constraints = 8192
         check_supported(scene.model)
+        install_collision_precision()
         with wp.ScopedDevice(str(self.device)):
             self.model = mjw.put_model(scene.model)
             self.ordering = OrderedArena(self.model)

@@ -1,6 +1,5 @@
 """Public boundaries tested without a GPU or private services."""
 
-import json
 from pathlib import Path
 import tempfile
 import unittest
@@ -15,7 +14,6 @@ from holoboxing.evaluation.resources import ResourceTree
 from holoboxing.evaluation.runtime.model_contract import (
     check_model,
     check_contract,
-    sha256,
 )
 from holoboxing.evaluation.runtime.rules import MatchLogger
 from holoboxing.evaluation.validation import validate_model
@@ -41,34 +39,17 @@ class PublicInterfacesTest(unittest.TestCase):
                 qualification("RTX 5090", latency)
 
     def test_resource_hash_and_relative_closure_fail_closed(self):
+        from holoboxing.evaluation.tests.resource_fixtures import (
+            make_resources,
+        )
+
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            (root / "mesh.bin").write_bytes(b"mesh")
-            (root / "scene.xml").write_text(
-                '<mujoco><asset><mesh file="mesh.bin"/></asset></mujoco>'
-            )
-            (root / "initial.json").write_text("{}")
-            names = ("mesh.bin", "scene.xml", "initial.json")
-            manifest = dict(
-                schema_version=1,
-                simulation_entry="scene.xml",
-                initial_state="initial.json",
-                entries=dict(red="scene.xml", blue="scene.xml"),
-                files=[
-                    dict(
-                        path=name,
-                        bytes=(root / name).stat().st_size,
-                        sha256=sha256(root / name),
-                    )
-                    for name in names
-                ],
-            )
-            (root / "resources.json").write_text(json.dumps(manifest))
+            root = make_resources(directory)
             tree = ResourceTree(root)
-            self.assertEqual(tree.verify()["relative_references"], 1)
+            self.assertEqual(tree.verify()["relative_references"], 18)
             with self.assertRaises(ValueError):
                 tree.path("../escape")
-            (root / "mesh.bin").write_bytes(b"FAIL")
+            (root / "left_boxing_glove.STL").write_bytes(b"FAIL")
             with self.assertRaisesRegex(ValueError, "SHA256 differs"):
                 tree.verify()
 

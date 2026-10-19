@@ -5,6 +5,7 @@ import json
 import xml.etree.ElementTree as ET
 
 from .runtime.model_contract import sha256
+from .scene_contract import verify_scene
 
 
 class ResourceTree:
@@ -92,6 +93,7 @@ class ResourceTree:
                         f"Referenced file is absent from the inventory: {relative}"
                     )
                 references += 1
+        verify_scene(self)
         return {
             "files": len(inventory),
             "bytes": sum(item["bytes"] for item in inventory),

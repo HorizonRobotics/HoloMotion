@@ -20,7 +20,7 @@ Choose exactly one task:
 
 Options:
   --image IMAGE          Provided image tag/ID (default: HOLOBOXING_IMAGE,
-                         or holoboxing-eval:local). No automatic download.
+                         or holoboxing-eval:local-v9). No automatic download.
   --output PATH          Validation JSON filename or new match directory.
   --gpu INDEX            Host GPU index for validation/match (default: 0).
   --qualification MODE   local or official; validation only (default: local).
@@ -45,7 +45,7 @@ select_task() { [[ -z "$task" ]] || fail 'Choose only one of --init, --validate,
 file_path() { [[ -f "$1" ]] || fail "File does not exist: $1"; realpath -e -- "$1"; }
 directory_path() { [[ -d "$1" ]] || fail "Directory does not exist: $1"; realpath -e -- "$1"; }
 
-task= image=${HOLOBOXING_IMAGE:-holoboxing-eval:local} output= gpu=0 port=8080
+task= image=${HOLOBOXING_IMAGE:-holoboxing-eval:local-v9} output= gpu=0 port=8080
 qualification=local assets= lower= print_command=0
 qualification_set=0 port_set=0 gpu_set=0
 red= blue= replay=
@@ -130,6 +130,8 @@ if [[ "$print_command" == 1 ]]; then
 fi
 command -v docker >/dev/null || fail 'Docker is not installed or not on PATH.'
 docker image inspect "$image" >/dev/null 2>&1 || fail "Image unavailable: $image. Load the provided image, or choose its tag with --image."
+contract=$(docker image inspect --format '{{index .Config.Labels "org.holomotion.holoboxing.robot-contract"}} {{index .Config.Labels "org.holomotion.holoboxing.collision-precision"}}' "$image")
+[[ "$contract" == 'urdf-gloves-v1 epa-plane-fp64-v1' ]] || fail 'Image predates the gloved robot and collision precision fixes. Rebuild from the current source.'
 if [[ "$task" == view ]]; then
   printf 'Open http://localhost:%s in your browser. Stop with Ctrl+C.\n' "$port"
 else

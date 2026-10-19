@@ -3,7 +3,6 @@
 from dataclasses import dataclass
 from pathlib import Path
 import time
-import xml.etree.ElementTree as ET
 
 import mujoco
 import numpy as np
@@ -30,23 +29,26 @@ def _quat_to_matrix_wxyz(quaternion):
 
 
 def load_scene_model(model_path):
-    """Apply the existing 200 Hz scene setup without modifying mounted assets."""
+    """Load the replay XMLs through MJCF attachments and add 200 Hz control."""
     path = Path(model_path).resolve(strict=True)
-    root = ET.parse(path).getroot()
-    compiler = root.find("compiler")
-    if compiler is None:
-        compiler = ET.Element("compiler")
-        root.insert(0, compiler)
-    for key in ("meshdir", "texturedir"):
-        compiler.set(key, str((path.parent / compiler.get(key, "")).resolve()))
-    option = root.find("option")
-    if option is None:
-        option = ET.Element("option")
-        root.insert(1, option)
-    option.set("timestep", "0.005")
-    return mujoco.MjModel.from_xml_string(
-        ET.tostring(root, encoding="unicode")
-    )
+    spec = mujoco.MjSpec.from_file(str(path))
+    spec.option.timestep = 0.005
+    # Replay models already supply geometry, inertia and joint force limits.
+    # Add only evaluator dynamics and torque controls; never copy robot trees.
+    for joint in spec.joints:
+        if joint.type == mujoco.mjtJoint.mjJNT_FREE:
+            continue
+        joint.damping = 0.05
+        joint.armature = 0.01
+        wrist = "_wrist_pitch_" in joint.name or "_wrist_yaw_" in joint.name
+        joint.frictionloss = 0.1 if wrist else 0.2
+        actuator = spec.add_actuator(name=joint.name.removesuffix("_joint"))
+        actuator.set_to_motor()
+        actuator.target = joint.name
+        actuator.trntype = mujoco.mjtTrn.mjTRN_JOINT
+        actuator.ctrllimited = True
+        actuator.ctrlrange = joint.actfrcrange
+    return spec.compile()
 
 
 class BoxingMatchScene:
@@ -179,6 +181,8 @@ class BoxingMatchScene:
         aliases = {
             "left_wrist_yaw_link": "left_hand",
             "right_wrist_yaw_link": "right_hand",
+            "left_rubber_hand": "left_hand",
+            "right_rubber_hand": "right_hand",
             "left_ankle_roll_link": "left_foot",
             "right_ankle_roll_link": "right_foot",
         }
@@ -208,19 +212,26 @@ class BoxingMatchScene:
         if not body.startswith(prefix):
             return None
         link = body[len(prefix) :]
-        semantic = {"torso_link": "torso", "pelvis": "pelvis"}.get(
-            link, "unscored"
-        )
+        semantic = {
+            "torso_link": "torso",
+            "pelvis": "pelvis",
+            "head_link": "head",
+            "logo_link": "chest",
+        }.get(link, "unscored")
         mesh_id = (
             int(self.model.geom_dataid[geom])
             if self.model.geom_type[geom] == mujoco.mjtGeom.mjGEOM_MESH
             else -1
         )
         mesh_name = self.model.mesh(mesh_id).name if mesh_id >= 0 else ""
+        # Attached models prefix mesh names as well as body names.
+        if mesh_name.startswith(prefix):
+            mesh_name = mesh_name[len(prefix) :]
         semantic = {
             "head_link": "head",
             "logo_link": "chest",
             "pelvis_contour_link": "pelvis",
+            "pelvis_contour_collision": "pelvis",
         }.get(mesh_name, semantic)
         return body_id, link, semantic
 

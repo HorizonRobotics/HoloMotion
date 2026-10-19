@@ -27,6 +27,8 @@ Inspect the skill descriptions under `.agents/skills/` and use every skill that 
 
 ## Confirmation and validation
 
+- Use `type(scope): summary` for merge request titles, matching this repository's recent merged changes.
+- Choose the title type and scope from the final diff.
 - Never commit, push, tag, publish, or release without explicit user confirmation.
 - Never run a command that can send actions to a real robot without explicit user confirmation immediately before that action.
 - Distinguish static checks, simulation results, runtime checks, and user-confirmed real-robot results.

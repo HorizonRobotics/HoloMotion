@@ -35,7 +35,7 @@ class CompetitionAssets:
     def identity(self) -> dict:
         tree = self.resources
         return {
-            "robot_kinematics": "competition_xml_v1",
+            "robot_kinematics": "urdf_gloves_xml_v2",
             "policy_contract": CONTRACT,
             "scoring_version": SCORING_VERSION,
             "scoring": scoring_config(),

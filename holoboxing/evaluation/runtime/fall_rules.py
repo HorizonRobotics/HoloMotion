@@ -22,8 +22,11 @@ def fallen_from_scene(scene):
         [scene.model.body(prefix + name).id for name in FALL_BODY_NAMES]
         for prefix in ("p1_", "p2_")
     ]
-    floor_id = scene.model.geom("fight_floor").id
+    floor_id = scene.model.geom("smpl_ring_baseLink").id
     return fallen_from_heights(
         scene.data.xpos[np.asarray(ids), 2],
-        floor_height=float(scene.data.geom_xpos[floor_id, 2]),
+        floor_height=float(
+            scene.data.geom_xpos[floor_id, 2]
+            + scene.model.geom_size[floor_id, 2]
+        ),
     )

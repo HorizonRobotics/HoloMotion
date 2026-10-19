@@ -50,13 +50,23 @@ Container Toolkit 使容器能够访问 GPU。
 官方评测要求 **RTX 5090**。
 其他主机操作系统尚未在此验证。
 
-使用已发布的 Linux/amd64 镜像 [holoboxing-eval-v8-amd64](https://hub.docker.com/r/horizonrobotics/holomotion/tags?name=holoboxing-eval-v8-amd64)。
-通过以下命令固定镜像摘要：
+v9 镜像已包含拳套及碰撞精度修复。
+公开标签为 `horizonrobotics/holomotion:holoboxing-eval-v9-amd64`。
+以下命令固定其已核验的仓库摘要。
+请先拉取已发布的 Linux amd64 镜像。
 
 ```bash
-export HOLOBOXING_IMAGE="horizonrobotics/holomotion:holoboxing-eval-v8-amd64@sha256:d5532acccf8a1e642b452da1d1a09bbbb1e24301ff61a1ffd5b9a2180fc78ec4"
-docker pull "$HOLOBOXING_IMAGE"
+export HOLOBOXING_IMAGE="horizonrobotics/holomotion@sha256:5c54be599351bafe2392c8fdae2647ba6c107a760228bffa8b2b33dd85e2a67a"
+docker pull --platform linux/amd64 "$HOLOBOXING_IMAGE"
+docker image inspect --format '{{index .RepoDigests 0}}' "$HOLOBOXING_IMAGE"
 ```
+
+最后一条命令显示拉取版本的仓库摘要。
+将该 `horizonrobotics/holomotion@sha256:...` 引用赋给 `HOLOBOXING_IMAGE`。
+这样可固定已下载的版本。
+与云端对齐时，须核对比赛指定的确切摘要。
+本地构建记录中的镜像 ID 不是仓库摘要。
+源码开发可按[构建说明](#构建镜像)制作镜像。
 
 `./holoboxing/run.sh --init` 仍为预留入口，不执行安装或下载。
 请按上方命令显式拉取镜像。
@@ -72,7 +82,7 @@ docker pull "$HOLOBOXING_IMAGE"
 ./holoboxing/run.sh --view results/match/replay.hdf5
 ```
 
-若收到镜像归档文件，使用 `docker load --input image.tar` 导入。
+若收到镜像归档文件，使用 `docker load --input image.tar.gz` 导入。
 然后选择已核验的标签或镜像 ID。
 源码构建适用于开发，不能据此认定与云端固定镜像一致。
 
@@ -296,6 +306,13 @@ P99 指耗时的第 99 百分位数。
 HoloMotion 已在 `thirdparties/HoloMotion_assets` 中跟踪该数据集。
 `holoboxing/assets` 是指向其 `holoboxing/` 子目录的符号链接。
 子模块版本由当前 HoloMotion 检出版本固定。
+已发布的资源提交如下。
+
+[`795e5e1c1d3b6b15cc1cea9e7752742715724826`](https://huggingface.co/datasets/HorizonRobotics/HoloMotion_assets/commit/795e5e1c1d3b6b15cc1cea9e7752742715724826)
+
+该提交包含 `boxing-v6-resources`。
+完整资源树与 v9 镜像内置版本一致。
+相同文件以新提交发布，无需因此重建镜像。
 目录结构和来源说明见[资源文档](../assets/README.zh-CN.md)。
 
 安装 Git LFS 后，在 HoloMotion 仓库根目录执行：
@@ -305,6 +322,9 @@ GIT_LFS_SKIP_SMUDGE=1 git submodule update --init thirdparties/HoloMotion_assets
 git -C thirdparties/HoloMotion_assets lfs pull --include="holoboxing/**" --exclude=""
 ```
 
+更新 HoloMotion 后，请重跑以上命令。
+它们会取得代码固定的资源版本。
+请保留子模块引用，不直接跟随资源仓库最新分支。
 以上命令仅下载拳击资源，不拉取其他大型模型或数据文件。
 仓库中的小文件和其他 LFS 指针文件也会被检出。
 从源码评测、训练或构建镜像时，使用 `--assets holoboxing/assets`。
@@ -327,7 +347,7 @@ source train.env
 请从无未提交修改的 HoloMotion 仓库构建：
 
 ```bash
-./holoboxing/evaluation/build.sh --assets /absolute/assets --lower /absolute/lower --context /absolute/new-context --image holoboxing-eval:local
+./holoboxing/evaluation/build.sh --assets /absolute/assets --lower /absolute/lower --context /absolute/new-context --image holoboxing-eval:local-v9
 ```
 
 构建上下文须使用源码仓库之外的新目录。
@@ -336,6 +356,25 @@ source train.env
 `--development` 会明确记录开发快照。
 构建脚本不会发布镜像。
 可设置 `HOLOBOXING_BUILD_PYTHON` 选择构建辅助程序的 Python 解释器。
+
+戴拳套 URDF 是机器人参数源。
+评测直接引用播放器使用的红蓝 XML。
+擂台碰撞体读取播放器的 `smpl-ring-v2/scene.json`。
+资源校验会拒绝旧机器人和裸手网格。
+播放与评测的资源清单也须一致。
+构建时会编译并比较两种格式的物理参数。
+修改 URDF 后，须同步 XML 和清单：
+
+```bash
+python holoboxing/evaluation/scripts/sync_robot_assets.py --assets /absolute/assets --write
+```
+
+训练和评测共用双精度平面投影修复。
+碰撞输入、输出及其余求解仍为单精度。
+该精度修复保留原有接触和摩擦参数。
+电机仍使用比例微分控制，即 PD 控制。
+力矩限制来自 URDF，关节动力学由评测配置。
+它与原 HoloMotion 的转速衰减模型仍有差异。
 
 构建上下文按允许列表收集文件，排除测试和训练代码。
 PyTorch 仅在构建时用于导出并检查标准观测计算图。

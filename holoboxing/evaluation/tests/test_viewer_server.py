@@ -1,7 +1,6 @@
 """The replay server exposes only selected files and needs no GPU imports."""
 
 from http.client import HTTPConnection
-import json
 from pathlib import Path
 import subprocess
 import sys
@@ -9,8 +8,8 @@ import tempfile
 import threading
 import unittest
 
-from holoboxing.evaluation.runtime.model_contract import sha256
 from holoboxing.evaluation.viewer_server import replay_server
+from holoboxing.evaluation.tests.resource_fixtures import make_resources
 
 
 class ViewerServerTest(unittest.TestCase):
@@ -18,29 +17,12 @@ class ViewerServerTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             assets, viewer = root / "assets", root / "viewer"
-            assets.mkdir()
+            make_resources(assets)
             viewer.mkdir()
             (root / "secret").write_bytes(b"private")
-            (assets / "scene.xml").write_text("<mujoco/>")
-            (assets / "reset.json").write_text("{}")
             (viewer / "index.html").write_text("<title>Replay</title>")
             replay = root / "replay.hdf5"
             replay.write_bytes(b"selected replay")
-            manifest = dict(
-                schema_version=1,
-                simulation_entry="scene.xml",
-                initial_state="reset.json",
-                entries=dict(red="scene.xml", blue="scene.xml"),
-                files=[
-                    dict(
-                        path=name,
-                        bytes=(assets / name).stat().st_size,
-                        sha256=sha256(assets / name),
-                    )
-                    for name in ("scene.xml", "reset.json")
-                ],
-            )
-            (assets / "resources.json").write_text(json.dumps(manifest))
             (assets / "outside").symlink_to(root / "secret")
             with replay_server(
                 replay, assets, viewer=viewer, port=0
@@ -56,7 +38,7 @@ class ViewerServerTest(unittest.TestCase):
                         (
                             "/replay/assets/g1-boxing/scene.xml",
                             200,
-                            b"<mujoco/>",
+                            (assets / "scene.xml").read_bytes(),
                         ),
                         ("/favicon.ico", 204, b""),
                         ("/%2e%2e/secret", 404, None),
@@ -80,10 +62,13 @@ class ViewerServerTest(unittest.TestCase):
                     thread.join(timeout=5)
 
     def test_partial_tls_configuration_is_rejected(self):
-        for options in (dict(tls_cert='cert.pem'), dict(tls_key='key.pem')):
-            with self.subTest(options=options), self.assertRaisesRegex(ValueError, 'both'):
-                with replay_server('unused', 'unused', **options):
-                    self.fail('Partial TLS configuration was accepted')
+        for options in (dict(tls_cert="cert.pem"), dict(tls_key="key.pem")):
+            with (
+                self.subTest(options=options),
+                self.assertRaisesRegex(ValueError, "both"),
+            ):
+                with replay_server("unused", "unused", **options):
+                    self.fail("Partial TLS configuration was accepted")
 
     def test_server_import_does_not_load_gpu_or_training_packages(self):
         subprocess.run(

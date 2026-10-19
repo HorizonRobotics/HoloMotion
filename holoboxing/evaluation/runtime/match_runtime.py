@@ -15,6 +15,7 @@ from .rules import MatchLogger, MatchRules, MatchStateMachine
 from .hand_hit_rules import SCORING_VERSION, scoring_config
 from .fall_rules import FALL_HEIGHT_M, fallen_from_scene
 from .deterministic_physics import ORDERING_VERSION
+from .collision_precision import COLLISION_PRECISION_VERSION
 from .ordered_topk import ORDERING_VERSION as INFERENCE_ORDERING
 
 REFERENCE_HZ = 50
@@ -178,6 +179,8 @@ def run_match(arguments: MatchConfig, *, reference_factory=None) -> Path:
                 "scoring_config": scoring_config(),
                 "physics_backend": scene.physics_backend,
                 "physics_ordering": ORDERING_VERSION,
+                "collision_precision": COLLISION_PRECISION_VERSION,
+                "robot_contract": "urdf-gloves-v1",
                 "inference_ordering": INFERENCE_ORDERING,
                 "physics_device": scene.physics_device,
                 "lower_policy_provider": [

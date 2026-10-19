@@ -23,14 +23,18 @@ ONNX 是提交模型使用的通用神经网络格式。
 回放只需要 Docker 和浏览器。
 镜像已包含控制器、机器人资源、擂台和播放器。
 无需另行下载这些资源，也无需在主机配置 Python 环境。
-已发布的 Linux/amd64 评测镜像为 [holoboxing-eval-v8-amd64](https://hub.docker.com/r/horizonrobotics/holomotion/tags?name=holoboxing-eval-v8-amd64)：
+v9 镜像已包含拳套及碰撞精度修复。
+公开标签为 `horizonrobotics/holomotion:holoboxing-eval-v9-amd64`。
+以下命令固定其已核验的仓库摘要。
+运行以下示例前，先拉取已发布的镜像。
 
 ```bash
-export HOLOBOXING_IMAGE="horizonrobotics/holomotion:holoboxing-eval-v8-amd64@sha256:d5532acccf8a1e642b452da1d1a09bbbb1e24301ff61a1ffd5b9a2180fc78ec4"
-docker pull "$HOLOBOXING_IMAGE"
+export HOLOBOXING_IMAGE="horizonrobotics/holomotion@sha256:5c54be599351bafe2392c8fdae2647ba6c107a760228bffa8b2b33dd85e2a67a"
+docker pull --platform linux/amd64 "$HOLOBOXING_IMAGE"
 ```
 
-镜像导入方式和主机要求见[运行说明](evaluation/README.zh-CN.md#运行)。
+摘要固定、镜像导入及主机要求见[运行说明](evaluation/README.zh-CN.md#运行)。
+源码开发使用当前检出版本固定的[已发布资源](evaluation/README.zh-CN.md#源码使用所需资源)。
 
 `my_policy.onnx` 是自己的模型，`opponent_policy.onnx` 是用于对战的对手模型。
 请将示例路径替换为实际文件路径。

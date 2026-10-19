@@ -127,10 +127,13 @@ def prepare_context(directory, assets, lower, *, development=False):
     ).hexdigest()
     manifest = {
         "schema_version": 1,
+        "image_version": "v9",
         "code_revision": revision,
         "development_snapshot": dirty,
         "source_fingerprint": source_fingerprint,
         "resource_manifest_sha256": resources.manifest_sha256,
+        "robot_contract": "urdf-gloves-v1",
+        "collision_precision": "epa-plane-fp64-v1",
         "frozen_model": frozen_manifest(),
         "files": files,
     }
@@ -215,6 +218,7 @@ def main():
         )
     )[0]
     receipt = {
+        "image_version": "v9",
         "image": args.tag,
         "image_id": inspect["Id"],
         "bytes": inspect["Size"],

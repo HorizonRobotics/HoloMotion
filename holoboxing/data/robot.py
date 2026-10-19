@@ -11,33 +11,27 @@ import mujoco
 
 
 def robot_xml(path, side="red"):
-    """Extract one robot from the simulation scene, not the display XML."""
+    """Read the same robot XML attached by the evaluator and replay player."""
     path = Path(path).resolve(strict=True)
     if side not in ("red", "blue"):
         raise ValueError("Choose red or blue")
     prefix = "p1_" if side == "red" else "p2_"
     root = ET.parse(path).getroot()
+    attachment = root.find(f"worldbody/attach[@prefix='{prefix}']")
+    if attachment is None:
+        raise ValueError("Scene must attach the existing replay robot XML")
+    model = root.find(f"asset/model[@name='{attachment.get('model')}']")
+    if model is None:
+        raise ValueError("Scene attachment is missing its replay model")
+    path = (path.parent / model.get("file")).resolve(strict=True)
+    root = ET.parse(path).getroot()
     world = root.find("worldbody")
-    robot = world.find(f"body[@name='{prefix}pelvis']")
+    robot = world.find("body[@name='pelvis']")
     if robot is None:
         raise ValueError("Scene is missing the named floating robot")
     robot = copy.deepcopy(robot)
     world.clear()
     world.append(robot)
-    # Scene-wide pairs and saved states refer to the removed robot or arena.
-    for tag in ("contact", "equality", "keyframe", "sensor", "tendon"):
-        section = root.find(tag)
-        if section is not None:
-            root.remove(section)
-    actuators = root.find("actuator")
-    if actuators is not None:
-        for node in list(actuators):
-            if not node.get("joint", "").startswith(prefix):
-                actuators.remove(node)
-    for node in root.iter():
-        for key, value in list(node.attrib.items()):
-            if value.startswith(prefix):
-                node.set(key, value[len(prefix) :])
     compiler = root.find("compiler")
     if compiler is not None:
         for key in ("meshdir", "texturedir"):
@@ -86,12 +80,7 @@ def retarget_assets(assets, config, directory):
         spec.body(parent).add_body(
             name=name, pos=HoloNewtonG1Retargeter._BODY_LINK_OFFSETS[name]
         )
-    # The scene folds the palm into the wrist; IK still names its fixed frame.
-    for side in ("left", "right"):
-        hand = spec.geom(f"{side}_boxing_hand_collision")
-        spec.body(f"{side}_wrist_yaw_link").add_body(
-            name=f"{side}_rubber_hand", pos=hand.pos, quat=hand.quat
-        )
+    # The existing gloved XML already contains both fixed hand frames.
     spec.compile()
     (robot_dir / "g1_mocap_29dof.xml").write_text(spec.to_xml())
     return directory

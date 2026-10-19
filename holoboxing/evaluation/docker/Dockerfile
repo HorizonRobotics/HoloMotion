@@ -31,6 +31,7 @@ RUN --mount=type=cache,target=/tmp/holoboxing-cache/pip \
 COPY app/ /app/
 COPY assets/ /opt/holoboxing/assets/
 COPY lower/ /opt/holoboxing/lower/
+RUN python -m holoboxing.evaluation.robot_models --assets /opt/holoboxing/assets
 RUN python -m holoboxing.evaluation.runtime.observation_export \
       --assets /opt/holoboxing/assets --lower /opt/holoboxing/lower \
       --output /app/holoboxing/evaluation/runtime/compiled
@@ -47,6 +48,7 @@ COPY assets/ /opt/holoboxing/assets/
 COPY lower/ /opt/holoboxing/lower/
 COPY build-inputs.json /opt/holoboxing/build-inputs.json
 RUN python -m holoboxing assets \
+    && python -m holoboxing.evaluation.robot_models --assets /opt/holoboxing/assets \
     && python -c 'from holoboxing.evaluation.models import verify_bundle; verify_bundle("/opt/holoboxing/lower")' \
     && python -c 'from holoboxing.evaluation.runtime.compiled_artifacts import manifest; manifest()' \
     && python -m pip check \
@@ -55,9 +57,12 @@ RUN python -m holoboxing assets \
 ARG CODE_REVISION=unknown
 ARG INPUTS_SHA256=unknown
 LABEL org.opencontainers.image.title="HoloBoxing GPU evaluation" \
+      org.opencontainers.image.version="v9" \
       org.opencontainers.image.source="https://github.com/HorizonRobotics/HoloMotion" \
       org.opencontainers.image.revision="${CODE_REVISION}" \
-      org.holomotion.holoboxing.inputs.sha256="${INPUTS_SHA256}"
+      org.holomotion.holoboxing.inputs.sha256="${INPUTS_SHA256}" \
+      org.holomotion.holoboxing.robot-contract="urdf-gloves-v1" \
+      org.holomotion.holoboxing.collision-precision="epa-plane-fp64-v1"
 EXPOSE 8080
 ENTRYPOINT ["python", "-m", "holoboxing"]
 CMD ["--help"]

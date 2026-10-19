@@ -49,13 +49,22 @@ The host workflow was tested on **Ubuntu 22.04.4 LTS with Docker 27.1.2**.
 The evaluation image runs Debian 12 (Bookworm). Official evaluation requires
 an **RTX 5090**. Other host operating systems have not been validated here.
 
-Use the published Linux/amd64 image [holoboxing-eval-v8-amd64](https://hub.docker.com/r/horizonrobotics/holomotion/tags?name=holoboxing-eval-v8-amd64).
-Pin its digest with the following commands:
+The v9 image includes the gloved-robot and collision-precision fixes.
+Its published tag is `horizonrobotics/holomotion:holoboxing-eval-v9-amd64`.
+The commands below pin its verified repository digest.
+Pull the published Linux amd64 image:
 
 ```bash
-export HOLOBOXING_IMAGE="horizonrobotics/holomotion:holoboxing-eval-v8-amd64@sha256:d5532acccf8a1e642b452da1d1a09bbbb1e24301ff61a1ffd5b9a2180fc78ec4"
-docker pull "$HOLOBOXING_IMAGE"
+export HOLOBOXING_IMAGE="horizonrobotics/holomotion@sha256:5c54be599351bafe2392c8fdae2647ba6c107a760228bffa8b2b33dd85e2a67a"
+docker pull --platform linux/amd64 "$HOLOBOXING_IMAGE"
+docker image inspect --format '{{index .RepoDigests 0}}' "$HOLOBOXING_IMAGE"
 ```
+
+The last command prints the pulled repository digest.
+Set `HOLOBOXING_IMAGE` to that `horizonrobotics/holomotion@sha256:...` reference to retain the downloaded version.
+For cloud parity, compare it with the exact digest specified by the competition.
+The image ID in a local build receipt is not a repository digest.
+Use the [build instructions](#building-the-image) for source development.
 
 `./holoboxing/run.sh --init` remains a reserved setup entry and performs no installation
 or download. Pull the image explicitly as shown above.
@@ -71,7 +80,7 @@ The first model controls the red robot; the second controls the blue robot.
 ./holoboxing/run.sh --view results/match/replay.hdf5
 ```
 
-For an image archive, import it with `docker load --input image.tar` and select
+For an image archive, import it with `docker load --input image.tar.gz` and select
 its verified tag or image ID. Source builds are intended for development;
 they do not establish parity with the cloud's pinned image.
 
@@ -276,6 +285,11 @@ The published boxing resources are in
 HoloMotion already tracks this dataset at `thirdparties/HoloMotion_assets`.
 The `holoboxing/assets` symbolic link points to its `holoboxing/` subdirectory.
 The submodule revision is pinned by this HoloMotion checkout.
+The published revision is
+[`795e5e1c1d3b6b15cc1cea9e7752742715724826`](https://huggingface.co/datasets/HorizonRobotics/HoloMotion_assets/commit/795e5e1c1d3b6b15cc1cea9e7752742715724826),
+containing `boxing-v6-resources`.
+Its complete resource tree matches the assets bundled in v9.
+Publishing these identical files under a new commit does not require rebuilding that image.
 See the [asset guide](../assets/README.md) for file layout and attribution.
 
 With Git LFS installed, run from the HoloMotion repository root:
@@ -285,6 +299,8 @@ GIT_LFS_SKIP_SMUDGE=1 git submodule update --init thirdparties/HoloMotion_assets
 git -C thirdparties/HoloMotion_assets lfs pull --include="holoboxing/**" --exclude=""
 ```
 
+After updating HoloMotion, rerun these commands to obtain its pinned resource revision.
+Use the recorded submodule revision rather than following the dataset's latest branch.
 These commands download the boxing payload without fetching other large model or data files.
 The repository's small files and other LFS pointer files are also checked out.
 Use `--assets holoboxing/assets` for source evaluation, training, or image builds.
@@ -308,13 +324,30 @@ Source-only users can fetch that bundle with `python -m holoboxing download --di
 Build from a clean, committed HoloMotion checkout:
 
 ```bash
-./holoboxing/evaluation/build.sh --assets /absolute/assets --lower /absolute/lower --context /absolute/new-context --image holoboxing-eval:local
+./holoboxing/evaluation/build.sh --assets /absolute/assets --lower /absolute/lower --context /absolute/new-context --image holoboxing-eval:local-v9
 ```
 
 Use a new context outside the source repository. The script pins public base
 image digests and verifies resources and model hashes. `--help` exposes overrides;
 `--development` explicitly records a development snapshot. It never publishes an image.
 Set `HOLOBOXING_BUILD_PYTHON` to select the build helper's Python interpreter.
+
+The gloved URDFs are the parameter source. Evaluation attaches the same saved
+red/blue XMLs used by the player, without a separate robot definition.
+The arena collision geometry comes from the player's `smpl-ring-v2/scene.json`.
+Static checks reject legacy robots, bare-hand meshes, and divergent manifests.
+The image build also compares compiled URDF/XML body, joint, inertia, and collision parameters.
+After editing a canonical URDF, synchronize the XMLs and inventories:
+
+```bash
+python holoboxing/evaluation/scripts/sync_robot_assets.py --assets /absolute/assets --write
+```
+
+Training and evaluation share the float64 thin-face projection fix.
+Collision inputs, outputs, state, and the rest of the solver remain float32.
+Contact parameters, friction, and contact retention are unchanged by that precision fix.
+The motor model remains PD control with URDF-derived force limits and evaluator joint dynamics.
+It does not reproduce the original HoloMotion speed-dependent motor curve.
 
 The allowlisted context excludes tests and training code. PyTorch is
 used only while exporting and checking canonical observation graphs at build

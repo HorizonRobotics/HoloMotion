@@ -24,7 +24,9 @@ class LauncherTest(unittest.TestCase):
             "#!/usr/bin/env python3\n"
             "import json,os,sys\n"
             "from pathlib import Path\n"
-            "if sys.argv[1:3] == ['image','inspect']: sys.exit(0)\n"
+            "if sys.argv[1:3] == ['image','inspect']:\n"
+            "    if '--format' in sys.argv: print(os.environ.get('DOCKER_CONTRACT', 'urdf-gloves-v1 epa-plane-fp64-v1'))\n"
+            "    sys.exit(0)\n"
             "Path(os.environ['DOCKER_CALL']).write_text(json.dumps(sys.argv[1:]))\n"
         )
         fake.chmod(0o755)
@@ -50,6 +52,14 @@ class LauncherTest(unittest.TestCase):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b"model passed through without host execution")
         return path
+
+    def test_image_without_both_fixes_is_rejected_before_starting(self):
+        self.environment["DOCKER_CONTRACT"] = "<no value> <no value>"
+        replay = self.model("replay.hdf5")
+        result = self.run_launcher("--view", replay)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("predates", result.stderr)
+        self.assertFalse(self.log.exists())
 
     def test_model_paths_are_literal_and_outputs_are_writable(self):
         model = self.model("models/red $(touch injected).onnx")

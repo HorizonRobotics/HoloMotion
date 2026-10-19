@@ -5,10 +5,12 @@ import mujoco_warp as mjw
 import numpy as np
 import torch
 import warp as wp
-from mujoco_warp._src import collision_gjk
 
 from holoboxing.data.records import initial_qpos
 from holoboxing.data.robot import load_scene_model
+from holoboxing.evaluation.runtime.collision_precision import (
+    install as install_collision_precision,
+)
 from holoboxing.evaluation.runtime.deterministic_physics import (
     OrderedArena,
     check_supported,
@@ -19,19 +21,6 @@ from holoboxing.training.tasks.combat.config.sandbag import (
     JOINT_NAMES,
 )
 from holoboxing.training.tasks.combat.mdp.geometry import matrix, rotate
-
-
-@wp.func
-def _project_origin_plane(v1: wp.vec3, v2: wp.vec3, v3: wp.vec3):
-    # Float32 EPA can rank a thin face incorrectly and put hand/ring contacts
-    # hundreds of metres away. Keep the plane calculation in float64, not the
-    # simulation state; do not discard contacts or alter solver parameters.
-    a, b, c = wp.vec3d(v1), wp.vec3d(v2), wp.vec3d(v3)
-    normal = wp.cross(b - a, c - a)
-    squared_norm = wp.dot(normal, normal)
-    if squared_norm == wp.float64(0.0):
-        return wp.vec3(0.0), int(1)
-    return wp.vec3(normal * (wp.dot(normal, a) / squared_norm)), int(0)
 
 
 @wp.kernel
@@ -154,7 +143,7 @@ class CompetitionPhysics:
         self.host = load_scene_model(assets)
         check_supported(self.host)
         # Version-gated above; install before Warp compiles collision kernels.
-        collision_gjk._project_origin_plane = _project_origin_plane
+        install_collision_precision()
         self.initial = mujoco.MjData(self.host)
         self.initial.qpos[:] = initial_qpos(assets, self.host)
         mujoco.mj_forward(self.host, self.initial)
@@ -232,7 +221,10 @@ class CompetitionPhysics:
         )
         mapping = np.full(self.host.nbody, -1, dtype=np.int32)
         mapping[np.asarray(bids).flatten()] = np.arange(60)
-        self.geom_bodies = wp.array(mapping[self.host.geom_bodyid])
+        # Fixed glove/head links belong to the same rigid body as their
+        # actuated parent. Retain their forces in the existing 30-body schema.
+        rigid_body = self.host.body_weldid[self.host.geom_bodyid]
+        self.geom_bodies = wp.array(mapping[rigid_body])
         slots = np.full((self.host.ngeom, self.host.ngeom), -1, dtype=np.int32)
         for role, prefix in enumerate(("p1_", "p2_")):
             other = "p2_" if role == 0 else "p1_"
@@ -241,8 +233,8 @@ class CompetitionPhysics:
                 wrist = self.host.body(other + side + "_wrist_yaw_link").id
                 slots[
                     np.ix_(
-                        self.host.geom_bodyid == torso,
-                        self.host.geom_bodyid == wrist,
+                        rigid_body == torso,
+                        rigid_body == wrist,
                     )
                 ] = role * 2 + hand
         self.slots = wp.array(slots)
