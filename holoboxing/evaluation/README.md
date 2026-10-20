@@ -30,10 +30,10 @@ as a reference.
 
 For training or source evaluation, follow [source resources](#source-resources).
 
-**We strongly recommend the official evaluation image from Docker Hub, pinned
-to the exact image digest used by cloud evaluation.** This keeps evaluation
-code, dependencies, the frozen HoloMotion tracker, and resources identical to the cloud
-runtime. A matching tag alone does not guarantee identical contents.
+**Use the evaluation image selected for your competition round.**
+Verify its archive checksum and image ID, or its published repository digest.
+Compare that identity with the cloud runtime before claiming parity.
+A matching tag alone does not guarantee identical contents.
 
 The image includes the **HoloMotion V2 checkpoint, robot URDFs, meshes, arena
 textures, and browser player**. These resources need no separate download.
@@ -49,25 +49,29 @@ The host workflow was tested on **Ubuntu 22.04.4 LTS with Docker 27.1.2**.
 The evaluation image runs Debian 12 (Bookworm). Official evaluation requires
 an **RTX 5090**. Other host operating systems have not been validated here.
 
-The v9 image includes the gloved-robot and collision-precision fixes.
-Its published tag is `horizonrobotics/holomotion:holoboxing-eval-v9-amd64`.
-The commands below pin its verified repository digest.
-Pull the published Linux amd64 image:
+The current version is **v10**.
+It refreshes policy poses and velocities from the same current state.
+It uses a 20 ms impulse window, a 5 N·s threshold, and a 200 ms per-hand cooldown.
+The earlier v9 image retains its original rules and observation behavior.
+
+For a supplied Linux amd64 v10 archive, verify the accompanying checksum before loading it:
 
 ```bash
-export HOLOBOXING_IMAGE="horizonrobotics/holomotion@sha256:5c54be599351bafe2392c8fdae2647ba6c107a760228bffa8b2b33dd85e2a67a"
-docker pull --platform linux/amd64 "$HOLOBOXING_IMAGE"
-docker image inspect --format '{{index .RepoDigests 0}}' "$HOLOBOXING_IMAGE"
+sha256sum --check SHA256SUMS
+docker load --input holoboxing-eval-v10-amd64.tar.gz
+export HOLOBOXING_IMAGE="horizonrobotics/holomotion:holoboxing-eval-v10-amd64"
+docker image inspect --format '{{.Id}}' "$HOLOBOXING_IMAGE"
 ```
 
-The last command prints the pulled repository digest.
-Set `HOLOBOXING_IMAGE` to that `horizonrobotics/holomotion@sha256:...` reference to retain the downloaded version.
-For cloud parity, compare it with the exact digest specified by the competition.
-The image ID in a local build receipt is not a repository digest.
+The last command prints the image ID; compare it with the supplied build receipt.
+Set `HOLOBOXING_IMAGE` to the verified ID to retain that exact local image.
+The v10 tag above selects the imported archive; it does not claim a Docker Hub publication.
+If the competition supplies a registry image, pull its exact `horizonrobotics/holomotion@sha256:...` reference instead.
+A local image ID and a registry repository digest identify different objects.
 Use the [build instructions](#building-the-image) for source development.
 
 `./holoboxing/run.sh --init` remains a reserved setup entry and performs no installation
-or download. Pull the image explicitly as shown above.
+or download. Import or pull the selected image explicitly.
 Run the following commands from the HoloMotion repository root.
 
 Use your model as `my_policy.onnx` and another model as `opponent_policy.onnx`.
@@ -116,8 +120,8 @@ Simulation duration differs from the command's wall-clock runtime.
 
 | Decision | Definition |
 | --- | --- |
-| Hit | A hand contacts the opponent's head or torso, accumulating at least **10 N·s** normal impulse within **100 ms**; award **1 point** |
-| Repeat hit | Each hand has a **100 ms** scoring cooldown. Scoring consumes its accumulated impulse; contact separation is unnecessary |
+| Hit | A hand contacts the opponent's head or torso. Accumulating at least **5 N·s** normal impulse within **20 ms** awards **1 point**. |
+| Repeat hit | Each hand has a **200 ms** scoring cooldown. Scoring consumes its accumulated impulse; contact separation is unnecessary. |
 | Fall | The pelvis or torso body origin is strictly below **0.30 m** above the arena floor. Tilt alone does not count |
 | Knockout (KO) | A continuous fall lasts **3 s**; award the opponent **1,000 points** and end the round |
 | Winner | A single confirmed KO wins. Simultaneous confirmed falls draw. At timeout, the higher score wins; equal scores draw |
@@ -188,6 +192,10 @@ Linear velocities use its current heading axes without subtracting pelvis veloci
 sampling-time body frame. The current state occupies `obs[:,972:1080]`.
 After reset, every history slot repeats the first measured state; its preceding
 pose equals its current pose. Observation precedes this step's action.
+
+For each sample, point poses, point linear velocities, and pelvis angular velocity
+derive from the same current joint positions (`qpos`) and velocities (`qvel`).
+The isolated observation refresh preserves physics solver and contact state.
 
 ### Targets
 
@@ -288,7 +296,8 @@ The submodule revision is pinned by this HoloMotion checkout.
 The published revision is
 [`795e5e1c1d3b6b15cc1cea9e7752742715724826`](https://huggingface.co/datasets/HorizonRobotics/HoloMotion_assets/commit/795e5e1c1d3b6b15cc1cea9e7752742715724826),
 containing `boxing-v6-resources`.
-Its complete resource tree matches the assets bundled in v9.
+Its physical payloads are shared by v9 and v10 as `boxing-v6-resources`.
+Resource versions are independent of image and scoring versions.
 Publishing these identical files under a new commit does not require rebuilding that image.
 See the [asset guide](../assets/README.md) for file layout and attribution.
 
@@ -324,7 +333,7 @@ Source-only users can fetch that bundle with `python -m holoboxing download --di
 Build from a clean, committed HoloMotion checkout:
 
 ```bash
-./holoboxing/evaluation/build.sh --assets /absolute/assets --lower /absolute/lower --context /absolute/new-context --image holoboxing-eval:local-v9
+./holoboxing/evaluation/build.sh --assets /absolute/assets --lower /absolute/lower --context /absolute/new-context --image holoboxing-eval:local-v10
 ```
 
 Use a new context outside the source repository. The script pins public base

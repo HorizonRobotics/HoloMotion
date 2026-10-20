@@ -48,6 +48,11 @@ Do not debug later stages until their inputs are validated.
 6. Search source by the exact exception, symbol, or log message.
 7. Change one variable at a time and preserve the command and evidence.
 
+When MuJoCo observations disagree after stepping, inspect which integration stage produced each derived cache.
+Compare independently refreshed poses and velocities from the same current joint state.
+Keep policy refreshes separate from solver/contact data, and compare trajectories with fixed control inputs.
+After reset, check buffer ownership, captured addresses, and actual container paths.
+
 Use the `holomotion-train-interpreter` skill for training-environment Python. Use `isaaclab-source-lookup` for Isaac Lab implementation questions.
 
 ## Safety and cost

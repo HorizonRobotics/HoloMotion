@@ -62,7 +62,7 @@ class ExportHDF5Test(unittest.TestCase):
             ),
         )
 
-    def test_v5_replay_preserves_rules_timing_and_sanitization_evidence(self):
+    def test_v6_replay_preserves_rules_timing_and_sanitization_evidence(self):
         with tempfile.TemporaryDirectory() as directory:
             source, destination = (
                 Path(directory) / "match.json",
@@ -84,7 +84,7 @@ class ExportHDF5Test(unittest.TestCase):
             )
             self.assertEqual(
                 replay.meta["environment"]["environment_version"],
-                "boxing-track2-20261015-v5",
+                "boxing-track2-20261020-v6",
             )
             with h5py.File(destination) as file:
                 np.testing.assert_array_equal(
@@ -95,22 +95,28 @@ class ExportHDF5Test(unittest.TestCase):
                 )
                 self.assertEqual(statistics[0]["nonfinite_components"], 3)
 
-    def test_historical_v4_rules_are_preserved(self):
-        with tempfile.TemporaryDirectory() as directory:
-            source = Path(directory) / "match.json"
-            destination = Path(directory) / "replay.hdf5"
-            payload = self.payload()
-            payload["metadata"]["scoring_version"] = (
-                "hands_only_normal_impulse100ms_5Ns_cooldown100ms_fall030_ko1000_v4"
-            )
-            payload["metadata"]["scoring_config"]["normal_impulse_threshold_ns"] = 5
-            source.write_text(json.dumps(payload))
-            export(source, destination)
-            replay = read_replay(destination)
-            self.assertEqual(replay.meta["scoring_config"]["normal_impulse_threshold_ns"], 5)
-            self.assertEqual(replay.meta["environment"]["environment_version"], "boxing-track2-20261014-v4")
+    def test_historical_v4_v5_rules_are_preserved(self):
+        for version, threshold, environment in (
+            ("hands_only_normal_impulse100ms_5Ns_cooldown100ms_fall030_ko1000_v4", 5, "boxing-track2-20261014-v4"),
+            ("hands_only_normal_impulse100ms_10Ns_cooldown100ms_fall030_ko1000_v5", 10, "boxing-track2-20261015-v5"),
+        ):
+            with self.subTest(version=version), tempfile.TemporaryDirectory() as directory:
+                source = Path(directory) / "match.json"
+                destination = Path(directory) / "replay.hdf5"
+                payload = self.payload()
+                payload["metadata"]["scoring_version"] = version
+                recorded = payload["metadata"]["scoring_config"]
+                recorded.update(
+                    normal_impulse_threshold_ns=threshold,
+                    window_ms=100, per_hand_cooldown_ms=100,
+                )
+                source.write_text(json.dumps(payload))
+                export(source, destination)
+                replay = read_replay(destination)
+                self.assertEqual(replay.meta["scoring_config"], recorded)
+                self.assertEqual(replay.meta["environment"]["environment_version"], environment)
 
-    def test_v5_missing_rule_metadata_is_rejected_without_artifact(self):
+    def test_v6_missing_rule_metadata_is_rejected_without_artifact(self):
         with tempfile.TemporaryDirectory() as directory:
             source, destination = (
                 Path(directory) / "match.json",

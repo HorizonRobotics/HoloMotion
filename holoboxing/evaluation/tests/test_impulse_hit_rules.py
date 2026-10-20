@@ -3,6 +3,7 @@ from holoboxing.evaluation.runtime.rules import MatchStateMachine
 from holoboxing.evaluation.runtime.impulse_hit_rules import (
     RollingNormalImpulse,
 )
+from holoboxing.evaluation.runtime.hand_hit_rules import SCORING_VERSION, scoring_config
 
 
 def contact(
@@ -35,34 +36,63 @@ class ImpulseRulesTest(unittest.TestCase):
             fallen=[False, False],
         )
 
-    def test_exact_10ns_zero_speed_scores(self):
-        result = self.step(0.005, contact(2000, speed=0))
+    def test_exact_5ns_zero_speed_scores(self):
+        result = self.step(0.005, contact(1000, speed=0))
         self.assertEqual(result.score, (1, 0))
         hit = result.events[0]
-        self.assertEqual(hit["normal_impulse_ns"], 10)
-        self.assertEqual(hit["impulse_threshold_ns"], 10)
+        self.assertEqual(hit["normal_impulse_ns"], 5)
+        self.assertEqual(hit["impulse_threshold_ns"], 5)
+        self.assertEqual(hit["impulse_window_ms"], 20)
         self.assertIsNone(hit["speed_threshold_mps"])
 
-    def test_old_5ns_threshold_no_longer_scores(self):
-        self.assertEqual(self.step(0.005, contact(1000)).score, (0, 0))
+    def test_below_5ns_does_not_score(self):
+        self.assertEqual(self.step(0.005, contact(999)).score, (0, 0))
 
     def test_below_threshold_then_accumulate(self):
-        self.assertEqual(self.step(0.005, contact(1999)).score, (0, 0))
+        self.assertEqual(self.step(0.005, contact(999)).score, (0, 0))
         self.assertEqual(self.step(0.010, contact(1)).score, (1, 0))
 
-    def test_20_substeps_not_peak_force_times_100ms(self):
-        for i in range(1, 20):
-            self.assertEqual(self.step(i * 0.005, contact(100)).score, (0, 0))
-        self.assertEqual(self.step(0.1, contact(100)).score, (1, 0))
+    def test_four_physics_substeps_accumulate_exact_5ns(self):
+        for i in range(1, 4):
+            self.assertEqual(self.step(i * 0.005, contact(250)).score, (0, 0))
+        self.assertEqual(self.step(0.020, contact(250)).score, (1, 0))
         self.assertAlmostEqual(
-            self.ref.contact_diagnostics[0]["normal_impulse_ns"], 10
+            self.ref.contact_diagnostics[0]["normal_impulse_ns"], 5
         )
+
+    def test_control_frame_integrates_four_physics_samples(self):
+        result = self.ref.observe_frame(
+            sim_time_s=.020, contacts=[],
+            root_pos=[[-.5, 0, .8], [.5, 0, .8]], fallen=[False, False],
+            physics_samples=[(i * .005, [contact(250)]) for i in range(1, 5)],
+        )
+        self.assertEqual(result.score, (1, 0))
+        hits = [event for event in result.events if event['type'] == 'HIT']
+        self.assertEqual(len(hits), 1)
+        self.assertEqual(hits[0]['physics_time_s'], .020)
+        self.assertEqual(hits[0]['normal_impulse_ns'], 5)
+
+    def test_recorded_rules_match_window_threshold_and_cooldown(self):
+        config = scoring_config()
+        self.assertEqual(config['window_ms'], 20)
+        self.assertEqual(config['normal_impulse_threshold_ns'], 5)
+        self.assertEqual(config['per_hand_cooldown_ms'], 200)
+        self.assertTrue(SCORING_VERSION.endswith('_v6'))
+
+    def test_legacy_mode_spelling_uses_current_impulse_rules(self):
+        self.ref = MatchStateMachine(scoring_mode='impulse100ms')
+        self.assertEqual(self.step(.005, contact(1000)).score, (1, 0))
+        self.assertEqual(self.step(.105, contact(1000)).score, (1, 0))
+
+    def test_force_cannot_accumulate_beyond_20ms_window(self):
+        for i in range(1, 41):
+            self.assertEqual(self.step(i * .005, contact(200)).score, (0, 0))
 
     def test_half_open_window_expiry_and_empty_steps(self):
         clock = RollingNormalImpulse()
         self.assertAlmostEqual(clock.update(0.005, [contact(800)])[0][0, 0], 4)
-        self.assertEqual(clock.update(0.104, [])[0][0, 0], 4)
-        self.assertEqual(clock.update(0.105, [contact(200)])[0][0, 0], 1)
+        self.assertEqual(clock.update(0.024, [])[0][0, 0], 4)
+        self.assertEqual(clock.update(0.025, [contact(200)])[0][0, 0], 1)
 
     def test_duplicate_points_not_double_counted_and_multiple_points_sum(self):
         clock = RollingNormalImpulse()
@@ -78,10 +108,10 @@ class ImpulseRulesTest(unittest.TestCase):
     def test_actors_hands_and_targets(self):
         result = self.step(
             0.005,
-            contact(1200, hand="left_hand", target="head", pair=0),
-            contact(800, hand="left_hand", target="chest", pair=1),
-            contact(1999, hand="right_hand", pair=2),
-            contact(2000, actor=1, pair=3),
+            contact(600, hand="left_hand", target="head", pair=0),
+            contact(400, hand="left_hand", target="chest", pair=1),
+            contact(999, hand="right_hand", pair=2),
+            contact(1000, actor=1, pair=3),
         )
         self.assertEqual(result.score, (1, 1))
         self.assertEqual(
@@ -99,43 +129,43 @@ class ImpulseRulesTest(unittest.TestCase):
         )
 
     def test_cooldown_does_not_require_separation(self):
-        self.step(0.005, contact(2000))
+        self.step(0.005, contact(1000))
         self.step(0.010)
-        self.step(0.10, contact(0))
-        self.step(0.105)
-        self.assertEqual(self.step(0.20, contact(2000)).score, (2, 0))
-        self.step(0.205)
-        self.assertEqual(self.step(0.305, contact(2000)).score, (3, 0))
+        self.assertEqual(self.step(0.105, contact(1000)).score, (1, 0))
+        self.assertEqual(self.step(0.200, contact(1000)).score, (1, 0))
+        self.assertEqual(self.step(0.205, contact(1000)).score, (2, 0))
+        self.assertEqual(self.step(0.400, contact(1000)).score, (2, 0))
+        self.assertEqual(self.step(0.405, contact(1000)).score, (3, 0))
 
-    def test_sustained_contact_scores_every_100ms(self):
+    def test_sustained_contact_scores_every_200ms(self):
         for i in range(1, 101):
             self.assertEqual(
-                self.step(i * 0.005, contact(2000)).score,
-                ((i - 1) // 20 + 1, 0),
+                self.step(i * 0.005, contact(1000)).score,
+                ((i - 1) // 40 + 1, 0),
             )
 
     def test_scored_impulse_cannot_be_reused(self):
-        self.step(0.005, contact(2000))
-        for i in range(2, 22):
+        self.step(0.005, contact(1000))
+        for i in range(2, 41):
             self.assertEqual(self.step(i * 0.005, contact(0)).score, (1, 0))
-        self.assertEqual(self.step(0.110, contact(1999)).score, (1, 0))
-        self.assertEqual(self.step(0.115, contact(1)).score, (2, 0))
+        self.assertEqual(self.step(0.205, contact(999)).score, (1, 0))
+        self.assertEqual(self.step(0.210, contact(1)).score, (2, 0))
 
     def test_hands_have_independent_cooldowns(self):
-        self.assertEqual(self.step(0.005, contact(2000)).score, (1, 0))
+        self.assertEqual(self.step(0.005, contact(1000)).score, (1, 0))
         self.assertEqual(
-            self.step(0.01, contact(2000, hand="right_hand")).score, (2, 0)
-        )
-        self.assertEqual(self.step(0.105, contact(2000)).score, (3, 0))
-        self.assertEqual(
-            self.step(0.1055, contact(2000, hand="right_hand")).score, (3, 0)
+            self.step(0.01, contact(1000, hand="right_hand")).score, (2, 0)
         )
         self.assertEqual(
-            self.step(0.11, contact(0, hand="right_hand")).score, (4, 0)
+            self.step(0.205, contact(1000), contact(1000, hand="right_hand")).score,
+            (3, 0),
+        )
+        self.assertEqual(
+            self.step(0.210, contact(0, hand="right_hand")).score, (4, 0)
         )
 
     def test_reset_clears_old_impulse(self):
-        self.step(0.005, contact(1999))
+        self.step(0.005, contact(999))
         self.ref.reset_motion_state()
         self.assertEqual(self.step(0.01, contact(1)).score, (0, 0))
 

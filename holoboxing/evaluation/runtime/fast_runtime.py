@@ -592,16 +592,16 @@ def install():
         quaternions = quaternions / torch.linalg.vector_norm(
             quaternions, dim=-1, keepdim=True
         )
-        data = self.scene._gpu_physics.data
-        cvel = wp.to_torch(data.cvel)[0][self.body_gpu].float()
+        state = self.scene._observation_fk
+        cvel = wp.to_torch(state.cvel)[self.body_gpu].float()
         roots = torch.as_tensor(
             self.scene.model.body_rootid[self.body_ids], device=self.device
         )
-        com = wp.to_torch(data.subtree_com)[0][roots].float()
+        com = wp.to_torch(state.subtree_com)[roots].float()
         velocity = cvel[..., 3:] + torch.cross(
             cvel[..., :3], positions - com, dim=-1
         )
-        qvel = wp.to_torch(data.qvel)[0]
+        qvel = wp.to_torch(state.qvel)
         omega = torch.stack(
             [qvel[v + 3 : v + 6].float() for v in self.scene._root_dof]
         )

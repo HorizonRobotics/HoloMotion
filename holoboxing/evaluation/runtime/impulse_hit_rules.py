@@ -1,12 +1,13 @@
-"""Causal 100ms integral of measured legal-hand normal forces (N·s)."""
+"""Causal 20ms integral of measured legal-hand normal forces (N·s)."""
 
 from collections import deque
 import math
 import numpy as np
 from .hand_hit_rules import HandHitGate, hand_index, target_part
 
-WINDOW_SECONDS = 0.1
-THRESHOLD_NS = 10.0
+WINDOW_SECONDS = 0.02
+THRESHOLD_NS = 5.0
+COOLDOWN_SECONDS = 0.2
 PHYSICS_DT = 0.005
 
 
@@ -107,7 +108,7 @@ class ImpulseHandHitGate(HandHitGate):
         eligible = self.window[..., None] >= THRESHOLD_NS - 1e-9
         eligible = physical & eligible
         hits = eligible.any(axis=-1) & (
-            now - self.last_hit >= WINDOW_SECONDS - 1e-9
+            now - self.last_hit >= COOLDOWN_SECONDS - 1e-9
         )
         self.last_hit[hits] = now
         return hits, eligible

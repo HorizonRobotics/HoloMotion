@@ -17,25 +17,26 @@ the data or training examples.
 
 ## Test your policy
 
-Local and cloud evaluation use the same evaluation image. Use the official
-release's exact image digest to keep evaluation code, dependencies, scoring
-rules, frozen HoloMotion controller, and resources aligned.
+Use the evaluation image selected for your competition round.
+Keep its verified image ID or repository digest with each result.
+Matching tags alone do not establish parity with the cloud runtime.
 
 Validation and matches require Linux, Docker, an NVIDIA GPU, and NVIDIA
 Container Toolkit. Playback requires Docker and a browser.
 The image bundles the tracker, robot resources, arena, and player; no separate
 download or host Python environment is needed.
-The v9 image includes the gloved-robot and collision-precision fixes.
-Its published tag is `horizonrobotics/holomotion:holoboxing-eval-v9-amd64`.
-The commands below pin its verified repository digest.
-Pull the published image before running these examples:
+The current version is **v10**, with consistent observation timing and updated hit rules.
+For a supplied v10 archive, verify its accompanying checksum, then import it:
 
 ```bash
-export HOLOBOXING_IMAGE="horizonrobotics/holomotion@sha256:5c54be599351bafe2392c8fdae2647ba6c107a760228bffa8b2b33dd85e2a67a"
-docker pull --platform linux/amd64 "$HOLOBOXING_IMAGE"
+sha256sum --check SHA256SUMS
+docker load --input holoboxing-eval-v10-amd64.tar.gz
+export HOLOBOXING_IMAGE="horizonrobotics/holomotion:holoboxing-eval-v10-amd64"
+docker image inspect --format '{{.Id}}' "$HOLOBOXING_IMAGE"
 ```
 
 See the [setup guide](evaluation/README.md#run) for digest pinning, archive loading, and host requirements.
+The v10 tag above identifies the imported archive; no Docker Hub publication is claimed here.
 Source development uses the [published resource revision](evaluation/README.md#source-resources) pinned by this checkout.
 
 `my_policy.onnx` is your model; `opponent_policy.onnx` is a model to test against.
@@ -77,6 +78,10 @@ conditions and the official hardware check.
 A round lasts up to 60 simulation seconds. A qualifying hand contact with the
 opponent's head or torso earns one point. A confirmed knockout earns 1,000 points
 and ends the round. Otherwise, the higher score wins at timeout; equal scores draw.
+
+In v10, a hit requires **5 N·s** normal impulse within **20 ms**.
+Each hand has a **200 ms** scoring cooldown.
+Scoring consumes accumulated impulse; contact separation is unnecessary.
 
 See [match rules](evaluation/README.md#match-rules) for contact thresholds,
 scoring cooldowns, fall criteria, and simultaneous knockouts.

@@ -9,7 +9,7 @@ import math
 import os
 
 SCORING_VERSION = (
-    "hands_only_normal_impulse100ms_10Ns_cooldown100ms_fall030_ko1000_v5"
+    "hands_only_normal_impulse20ms_5Ns_cooldown200ms_fall030_ko1000_v6"
 )
 FORCE_LEVELS = (1.0, 4.0, 16.0, 64.0, 128.0)
 SPEED_LEVELS = (0.1, 0.4, 1.6)
@@ -18,12 +18,14 @@ REARM_SECONDS = 0.1
 
 def scoring_config():
     """Official impulse rules; legacy force/speed gate settings are separate."""
+    from .impulse_hit_rules import COOLDOWN_SECONDS, THRESHOLD_NS, WINDOW_SECONDS
+
     return dict(
         round_duration_s=60,
         ko_bonus=1000,
-        normal_impulse_threshold_ns=10,
-        window_ms=100,
-        per_hand_cooldown_ms=100,
+        normal_impulse_threshold_ns=THRESHOLD_NS,
+        window_ms=int(WINDOW_SECONDS * 1000),
+        per_hand_cooldown_ms=int(COOLDOWN_SECONDS * 1000),
         consume_scored_impulse=True,
         fall_height_m=0.30,
         fall_bodies=["pelvis", "torso_link"],

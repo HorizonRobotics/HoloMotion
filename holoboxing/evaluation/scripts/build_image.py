@@ -127,7 +127,7 @@ def prepare_context(directory, assets, lower, *, development=False):
     ).hexdigest()
     manifest = {
         "schema_version": 1,
-        "image_version": "v9",
+        "image_version": "v10",
         "code_revision": revision,
         "development_snapshot": dirty,
         "source_fingerprint": source_fingerprint,
@@ -218,7 +218,7 @@ def main():
         )
     )[0]
     receipt = {
-        "image_version": "v9",
+        "image_version": "v10",
         "image": args.tag,
         "image_id": inspect["Id"],
         "bytes": inspect["Size"],

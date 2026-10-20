@@ -29,8 +29,9 @@ Python 入口为 `python -m holoboxing`。
 
 训练或从源码评测时，先准备[源码使用所需资源](#源码使用所需资源)。
 
-**建议使用 Docker Hub 上的官方评测镜像，并固定为云端评测使用的确切镜像摘要。**
-这样可统一评测代码、依赖、冻结控制器和资源。
+**请使用本轮比赛指定的评测镜像。**
+须核验归档校验值和镜像 ID，或已发布的仓库摘要。
+与云端核对后，才能声明版本一致。
 仅标签相同，不能保证镜像内容相同。
 
 镜像已包含 **HoloMotion V2 模型权重、机器人 URDF、网格模型、擂台纹理和浏览器播放器**。
@@ -50,26 +51,33 @@ Container Toolkit 使容器能够访问 GPU。
 官方评测要求 **RTX 5090**。
 其他主机操作系统尚未在此验证。
 
-v9 镜像已包含拳套及碰撞精度修复。
-公开标签为 `horizonrobotics/holomotion:holoboxing-eval-v9-amd64`。
-以下命令固定其已核验的仓库摘要。
-请先拉取已发布的 Linux amd64 镜像。
+当前版本为 **v10**。
+策略位姿和速度来自同一当前状态。
+冲量窗口为 20 ms，阈值为 5 N·s。
+每只手的计分间隔为 200 ms。
+此前的 v9 仍保留原规则和观测行为。
+
+收到 Linux amd64 的 v10 归档后，先核验再导入。
 
 ```bash
-export HOLOBOXING_IMAGE="horizonrobotics/holomotion@sha256:5c54be599351bafe2392c8fdae2647ba6c107a760228bffa8b2b33dd85e2a67a"
-docker pull --platform linux/amd64 "$HOLOBOXING_IMAGE"
-docker image inspect --format '{{index .RepoDigests 0}}' "$HOLOBOXING_IMAGE"
+sha256sum --check SHA256SUMS
+docker load --input holoboxing-eval-v10-amd64.tar.gz
+export HOLOBOXING_IMAGE="horizonrobotics/holomotion:holoboxing-eval-v10-amd64"
+docker image inspect --format '{{.Id}}' "$HOLOBOXING_IMAGE"
 ```
 
-最后一条命令显示拉取版本的仓库摘要。
-将该 `horizonrobotics/holomotion@sha256:...` 引用赋给 `HOLOBOXING_IMAGE`。
-这样可固定已下载的版本。
-与云端对齐时，须核对比赛指定的确切摘要。
-本地构建记录中的镜像 ID 不是仓库摘要。
+最后一条命令显示镜像 ID。
+请与随附构建记录核对。
+将已核验的 ID 赋给 `HOLOBOXING_IMAGE`，可固定本地版本。
+上述 v10 标签用于选择导入的归档。
+本文未声明该版本已发布至 Docker Hub。
+若比赛提供仓库镜像，请拉取其确切摘要。
+引用格式为 `horizonrobotics/holomotion@sha256:...`。
+本地镜像 ID 与仓库摘要标识的对象不同。
 源码开发可按[构建说明](#构建镜像)制作镜像。
 
 `./holoboxing/run.sh --init` 仍为预留入口，不执行安装或下载。
-请按上方命令显式拉取镜像。
+请显式导入或拉取所选镜像。
 随后在 HoloMotion 仓库根目录执行：
 
 `my_policy.onnx` 为自己的模型，`opponent_policy.onnx` 为对手模型。
@@ -124,8 +132,8 @@ MP4 编码需要兼容的 Chrome / Edge 浏览器，并通过 HTTPS 或 localhos
 
 | 判定 | 规则 |
 | --- | --- |
-| 有效击打 | 手部接触对手头部或躯干，在 **100 ms** 内累计法向冲量至少 **10 N·s**，得 **1 分** |
-| 连续得分 | 每只手有 **100 ms** 得分冷却时间；得分会消耗累计冲量，无需先脱离接触 |
+| 有效击打 | 手部接触对手头部或躯干。**20 ms** 内法向冲量累计达 **5 N·s**，得 **1 分**。 |
+| 连续得分 | 每只手的得分冷却时间为 **200 ms**。得分会消耗累计冲量，无需先脱离接触。 |
 | 倒地 | 骨盆或躯干的刚体原点距擂台地面的高度严格小于 **0.30 m**；仅倾斜不算倒地 |
 | 击倒（KO） | 连续倒地 **3 s** 后确认击倒；对手得 **1,000 分**，回合结束 |
 | 胜负 | 单方确认击倒时，对手获胜；双方同时确认倒地时为平局；超时则得分高者获胜，同分为平局 |
@@ -204,6 +212,10 @@ ONNX 元数据 `policy_contract` 为可选项。
 重置后，历史序列各帧均重复第一帧实测状态。
 该帧的前一时刻位姿设为其当前位姿。
 每步先生成观测，再执行该步动作。
+
+每帧位姿、线速度和骨盆角速度使用同一当前状态。
+该状态由关节位置 `qpos` 和速度 `qvel` 确定。
+观测刷新独立执行，保留物理求解器及接触状态。
 
 ### 目标位姿
 
@@ -311,7 +323,9 @@ HoloMotion 已在 `thirdparties/HoloMotion_assets` 中跟踪该数据集。
 [`795e5e1c1d3b6b15cc1cea9e7752742715724826`](https://huggingface.co/datasets/HorizonRobotics/HoloMotion_assets/commit/795e5e1c1d3b6b15cc1cea9e7752742715724826)
 
 该提交包含 `boxing-v6-resources`。
-完整资源树与 v9 镜像内置版本一致。
+v9 与 v10 共用同一物理资源。
+资源版本仍为 `boxing-v6-resources`。
+资源版本独立于镜像及计分版本。
 相同文件以新提交发布，无需因此重建镜像。
 目录结构和来源说明见[资源文档](../assets/README.zh-CN.md)。
 
@@ -347,7 +361,7 @@ source train.env
 请从无未提交修改的 HoloMotion 仓库构建：
 
 ```bash
-./holoboxing/evaluation/build.sh --assets /absolute/assets --lower /absolute/lower --context /absolute/new-context --image holoboxing-eval:local-v9
+./holoboxing/evaluation/build.sh --assets /absolute/assets --lower /absolute/lower --context /absolute/new-context --image holoboxing-eval:local-v10
 ```
 
 构建上下文须使用源码仓库之外的新目录。

@@ -199,14 +199,16 @@ def export(source, destination, context=None, asset_manifest=None):
         scoring_version in (
             "hands_only_normal_impulse100ms_5Ns_cooldown100ms_fall030_ko1000_v4",
             "hands_only_normal_impulse100ms_10Ns_cooldown100ms_fall030_ko1000_v5",
+            "hands_only_normal_impulse20ms_5Ns_cooldown200ms_fall030_ko1000_v6",
         )
     ):
         if not isinstance(metadata.get("scoring_config"), dict):
-            raise ValueError("v4/v5 requires recorded scoring_config")
+            raise ValueError("v4/v5/v6 requires recorded scoring_config")
         meta["scoring_config"] = dict(metadata["scoring_config"])
         meta["render_model"]["arena_theme"] = "holomotion-hsv-zero-v1"
         meta["environment"]["environment_version"] = (
-            "boxing-track2-20261015-v5" if scoring_version.endswith("_v5")
+            "boxing-track2-20261020-v6" if scoring_version.endswith("_v6")
+            else "boxing-track2-20261015-v5" if scoring_version.endswith("_v5")
             else "boxing-track2-20261014-v4"
         )
     for fighter, side in enumerate(("red", "blue")):

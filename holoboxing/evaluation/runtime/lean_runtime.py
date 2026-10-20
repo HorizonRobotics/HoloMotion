@@ -138,15 +138,17 @@ class Bound:
         data = scene._gpu_physics.data
         for name in ("qpos", "qvel", "xpos", "xquat", "cvel", "com"):
             if name in self.inputs:
-                if name in ("xpos", "xquat"):
+                if name in ("qvel", "xpos", "xquat", "cvel", "com"):
                     source = getattr(
                         scene._observation_fk,
-                        "positions" if name == "xpos" else "rotations",
+                        {
+                            "xpos": "positions",
+                            "xquat": "rotations",
+                            "com": "subtree_com",
+                        }.get(name, name),
                     )
                 else:
-                    source = getattr(
-                        data, "subtree_com" if name == "com" else name
-                    )
+                    source = getattr(data, name)
                 wp.copy(
                     self.inputs[name],
                     view_float(source, self.inputs[name].shape),

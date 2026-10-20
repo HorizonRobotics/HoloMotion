@@ -21,6 +21,7 @@ from .impulse_hit_rules import (
     ImpulseHandHitGate,
     RollingNormalImpulse,
     THRESHOLD_NS,
+    WINDOW_SECONDS,
 )
 
 NUM_FIGHTERS = 2
@@ -101,9 +102,12 @@ class MatchStateMachine:
     )
 
     def __init__(
-        self, rules: MatchRules | None = None, *, scoring_mode="impulse100ms"
+        self, rules: MatchRules | None = None, *, scoring_mode="impulse"
     ) -> None:
-        if scoring_mode not in ("impulse100ms", "force_speed"):
+        # Retain the old caller spelling; recorded rules carry the actual window.
+        if scoring_mode == "impulse100ms":
+            scoring_mode = "impulse"
+        if scoring_mode not in ("impulse", "force_speed"):
             raise ValueError("Unknown scoring mode")
         self.scoring_mode = scoring_mode
         self.rules = rules or MatchRules()
@@ -126,7 +130,7 @@ class MatchStateMachine:
         self._ko_latched = np.zeros(NUM_FIGHTERS, dtype=np.bool_)
         self.hand_gate = (
             ImpulseHandHitGate()
-            if self.scoring_mode == "impulse100ms"
+            if self.scoring_mode == "impulse"
             else HandHitGate(
                 self.rules.minimum_contact_force_n,
                 self.rules.minimum_closing_speed_mps,
@@ -144,7 +148,7 @@ class MatchStateMachine:
     ) -> list[dict[str, Any]]:
         contacts = list(contacts)
         impulses = None
-        if self.scoring_mode == "impulse100ms":
+        if self.scoring_mode == "impulse":
             impulses, _ = self.impulse_clock.update(now, contacts)
             self.hand_gate.window = impulses
         count = max(1, len(contacts))
@@ -265,7 +269,7 @@ class MatchStateMachine:
                     normal_force_sum_n=item.get(
                         "normal_force_sum_n", item.get("normal_force_n")
                     ),
-                    impulse_window_ms=100,
+                    impulse_window_ms=int(WINDOW_SECONDS * 1000),
                     impulse_threshold_ns=THRESHOLD_NS,
                     force_threshold_n=None,
                     speed_threshold_mps=None,

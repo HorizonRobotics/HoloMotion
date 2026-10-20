@@ -8,6 +8,10 @@ Run commands from the HoloMotion repository root.
 **Samples:** The data and preparation workflow are examples for learning the
 process or using as a reference for your own development.
 
+Data preparation does not define the match referee.
+Evaluate exported policies with the current [v10 match rules](../evaluation/README.md#match-rules)
+and [observation contract](../evaluation/README.md#observations).
+
 | Source | Preparation route |
 | --- | --- |
 | RoboStriker | Download released G1 robot NPZ files, then run `prepare` |

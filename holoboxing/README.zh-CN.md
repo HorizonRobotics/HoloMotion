@@ -15,25 +15,28 @@ ONNX 是提交模型使用的通用神经网络格式。
 
 ## 本地评测
 
-本地与云端使用相同的评测镜像。
-请使用官方发布的确切镜像摘要。
-这样可统一评测代码、依赖、计分规则、冻结控制器和资源。
+请使用本轮比赛指定的评测镜像。
+每次结果须记录已核验的镜像 ID 或仓库摘要。
+仅标签相同，不能证明与云端版本一致。
 
 模型验证和对战需要 Linux、Docker、NVIDIA GPU，以及 NVIDIA Container Toolkit。
 回放只需要 Docker 和浏览器。
 镜像已包含控制器、机器人资源、擂台和播放器。
 无需另行下载这些资源，也无需在主机配置 Python 环境。
-v9 镜像已包含拳套及碰撞精度修复。
-公开标签为 `horizonrobotics/holomotion:holoboxing-eval-v9-amd64`。
-以下命令固定其已核验的仓库摘要。
-运行以下示例前，先拉取已发布的镜像。
+当前版本为 **v10**。
+该版本统一观测时序，并更新击打规则。
+收到 v10 归档后，先核验随附校验值，再导入。
 
 ```bash
-export HOLOBOXING_IMAGE="horizonrobotics/holomotion@sha256:5c54be599351bafe2392c8fdae2647ba6c107a760228bffa8b2b33dd85e2a67a"
-docker pull --platform linux/amd64 "$HOLOBOXING_IMAGE"
+sha256sum --check SHA256SUMS
+docker load --input holoboxing-eval-v10-amd64.tar.gz
+export HOLOBOXING_IMAGE="horizonrobotics/holomotion:holoboxing-eval-v10-amd64"
+docker image inspect --format '{{.Id}}' "$HOLOBOXING_IMAGE"
 ```
 
 摘要固定、镜像导入及主机要求见[运行说明](evaluation/README.zh-CN.md#运行)。
+上述 v10 标签用于选择导入的归档。
+本文未声明该版本已发布至 Docker Hub。
 源码开发使用当前检出版本固定的[已发布资源](evaluation/README.zh-CN.md#源码使用所需资源)。
 
 `my_policy.onnx` 是自己的模型，`opponent_policy.onnx` 是用于对战的对手模型。
@@ -76,6 +79,10 @@ docker pull --platform linux/amd64 "$HOLOBOXING_IMAGE"
 击倒判定成立后得 1,000 分，回合立即结束。
 若未分出击倒胜负，则在时间结束时比较得分。
 得分高者获胜，同分为平局。
+
+v10 的法向冲量阈值为 **5 N·s**。
+累计窗口为 **20 ms**，每只手冷却 **200 ms**。
+得分会消耗累计冲量，无需先脱离接触。
 
 接触阈值、得分冷却时间、倒地标准和同时击倒的处理方式见[比赛规则](evaluation/README.zh-CN.md#比赛规则)。
 

@@ -10,6 +10,11 @@ train an attacker against a humanoid sandbag in the competition ring.
 **Samples:** The training methods, configurations, and commands are samples
 for learning the workflow or using as a reference for your own development.
 
+Training examples do not define the match referee.
+Validate exported policies with the current [v10 match rules](../evaluation/README.md#match-rules)
+and [observation contract](../evaluation/README.md#observations).
+The 20–100 ms target horizon is separate from the referee's 20 ms hit window.
+
 ```text
 Prepare data -> Supervised training -> Reinforcement learning -> Export -> Evaluate
 ```
