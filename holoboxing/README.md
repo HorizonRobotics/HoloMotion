@@ -25,18 +25,16 @@ Validation and matches require Linux, Docker, an NVIDIA GPU, and NVIDIA
 Container Toolkit. Playback requires Docker and a browser.
 The image bundles the tracker, robot resources, arena, and player; no separate
 download or host Python environment is needed.
-The current version is **v10**, with consistent observation timing and updated hit rules.
-For a supplied v10 archive, verify its accompanying checksum, then import it:
+The **v10** evaluation image is published as `horizonrobotics/holomotion:holoboxing-eval-v10-amd64`.
+It includes consistent observation timing and the current hit rules.
+Pull its verified Linux amd64 repository digest:
 
 ```bash
-sha256sum --check SHA256SUMS
-docker load --input holoboxing-eval-v10-amd64.tar.gz
-export HOLOBOXING_IMAGE="horizonrobotics/holomotion:holoboxing-eval-v10-amd64"
-docker image inspect --format '{{.Id}}' "$HOLOBOXING_IMAGE"
+export HOLOBOXING_IMAGE="horizonrobotics/holomotion@sha256:a3b20ba51c8647df6f147c4e47b5a674c582ce22bb8ae76bee9ded2b9ba0ab6a"
+docker pull --platform linux/amd64 "$HOLOBOXING_IMAGE"
 ```
 
-See the [setup guide](evaluation/README.md#run) for digest pinning, archive loading, and host requirements.
-The v10 tag above identifies the imported archive; no Docker Hub publication is claimed here.
+See the [setup guide](evaluation/README.md#run) for archive loading and host requirements.
 Source development uses the [published resource revision](evaluation/README.md#source-resources) pinned by this checkout.
 
 `my_policy.onnx` is your model; `opponent_policy.onnx` is a model to test against.

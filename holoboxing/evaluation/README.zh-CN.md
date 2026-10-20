@@ -57,22 +57,26 @@ Container Toolkit 使容器能够访问 GPU。
 每只手的计分间隔为 200 ms。
 此前的 v9 仍保留原规则和观测行为。
 
-收到 Linux amd64 的 v10 归档后，先核验再导入。
+以下命令拉取已发布的 Linux amd64 v10 镜像。
+仓库摘要已经核验。
+
+```bash
+export HOLOBOXING_IMAGE="horizonrobotics/holomotion@sha256:a3b20ba51c8647df6f147c4e47b5a674c582ce22bb8ae76bee9ded2b9ba0ab6a"
+docker pull --platform linux/amd64 "$HOLOBOXING_IMAGE"
+docker image inspect --format '{{index .RepoDigests 0}}' "$HOLOBOXING_IMAGE"
+```
+
+收到离线归档后，也可先核验再导入。
 
 ```bash
 sha256sum --check SHA256SUMS
 docker load --input holoboxing-eval-v10-amd64.tar.gz
-export HOLOBOXING_IMAGE="horizonrobotics/holomotion:holoboxing-eval-v10-amd64"
+export HOLOBOXING_IMAGE="sha256:6e7a42a48259a062ea78d92caf1ed1b4eb5fd0bba8702b59efd933f18e18e5a3"
 docker image inspect --format '{{.Id}}' "$HOLOBOXING_IMAGE"
 ```
 
-最后一条命令显示镜像 ID。
-请与随附构建记录核对。
-将已核验的 ID 赋给 `HOLOBOXING_IMAGE`，可固定本地版本。
-上述 v10 标签用于选择导入的归档。
-本文未声明该版本已发布至 Docker Hub。
-若比赛提供仓库镜像，请拉取其确切摘要。
-引用格式为 `horizonrobotics/holomotion@sha256:...`。
+请将导入后的镜像 ID 与构建记录核对。
+仓库与归档版本均由源码提交 `923d03cb` 构建。
 本地镜像 ID 与仓库摘要标识的对象不同。
 源码开发可按[构建说明](#构建镜像)制作镜像。
 

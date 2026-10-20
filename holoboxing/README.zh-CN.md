@@ -23,20 +23,17 @@ ONNX 是提交模型使用的通用神经网络格式。
 回放只需要 Docker 和浏览器。
 镜像已包含控制器、机器人资源、擂台和播放器。
 无需另行下载这些资源，也无需在主机配置 Python 环境。
-当前版本为 **v10**。
+当前版本为 **v10**，已发布至 Docker Hub。
 该版本统一观测时序，并更新击打规则。
-收到 v10 归档后，先核验随附校验值，再导入。
+公开标签为 `horizonrobotics/holomotion:holoboxing-eval-v10-amd64`。
+以下命令固定已核验的 Linux amd64 仓库摘要。
 
 ```bash
-sha256sum --check SHA256SUMS
-docker load --input holoboxing-eval-v10-amd64.tar.gz
-export HOLOBOXING_IMAGE="horizonrobotics/holomotion:holoboxing-eval-v10-amd64"
-docker image inspect --format '{{.Id}}' "$HOLOBOXING_IMAGE"
+export HOLOBOXING_IMAGE="horizonrobotics/holomotion@sha256:a3b20ba51c8647df6f147c4e47b5a674c582ce22bb8ae76bee9ded2b9ba0ab6a"
+docker pull --platform linux/amd64 "$HOLOBOXING_IMAGE"
 ```
 
-摘要固定、镜像导入及主机要求见[运行说明](evaluation/README.zh-CN.md#运行)。
-上述 v10 标签用于选择导入的归档。
-本文未声明该版本已发布至 Docker Hub。
+镜像导入及主机要求见[运行说明](evaluation/README.zh-CN.md#运行)。
 源码开发使用当前检出版本固定的[已发布资源](evaluation/README.zh-CN.md#源码使用所需资源)。
 
 `my_policy.onnx` 是自己的模型，`opponent_policy.onnx` 是用于对战的对手模型。

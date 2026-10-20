@@ -54,19 +54,25 @@ It refreshes policy poses and velocities from the same current state.
 It uses a 20 ms impulse window, a 5 N·s threshold, and a 200 ms per-hand cooldown.
 The earlier v9 image retains its original rules and observation behavior.
 
-For a supplied Linux amd64 v10 archive, verify the accompanying checksum before loading it:
+Pull the published Linux amd64 v10 image by its verified repository digest:
+
+```bash
+export HOLOBOXING_IMAGE="horizonrobotics/holomotion@sha256:a3b20ba51c8647df6f147c4e47b5a674c582ce22bb8ae76bee9ded2b9ba0ab6a"
+docker pull --platform linux/amd64 "$HOLOBOXING_IMAGE"
+docker image inspect --format '{{index .RepoDigests 0}}' "$HOLOBOXING_IMAGE"
+```
+
+For a supplied offline archive, verify its accompanying checksum before importing it:
 
 ```bash
 sha256sum --check SHA256SUMS
 docker load --input holoboxing-eval-v10-amd64.tar.gz
-export HOLOBOXING_IMAGE="horizonrobotics/holomotion:holoboxing-eval-v10-amd64"
+export HOLOBOXING_IMAGE="sha256:6e7a42a48259a062ea78d92caf1ed1b4eb5fd0bba8702b59efd933f18e18e5a3"
 docker image inspect --format '{{.Id}}' "$HOLOBOXING_IMAGE"
 ```
 
-The last command prints the image ID; compare it with the supplied build receipt.
-Set `HOLOBOXING_IMAGE` to the verified ID to retain that exact local image.
-The v10 tag above selects the imported archive; it does not claim a Docker Hub publication.
-If the competition supplies a registry image, pull its exact `horizonrobotics/holomotion@sha256:...` reference instead.
+Compare the imported image ID with the supplied build receipt.
+The registry reference and archive identify the release built from source commit `923d03cb`.
 A local image ID and a registry repository digest identify different objects.
 Use the [build instructions](#building-the-image) for source development.
 
