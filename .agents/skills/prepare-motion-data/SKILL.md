@@ -27,7 +27,7 @@ Keep raw user data outside Git. Do not commit motion datasets, generated HDF5/NP
 Discover task-specific adapters in the selected project's documentation before
 forcing data through the generic human-motion pipeline. Already-retargeted robot
 motion should preserve its named joint/root contract and use the target
-evaluator's kinematics. See the [boxing data workflow](../../../holoboxing/data/README.md)
+evaluator's kinematics. See the [boxing data workflow](../../../holoboxing/README.md#initialize-the-policy-from-reference-motions)
 for its supported sources and current commands.
 
 Before claiming source coverage or reporting selection totals, verify the full

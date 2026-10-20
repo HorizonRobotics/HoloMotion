@@ -4,6 +4,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
+from holoboxing.data.contract import ROBOT_KINEMATICS
 from holoboxing.training.rsl_rl.modules.amp_discriminator import (
     AMPDiscriminator,
 )
@@ -33,7 +34,7 @@ def motion_files(path, *, resource_manifest_sha256=None):
         raise ValueError("AMP requires the prepared directory from holoboxing.data prepare")
     dataset = PreparedDataset(path / "manifest.json", validate_contents=False)
     identity = dataset.manifest["asset_identity"]
-    if identity.get("robot_kinematics") != "competition_xml_v1":
+    if identity.get("robot_kinematics") != ROBOT_KINEMATICS:
         raise ValueError("Regenerate AMP data with competition XML reference kinematics")
     if (
         resource_manifest_sha256 is not None

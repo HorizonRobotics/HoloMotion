@@ -3,7 +3,9 @@
 import unittest
 
 from holoboxing.evaluation.benchmark import reserve_budget
-from holoboxing.evaluation.runtime.chain_benchmark import control_loop_report
+from holoboxing.evaluation.runtime.chain_benchmark import (
+    control_loop_report, measure_chain,
+)
 
 
 class Clock:
@@ -19,6 +21,16 @@ class Clock:
 
 
 class ControlDeadlineTest(unittest.TestCase):
+    def test_default_sampling_warms_ten_and_measures_one_hundred_steps(self):
+        calls = []
+        report = measure_chain(
+            lambda: calls.append(None) or 0, lambda: None, clock=Clock()
+        )
+        self.assertEqual(len(calls), 110)
+        self.assertEqual(report["warmup"], 10)
+        self.assertEqual(report["iterations"], 100)
+        self.assertTrue(report["timing_completed"])
+
     def test_p99_uses_an_observed_tail_and_strict_deadline(self):
         durations = [19_000_000] * 99 + [20_000_000]
         frames = [

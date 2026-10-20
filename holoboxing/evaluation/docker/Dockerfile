@@ -57,7 +57,7 @@ RUN python -m holoboxing assets \
 ARG CODE_REVISION=unknown
 ARG INPUTS_SHA256=unknown
 LABEL org.opencontainers.image.title="HoloBoxing GPU evaluation" \
-      org.opencontainers.image.version="v10" \
+      org.opencontainers.image.version="v11" \
       org.opencontainers.image.source="https://github.com/HorizonRobotics/HoloMotion" \
       org.opencontainers.image.revision="${CODE_REVISION}" \
       org.holomotion.holoboxing.inputs.sha256="${INPUTS_SHA256}" \

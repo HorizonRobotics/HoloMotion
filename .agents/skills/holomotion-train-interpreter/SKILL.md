@@ -1,9 +1,23 @@
 ---
 name: holomotion-train-interpreter
-description: Run HoloMotion Python scripts or inspect packages with the project training environment. Use for training, evaluation, motion conversion, project Python commands, dependency checks, or any task that must use the environment selected by train.env.
+description: Select and use the task's HoloMotion Python environment. Use for training, evaluation, motion conversion, dependency checks, and project Python commands, including the standalone HoloBoxing workflow.
 ---
 
 # HoloMotion training interpreter
+
+## Select the task environment
+
+For participant HoloBoxing data, MuJoCo training, and export, use the
+[standalone boxing setup](../../../holoboxing/README.md#install-the-training-environment-optional).
+Use that environment's explicit Python path, normally
+`<repo>/.venv-holoboxing/bin/python`; do not clone the full Isaac training environment.
+Optional human-motion retargeting uses the separate environment documented there,
+because its Newton dependency requires a different Warp version.
+Docker isolates evaluation dependencies; reference training still runs in the
+host Python environment and enforces its physics dependency versions.
+
+For HoloMotion tracker training and other workflows owned by `train.env`,
+use the procedure below. Verify `sys.executable` before running either workflow.
 
 ## Workflow
 
@@ -28,7 +42,7 @@ source train.env
 
 ## Rules
 
-- Do not rely on `python`, `pip`, or `conda activate` from the caller's shell.
-- Verify `Train_CONDA_PREFIX` is non-empty and the requested binary exists.
+- Do not rely on an unverified `python`, `pip`, or activation state from the caller's shell.
+- For `train.env` workflows, verify `Train_CONDA_PREFIX` is non-empty and the requested binary exists.
 - Preserve the caller's arguments and working-directory requirements.
 - Do not import simulator packages merely to find their source; use the `isaaclab-source-lookup` skill.

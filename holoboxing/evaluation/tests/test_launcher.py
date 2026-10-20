@@ -133,11 +133,22 @@ class LauncherTest(unittest.TestCase):
             ("--match", "one", "two", "--port", "8081"),
             ("--view", "one", "--port", "65536"),
             ("--validate", "one", "--gpu", "-1"),
+            ("--match", "one", "two", "--benchmark"),
         ):
             with self.subTest(args=args):
                 result = self.run_launcher(*args)
                 self.assertEqual(result.returncode, 2, result.stderr)
                 self.assertFalse(self.log.exists())
+
+    def test_full_timing_is_explicit_and_official_mode_is_forwarded(self):
+        model = self.model("red.onnx")
+        result = self.run_launcher("--validate", model, "--benchmark")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("--benchmark", json.loads(self.log.read_text()))
+        result = self.run_launcher("--validate", model, "--qualification", "official")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        args = json.loads(self.log.read_text())
+        self.assertEqual(args[args.index("--qualification") + 1], "official")
 
     def test_print_command_has_no_output_directory_side_effect(self):
         model = self.model("red.onnx")

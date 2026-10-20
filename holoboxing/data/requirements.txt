@@ -1,2 +1,2 @@
-# Install into the HoloMotion training environment.
+# Public motion downloads. Included by the standalone boxing training requirements.
 gdown==6.4.2

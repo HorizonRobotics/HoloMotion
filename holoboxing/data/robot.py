@@ -50,9 +50,18 @@ def robot_spec(path, side="red"):
 @contextmanager
 def robot_file(scene, side="red"):
     """A temporary single-robot MJCF for existing HoloMotion FK readers."""
+    root = ET.fromstring(robot_xml(scene, side))
+    if root.find("actuator") is None:
+        # Replay XML has no motors; evaluation adds them when loading the scene.
+        # FK readers use motor targets to identify and order the controlled DOFs.
+        # Add that metadata only to this temporary kinematic model.
+        actuator = ET.SubElement(root, "actuator")
+        for joint in root.findall("worldbody/.//joint"):
+            if joint.get("type", "hinge") != "free":
+                ET.SubElement(actuator, "motor", joint=joint.attrib["name"])
     with TemporaryDirectory(prefix="boxing-xml-fk-") as directory:
         path = Path(directory) / "robot.xml"
-        path.write_text(robot_xml(scene, side))
+        path.write_text(ET.tostring(root, encoding="unicode"))
         yield path
 
 

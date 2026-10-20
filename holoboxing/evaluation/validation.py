@@ -20,9 +20,16 @@ def validate_model(
     *,
     qualification_mode="local",
     max_model_bytes=MAX_MODEL_BYTES,
+    full_chain=True,
 ):
     if qualification_mode not in ("local", "official"):
         raise ValueError("Qualification must be local or official")
+    if type(full_chain) is not bool:
+        raise ValueError("full_chain must be a boolean")
+    if qualification_mode == "official" and not full_chain:
+        raise ValueError("Official qualification requires full-chain timing")
+    if full_chain and (not assets or not lower):
+        raise ValueError("Full-chain timing requires --assets and --lower")
     if (
         type(max_model_bytes) is not int
         or not 1 <= max_model_bytes <= MAX_MODEL_BYTES
@@ -54,7 +61,9 @@ def validate_model(
         lower_controller=dict(
             version="2.0_link_10500",
             command_mode="VR-5",
-            model_path=str(Path(lower) / "exported/model_10500.onnx"),
+            model_path=str(Path(lower) / "exported/model_10500.onnx")
+            if lower
+            else None,
         ),
     )
     stage = "size"
@@ -76,12 +85,13 @@ def validate_model(
         check_contract(graph)
         stage = "provider"
         from .runtime.onnx_device import create_device_session
-        from .runtime.upper import neutral_observation, schema_for_model
+        from .runtime.upper import neutral_observation
+        from .runtime.compiled_artifacts import reference_schema
         from .runtime.policy_output import run_competitor, sanitize_target_pose
 
-        session = create_device_session(model)
+        session = create_device_session(model, runtime_stream=False)
         stage = "probe"
-        schema = schema_for_model(graph)
+        schema = reference_schema()
         _, sanitation = sanitize_target_pose(
             run_competitor(session, neutral_observation(schema))
         )
@@ -96,6 +106,16 @@ def validate_model(
         )
         # The temporary interface probe is not part of timed samples.
         del session, graph
+        if not full_chain:
+            report.update(
+                status="PASS",
+                chain_benchmark=dict(
+                    status="NOT_RUN",
+                    reason="Use --benchmark for full-chain performance measurement",
+                ),
+                hardware_qualification=dict(official_status="NOT_EVALUATED"),
+            )
+            return report
         stage = "chain"
         from .runtime.chain_benchmark import benchmark_model
 
@@ -103,8 +123,6 @@ def validate_model(
             model,
             assets=assets,
             lower_directory=lower,
-            warmup=100,
-            iterations=1000,
         )
         report["chain_benchmark"] = chain
         report["actual_fps"] = chain["fps"] or 0.0

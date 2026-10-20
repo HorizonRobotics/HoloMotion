@@ -63,6 +63,7 @@ class BoxingMatchScene:
         show_viewer=False,
         realtime=False,
         physics_device="cuda:0",
+        inference_benchmark=False,
     ):
         require_gpu(physics_device)
         if simulation_frequency != 200 or control_decimation != 4:
@@ -196,9 +197,14 @@ class BoxingMatchScene:
                         fighter,
                         aliases[body[len(prefix) :]],
                     )
-        from .gpu_physics import ResidentPhysics
+        if inference_benchmark:
+            from .benchmark_state import BenchmarkState
 
-        self._gpu_physics = ResidentPhysics(self, physics_device)
+            self._gpu_physics = BenchmarkState(self, physics_device)
+        else:
+            from .gpu_physics import ResidentPhysics
+
+            self._gpu_physics = ResidentPhysics(self, physics_device)
         self._started = time.monotonic()
 
     @property

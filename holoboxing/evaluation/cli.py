@@ -5,12 +5,12 @@ import json
 import os
 
 
-def _resources(parser, *, lower=False):
+def _resources(parser, *, lower=False, optional=False):
     assets = os.environ.get("HOLOBOXING_ASSETS")
     parser.add_argument(
         "--assets",
         default=assets,
-        required=not bool(assets),
+        required=not optional and not bool(assets),
         help="explicit boxing resource directory; bundled in the participant image",
     )
     if lower:
@@ -18,7 +18,7 @@ def _resources(parser, *, lower=False):
         parser.add_argument(
             "--lower",
             default=checkpoint,
-            required=not bool(checkpoint),
+            required=not optional and not bool(checkpoint),
             help="pinned public HoloMotion V2 bundle; bundled in the participant image",
         )
 
@@ -28,16 +28,21 @@ def parser():
     commands = result.add_subparsers(dest="command", required=True)
     validate = commands.add_parser(
         "validate",
-        help="validate one competitor ONNX and measure its complete chain",
+        help="check one ONNX model and run a CUDA compatibility probe",
     )
     validate.add_argument("model")
-    _resources(validate, lower=True)
+    _resources(validate, lower=True, optional=True)
     validate.add_argument("--output", default="validation.json")
+    validate.add_argument(
+        "--benchmark",
+        action="store_true",
+        help="also measure the complete upper + frozen-lower chain",
+    )
     validate.add_argument(
         "--qualification",
         choices=("local", "official"),
         default="local",
-        help="local runs on any compatible GPU; official requires the round's target hardware",
+        help="local checks compatibility; official always includes complete-chain timing on the required hardware",
     )
     match = commands.add_parser(
         "match", help="run both fighters on the first visible GPU"
@@ -100,6 +105,7 @@ def main(argv=None):
                 args.assets,
                 args.lower,
                 qualification_mode=args.qualification,
+                full_chain=args.benchmark or args.qualification == "official",
             )
             from .io import write_json
 

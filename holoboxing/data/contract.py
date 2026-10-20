@@ -20,6 +20,7 @@ from holoboxing.evaluation.runtime.model_contract import (
 
 OBSERVATION_DIM = 1097
 HISTORY_LENGTH = 10
+ROBOT_KINEMATICS = "urdf_gloves_xml_v2"
 
 
 @dataclass(frozen=True)
@@ -35,7 +36,7 @@ class CompetitionAssets:
     def identity(self) -> dict:
         tree = self.resources
         return {
-            "robot_kinematics": "urdf_gloves_xml_v2",
+            "robot_kinematics": ROBOT_KINEMATICS,
             "policy_contract": CONTRACT,
             "scoring_version": SCORING_VERSION,
             "scoring": scoring_config(),

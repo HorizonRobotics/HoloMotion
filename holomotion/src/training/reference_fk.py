@@ -19,13 +19,15 @@ from __future__ import annotations
 
 import os
 import xml.etree.ElementTree as ETree
-from typing import Dict, List, Tuple
+from typing import TYPE_CHECKING, Dict, List, Tuple
 
 import torch
-import pytorch_kinematics as pk
-
 from loguru import logger
+
 from holomotion.src.utils import torch_utils
+
+if TYPE_CHECKING:
+    import pytorch_kinematics as pk
 
 
 class MJCFParser:
@@ -218,6 +220,9 @@ class URDFParser:
         return tf
 
     def _load_chain(self) -> pk.Chain:
+        # Competition training uses MJCF; only URDF parsing needs this package.
+        import pytorch_kinematics as pk
+
         with open(self._urdf_path, mode="r", encoding="utf-8") as f:
             urdf_text = f.read()
         return pk.build_chain_from_urdf(urdf_text)

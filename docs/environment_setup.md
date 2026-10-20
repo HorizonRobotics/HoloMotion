@@ -58,7 +58,7 @@ submodule was initialized with LFS downloads disabled, hydrate it explicitly:
 git -C thirdparties/HoloMotion_assets lfs pull
 ```
 
-For boxing-only use, follow the [selective resource download instructions](../holoboxing/README.md#download-resources-for-source-use).
+For boxing-only use, follow the [selective resource download instructions](../holoboxing/README.md#install-the-training-environment-optional).
 They populate `holoboxing/assets` without downloading unrelated large files.
 
 ### 2.3 Create Asset Symlinks

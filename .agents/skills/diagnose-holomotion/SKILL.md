@@ -53,6 +53,10 @@ Compare independently refreshed poses and velocities from the same current joint
 Keep policy refreshes separate from solver/contact data, and compare trajectories with fixed control inputs.
 After reset, check buffer ownership, captured addresses, and actual container paths.
 
+After removing heavy initialization, test the real entrypoint without GPU access.
+Keep a lightweight device check before loading native inference libraries.
+Those libraries can terminate the process before Python catches an error.
+
 Use the `holomotion-train-interpreter` skill for training-environment Python. Use `isaaclab-source-lookup` for Isaac Lab implementation questions.
 
 ## Safety and cost

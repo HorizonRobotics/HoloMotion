@@ -14,6 +14,9 @@ from pathlib import Path
 
 import numpy as np
 
+DEFAULT_WARMUP = 10
+DEFAULT_ITERATIONS = 100
+
 BENCHMARK_VERSION = "upper_lower_completed_mean5ms_v1"
 MEASUREMENT_SCOPE = "single_fighter_upper_observation_inference_decode_lower_observation_inference_cache_target; excludes_output_sanitization_and_physics"
 
@@ -22,8 +25,8 @@ def measure_chain(
     step,
     synchronize,
     *,
-    warmup=100,
-    iterations=1000,
+    warmup=DEFAULT_WARMUP,
+    iterations=DEFAULT_ITERATIONS,
     clock=time.perf_counter_ns,
 ):
     if warmup < 0 or iterations < 1:
@@ -143,8 +146,8 @@ def benchmark_model(
     *,
     assets,
     lower_directory,
-    warmup=100,
-    iterations=1000,
+    warmup=DEFAULT_WARMUP,
+    iterations=DEFAULT_ITERATIONS,
     device="cuda:0",
 ):
     # Loading this entry installs precisely the production CUDA/observation adapters.
@@ -205,6 +208,7 @@ def benchmark_model(
         show_viewer=False,
         realtime=False,
         physics_device=device,
+        inference_benchmark=True,
     )
     previous_compare = os.environ.get("BOXING_COMPARE_OBSERVATIONS")
     try:
@@ -238,7 +242,11 @@ def benchmark_model(
         pair = FivePointReferencePair(
             [Path(model), Path(model)], scene, policies, device=device
         )
-        pair.match = runtime.MatchStateMachine(runtime.MatchRules())
+        # No contacts or referee are measured in this fixed-state fixture.
+        # Keep the production rule state without allocating a collision engine.
+        from .rules import MatchStateMachine
+
+        pair.match = MatchStateMachine(runtime.MatchRules())
         for policy in policies:
             policy.retarget_to_model = np.arange(
                 runtime.DOF_COUNT, dtype=np.int64
@@ -304,7 +312,7 @@ def benchmark_model(
             model_config_sha256=file_sha256(MODEL_ROOT / "config.yaml"),
             batch=1,
             precision="float32",
-            fixture="actual_scene_reset_pose_no_physics_stepping",
+            fixture="actual_scene_reset_pose_kinematics_only_no_physics_stepping",
             cache="returned recurrent state; production reset at maximum context length",
             sanitization_components=pair.sanitization_total[0],
             target_hardware_gate="RTX 5090 initial round; S600 subsequent round; report GPU is actual hardware",

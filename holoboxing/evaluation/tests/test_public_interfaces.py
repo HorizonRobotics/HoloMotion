@@ -4,6 +4,7 @@ from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
+from types import SimpleNamespace
 
 import numpy as np
 import onnx
@@ -150,6 +151,90 @@ class PublicInterfacesTest(unittest.TestCase):
             path.write_bytes(model.SerializeToString())
             with self.assertRaisesRegex(ValueError, "self-contained"):
                 check_model(path)
+
+    def test_quick_check_does_not_claim_performance_or_load_the_lower(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "model.onnx"
+            self.model(path)
+            pose = np.zeros((1, 225), dtype=np.float32)
+            pose.reshape(5, 5, 9)[..., 3] = 1
+            pose.reshape(5, 5, 9)[..., 8] = 1
+            with (
+                patch(
+                    "holoboxing.evaluation.runtime.onnx_device.create_device_session"
+                ),
+                patch(
+                    "holoboxing.evaluation.runtime.policy_output.run_competitor",
+                    return_value=pose,
+                ),
+                patch(
+                    "holoboxing.evaluation.runtime.compiled_artifacts.reference_schema",
+                    return_value=SimpleNamespace(source_hashes={}),
+                ),
+                patch(
+                    "holoboxing.evaluation.runtime.upper.neutral_observation",
+                    return_value=np.zeros((1, 1097), np.float32),
+                ),
+                patch(
+                    "holoboxing.evaluation.runtime.chain_benchmark.benchmark_model",
+                    side_effect=AssertionError("Unexpected full benchmark"),
+                ),
+            ):
+                report = validate_model(path, None, None, full_chain=False)
+            self.assertEqual(report["status"], "PASS")
+            self.assertEqual(report["chain_benchmark"]["status"], "NOT_RUN")
+            self.assertEqual(
+                report["hardware_qualification"]["official_status"],
+                "NOT_EVALUATED",
+            )
+            self.assertEqual(report["actual_fps"], 0)
+
+    def test_modes_use_the_same_benchmark_defaults(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "model.onnx"
+            self.model(path)
+            pose = np.zeros((1, 225), dtype=np.float32)
+            pose.reshape(5, 5, 9)[..., 3] = 1
+            pose.reshape(5, 5, 9)[..., 8] = 1
+            with (
+                patch(
+                    "holoboxing.evaluation.runtime.onnx_device.create_device_session"
+                ),
+                patch(
+                    "holoboxing.evaluation.runtime.policy_output.run_competitor",
+                    return_value=pose,
+                ),
+                patch(
+                    "holoboxing.evaluation.runtime.compiled_artifacts.reference_schema",
+                    return_value=SimpleNamespace(source_hashes={}),
+                ),
+                patch(
+                    "holoboxing.evaluation.runtime.upper.neutral_observation",
+                    return_value=np.zeros((1, 1097), np.float32),
+                ),
+                patch(
+                    "holoboxing.evaluation.runtime.chain_benchmark.benchmark_model",
+                    return_value=dict(
+                        fps=500, mean_ms=2, gpu="RTX 5090", passed=True
+                    ),
+                ) as benchmark,
+            ):
+                for mode in ("local", "official"):
+                    with self.subTest(mode=mode):
+                        report = validate_model(
+                            path, directory, directory,
+                            qualification_mode=mode,
+                        )
+                        self.assertEqual(report["status"], "PASS")
+                        self.assertNotIn("warmup", benchmark.call_args.kwargs)
+                        self.assertNotIn("iterations", benchmark.call_args.kwargs)
+
+    def test_official_mode_cannot_skip_full_chain_evidence(self):
+        with self.assertRaisesRegex(ValueError, "requires full-chain"):
+            validate_model(
+                "unused.onnx", None, None,
+                qualification_mode="official", full_chain=False,
+            )
 
     def test_match_summary_has_only_local_result_fields(self):
         logger = MatchLogger(model_id=["a", "b"], match_id="test")

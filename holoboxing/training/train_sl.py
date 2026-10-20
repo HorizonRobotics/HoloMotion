@@ -3,6 +3,7 @@
 import argparse
 from pathlib import Path
 
+from holoboxing.data.contract import ROBOT_KINEMATICS
 from holoboxing.training.cli import add_controller_arguments, existing_path
 from holoboxing.training.resources import (
     load_neutral_reference,
@@ -34,7 +35,7 @@ def main(argv=None):
     tree, paths, _ = resolve_resources(args.assets, args.lower)
     records = Records(args.data / "manifest.json")
     identity = records.manifest["asset_identity"]
-    if identity.get("robot_kinematics") != "competition_xml_v1":
+    if identity.get("robot_kinematics") != ROBOT_KINEMATICS:
         raise ValueError(
             "Regenerate source motions with holoboxing.data prepare; "
             "training requires competition XML reference kinematics"

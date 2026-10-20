@@ -1,6 +1,7 @@
 """CUDA sessions with completed execution and explicit provider evidence."""
 
 from pathlib import Path
+import ctypes
 import json
 import tempfile
 
@@ -56,6 +57,25 @@ def require_gpu_session(session):
         )
 
 
+def require_cuda_driver(device_id):
+    """Check GPU access before loading inference libraries, without Torch/Warp."""
+    try:
+        driver = ctypes.CDLL("libcuda.so.1")
+    except OSError as error:
+        raise RuntimeError("A compatible CUDA driver is required") from error
+    driver.cuInit.argtypes = [ctypes.c_uint]
+    driver.cuInit.restype = ctypes.c_int
+    driver.cuDeviceGetCount.argtypes = [ctypes.POINTER(ctypes.c_int)]
+    driver.cuDeviceGetCount.restype = ctypes.c_int
+    result = driver.cuInit(0)
+    if result:
+        raise RuntimeError(f"CUDA driver initialization failed: {result}")
+    count = ctypes.c_int()
+    result = driver.cuDeviceGetCount(ctypes.byref(count))
+    if result or not 0 <= device_id < count.value:
+        raise RuntimeError(f"CUDA device {device_id} is unavailable")
+
+
 def create_device_session(
     path,
     provider="CUDAExecutionProvider",
@@ -64,12 +84,18 @@ def create_device_session(
     options=None,
     cuda_graph=False,
     cuda_options=None,
+    runtime_stream=True,
 ):
     import onnxruntime as ort
 
     if provider != "CUDAExecutionProvider":
         raise RuntimeError("Only CUDA policy inference is supported")
-    require_gpu(f"cuda:{device_id}")
+    if runtime_stream:
+        require_gpu(f"cuda:{device_id}")
+    elif cuda_graph:
+        raise ValueError("CUDA graphs require the runtime's fixed stream")
+    else:
+        require_cuda_driver(device_id)
     # The image supplies matching NVIDIA packages directly. Source-mode
     # PyTorch also uses these packages, but is not needed to expose them.
     if hasattr(ort, "preload_dlls"):
@@ -89,7 +115,7 @@ def create_device_session(
     provider_options = dict(cuda_options or {})
     provider_options["device_id"] = device_id
     provider_options["use_tf32"] = "0"
-    if available():
+    if runtime_stream and available():
         import warp as wp
 
         provider_options.update(

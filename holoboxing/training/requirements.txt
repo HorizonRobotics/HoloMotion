@@ -1,12 +1,18 @@
-numpy
-scipy
-trimesh
+# Standalone boxing data preparation, SL, RL, and ONNX export.
+# Install in a fresh Python 3.11 venv; no HoloMotion/Isaac environment is needed.
+# Install the CUDA 12.8 Torch wheel first, as shown in holoboxing/README.md.
 torch==2.9.1
-omegaconf
-loguru
-pytorch-kinematics
+numpy==2.2.6
+scipy==1.15.3
+h5py==3.14.0
+omegaconf==2.3.0
+loguru==0.7.3
+tabulate==0.9.0
+tqdm==4.67.1
+PyYAML==6.0.2
 mujoco==3.5.0
 mujoco-warp==3.5.0
 warp-lang==1.11.0
 onnx==1.18.0
 onnxruntime-gpu==1.22.0
+-r ../data/requirements.txt
