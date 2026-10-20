@@ -21,6 +21,7 @@ from holoboxing.training.rsl_rl.modules.normalization import (
 from holoboxing.training.rsl_rl.modules.normalizer import (
     EmpiricalNormalization,
 )
+from holoboxing.training.rsl_rl.runners import resume as checkpoint_resume
 from holoboxing.training.tasks.combat.config.sandbag import AGENTS, ROLES
 
 CHECKPOINT_FORMAT = "holoboxing_c_joint_sandbag_public_v3"
@@ -120,7 +121,15 @@ class OnPolicyRunner:
             0.0,
         )
         self.observations = None
+        self.pending_transition = None
         self.supervised_initialization = None
+        self.invalid_transitions = 0
+        self.resume_source = None
+
+    def resume(self, path, *, allow_code_change=False):
+        checkpoint_resume.resume(
+            self, path, CHECKPOINT_FORMAT, allow_code_change
+        )
 
     def initialize_from_supervised(self, path):
         """Import only the attacker; keep both critics, AMP and B untouched."""
@@ -189,12 +198,41 @@ class OnPolicyRunner:
                 self.normalizers, self.observations, update=True
             )
             actions = algorithm.act(snapshots)
+            self.pending_transition = {"actions": actions}
             self.observations, task_rewards, done, infos = self.env.step(
                 actions
             )
+            self.pending_transition.update(
+                observations=self.observations,
+                task_rewards=task_rewards,
+                done=done,
+                infos=infos,
+                reward_terms=self.env.reward_terms,
+            )
             rewards = {}
+            self.pending_transition["rewards"] = rewards
+            self.pending_transition["style_rewards"] = {}
+            invalid = infos.get("invalid_envs", torch.zeros_like(done))
+            valid = ~invalid
+            sums["local_recovery_count"] = sums.get(
+                "local_recovery_count", 0
+            ) + int(invalid.sum())
+
+            def mean_valid(value):
+                selected = value[valid]
+                return (
+                    selected.mean() if selected.numel() else value.new_zeros(())
+                )
+
             for role, agent in zip(ROLES, AGENTS, strict=True):
-                style = self.amp.reward(infos[f"amp_obs_{role}"])
+                if bool(invalid.any()):
+                    style = torch.zeros_like(task_rewards[agent])
+                    style[valid] = self.amp.reward(
+                        infos[f"amp_obs_{role}"][valid]
+                    )
+                else:
+                    style = self.amp.reward(infos[f"amp_obs_{role}"])
+                self.pending_transition["style_rewards"][agent] = style
                 reward = (
                     cfg.task_reward_weight * task_rewards[agent]
                     + cfg.style_reward_weight * style
@@ -212,17 +250,18 @@ class OnPolicyRunner:
                 )
                 rewards[agent] = reward
                 values = {
-                    "task_reward": task_rewards[agent].mean(),
-                    "style_reward": style.mean(),
-                    "done_fraction": done.float().mean(),
-                    "fallen_fraction": self.env.metrics.get(agent, {})
-                    .get("fallen", torch.zeros_like(done))
-                    .float()
-                    .mean(),
+                    "task_reward": mean_valid(task_rewards[agent]),
+                    "style_reward": mean_valid(style),
+                    "done_fraction": mean_valid(done.float()),
+                    "fallen_fraction": mean_valid(
+                        self.env.metrics.get(agent, {})
+                        .get("fallen", torch.zeros_like(done))
+                        .float()
+                    ),
                 }
                 values.update(
                     {
-                        f"reward/{name}": value.mean()
+                        f"reward/{name}": mean_valid(value)
                         for name, value in self.env.reward_terms.get(
                             agent, {}
                         ).items()
@@ -232,11 +271,16 @@ class OnPolicyRunner:
                     key = f"{role}/{name}"
                     sums[key] = sums.get(key, 0.0) + value.item()
             algorithm.process_env_step(rewards, done, infos)
+            self.pending_transition = None
         algorithm.compute_returns(
             normalize_observations(self.normalizers, self.observations)
         )
         return {
-            key: value / cfg.num_steps_per_env for key, value in sums.items()
+            key: (
+                value if key == "local_recovery_count"
+                else value / cfg.num_steps_per_env
+            )
+            for key, value in sums.items()
         }
 
     def learn(self, updates, save_interval=100, extra_save_interval=None):
@@ -262,11 +306,22 @@ class OnPolicyRunner:
                         "policy": self.policy.state_dict(),
                         "storage": vars(self.algorithm.storage),
                         "optimizer_steps": self.algorithm.optimizer_steps,
+                        "failed_rollout_step": self.algorithm.storage.step,
+                        "pending_transition": self.pending_transition,
+                        "normalizers": self.normalizers.state_dict(),
+                        "discriminator": self.amp.discriminator.state_dict(),
+                        "amp_normalizer": self.amp.normalizer.state_dict(),
+                        "environment": (
+                            self.env.diagnostic_state()
+                            if hasattr(self.env, "diagnostic_state")
+                            else None
+                        ),
                     },
                     self.output / "failure.pt",
                 )
                 raise
             self.iteration += 1
+            self.invalid_transitions += int(metrics["local_recovery_count"])
             self.transitions_per_role += (
                 self.config.num_envs * self.config.num_steps_per_env
             )
@@ -293,11 +348,8 @@ class OnPolicyRunner:
                 self.save(self.output / f"model_{self.iteration}.pt")
         self.save(self.output / f"model_{self.iteration}.pt")
 
-    def save(self, path):
-        if self.algorithm.storage.step:
-            raise ValueError("Save only at completed update boundaries")
-        self.lower_guard.check()
-        state = {
+    def checkpoint_state(self):
+        return {
             "format": CHECKPOINT_FORMAT,
             "config": self.config.to_dict(),
             "identity": self.identity,
@@ -312,8 +364,15 @@ class OnPolicyRunner:
             "iteration": self.iteration,
             "transitions_per_role": self.transitions_per_role,
             "elapsed_seconds": self.elapsed_seconds,
+            **checkpoint_resume.learning_state(self),
         }
-        require_finite(state, "checkpoint")
+
+    def save(self, path):
+        if self.algorithm.storage.step:
+            raise ValueError("Save only at completed update boundaries")
+        self.lower_guard.check()
+        state = self.checkpoint_state()
+        checkpoint_resume.validate_learning_state(self, state)
         path = Path(path)
         temporary = path.with_suffix(path.suffix + ".tmp")
         torch.save(state, temporary)

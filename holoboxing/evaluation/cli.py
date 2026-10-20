@@ -76,6 +76,12 @@ def parser():
         "download", help="fetch the existing public V2 checkpoint bundle"
     )
     download.add_argument("--directory", required=True)
+    download.add_argument(
+        "--retries",
+        type=int,
+        default=2,
+        help="retry interrupted transfers; completed bytes are retained",
+    )
     return result
 
 
@@ -93,7 +99,11 @@ def main(argv=None):
                 json.dumps(
                     {
                         "status": "PASS",
-                        "directory": str(download_bundle(args.directory)),
+                        "directory": str(
+                            download_bundle(
+                                args.directory, retries=args.retries
+                            )
+                        ),
                     }
                 )
             )
@@ -126,8 +136,14 @@ def main(argv=None):
         elif args.command == "view":
             from .viewer_server import serve
 
-            serve(args.replay, args.assets, host=args.host, port=args.port,
-                  tls_cert=args.tls_cert, tls_key=args.tls_key)
+            serve(
+                args.replay,
+                args.assets,
+                host=args.host,
+                port=args.port,
+                tls_cert=args.tls_cert,
+                tls_key=args.tls_key,
+            )
         return 0
     except KeyboardInterrupt:
         return 130

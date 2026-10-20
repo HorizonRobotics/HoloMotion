@@ -1,7 +1,6 @@
 """Download sample motions and prepare robot training inputs."""
 
 from __future__ import annotations
-
 import argparse
 import json
 from pathlib import Path
@@ -78,8 +77,24 @@ def main(argv=None):
                 {
                     key: value
                     for key, value in report.items()
-                    if key != "files"
-                },
+                    if key not in ("files", "requested_clip_ids")
+                }
+                | (
+                    {
+                        "selected_clip_ids": [
+                            Path(row["path"]).stem
+                            for row in report["files"]
+                            if row["path"].startswith("motions/")
+                            and row["path"].endswith(".pkl")
+                        ],
+                        "requested_clip_count": len(
+                            report["requested_clip_ids"]
+                        ),
+                        "receipt": str(args["output"] / "download.json"),
+                    }
+                    if dataset == "interhuman"
+                    else {}
+                ),
                 indent=2,
             )
         )

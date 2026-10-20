@@ -147,6 +147,10 @@ class CompetitionPhysics:
         self.initial = mujoco.MjData(self.host)
         self.initial.qpos[:] = initial_qpos(assets, self.host)
         mujoco.mj_forward(self.host, self.initial)
+        floor = self.host.geom("smpl_ring_baseLink").id
+        self.floor_height = float(
+            self.initial.geom_xpos[floor, 2] + self.host.geom_size[floor, 2]
+        )
         self.model = mjw.put_model(self.host)
         self.data = mjw.put_data(
             self.host,

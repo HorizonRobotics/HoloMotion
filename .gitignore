@@ -94,3 +94,10 @@ MUJOCO_LOG.TXT
 # Generated browser dependencies and build output.
 /holoboxing/evaluation/viewer/node_modules
 /holoboxing/evaluation/viewer/dist/
+
+# Participant tutorial outputs are not evaluation image source inputs.
+/models/
+/results/
+/holoboxing/data/raw/
+/holoboxing/data/converted/
+/holoboxing/data/processed/

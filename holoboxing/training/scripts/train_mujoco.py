@@ -56,7 +56,13 @@ def train(args, config):
         runner = OnPolicyRunner(
             env, demo, reference, config, args.output, identity
         )
-        runner.initialize_from_supervised(args.supervised_checkpoint)
+        if args.resume:
+            runner.resume(
+                args.resume, allow_code_change=args.allow_resume_code_change
+            )
+            write_json(args.output / "resume.json", runner.resume_source)
+        else:
+            runner.initialize_from_supervised(args.supervised_checkpoint)
         runner.policy.enable_actor_cuda_graphs()
         runner.learn(
             args.updates, save_interval=1024, extra_save_interval=5000

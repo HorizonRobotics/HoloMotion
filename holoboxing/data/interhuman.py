@@ -1,11 +1,10 @@
 """Retarget paired InterHuman SMPL while preserving a shared world frame."""
 
 from __future__ import annotations
-
-from dataclasses import replace
 import json
-from pathlib import Path
 import pickle
+from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -19,7 +18,6 @@ from .common import (
     sha256,
     write_json,
 )
-
 
 DEFAULT_RETARGET_ITERATIONS = 4
 
@@ -78,7 +76,16 @@ class SmplShapeModel:
             regressor.toarray() if hasattr(regressor, "toarray") else regressor
         )
         self.template = np.asarray(data["v_template"], dtype=np.float64)
-        self.shape_directions = np.asarray(data["shapedirs"], dtype=np.float64)
+        try:
+            self.shape_directions = np.asarray(
+                data["shapedirs"], dtype=np.float64
+            )
+        except (TypeError, ValueError) as error:
+            raise ValueError(
+                "Cannot read SMPL shapedirs. Legacy Chumpy models require the "
+                "retarget environment: python -m pip install -r "
+                "holoboxing/data/retarget-requirements.txt"
+            ) from error
         self.parents = np.asarray(
             data["kintree_table"][0, :24], dtype=np.int32
         )
@@ -191,6 +198,7 @@ def resample_person(person, frames, fps, *, frame_limit=None):
 def robot_neutral_height(assets):
     """Measure the selected competition robot's neutral visual-mesh extent."""
     import mujoco
+
     from .robot import load_scene_model
 
     model = load_scene_model(assets)
@@ -357,7 +365,9 @@ def retarget_dataset(
 ):
     import torch
     import warp as wp
+
     from holoretarget.online import HoloRetargeter
+
     from .contract import CompetitionAssets
 
     requested = torch.device(device)
@@ -386,7 +396,9 @@ def retarget_dataset(
 
         config = replace(
             config,
-            asset_root=str(retarget_assets(asset_tree, config, output / ".robot")),
+            asset_root=str(
+                retarget_assets(asset_tree, config, output / ".robot")
+            ),
         )
         with wp.ScopedDevice(device):
             retargeters = [HoloRetargeter(config), HoloRetargeter(config)]

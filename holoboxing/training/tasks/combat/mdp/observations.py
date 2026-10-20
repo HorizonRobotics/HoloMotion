@@ -69,12 +69,15 @@ class ActorObservationNoise:
     def rng_state(self):
         return self.generator.get_state().cpu().clone()
 
-    def observe(self, measured, step, reset):
-        if self.last_step == step:
+    def observe(self, measured, step, reset, *, refresh=False):
+        if refresh:
+            if self.last_step != step:
+                raise ValueError("Local refresh requires the current measurement")
+        elif self.last_step == step:
             if not torch.equal(reset, self.last_reset):
                 raise ValueError("Repeated measurement changed reset identity")
             return self.cached
-        if self.last_step is not None and step != self.last_step + 1:
+        if not refresh and self.last_step is not None and step != self.last_step + 1:
             raise ValueError("Actor-noise history must advance once per decision")
         actor = measured["actor"]
         count = len(actor)
@@ -84,20 +87,24 @@ class ActorObservationNoise:
             or reset.dtype != torch.bool
         ):
             raise ValueError("Expected paired clean A192 measurement and reset mask")
-        draws = (
-            torch.rand(
-                (count, 207),
-                device=actor.device,
-                dtype=actor.dtype,
-                generator=self.generator,
+        if refresh:
+            # Reuse this decision's noise; only reset the affected histories.
+            delta, opponent = self.record["a_delta"], self.record["opponent_delta"]
+        else:
+            draws = (
+                torch.rand(
+                    (count, 207),
+                    device=actor.device,
+                    dtype=actor.dtype,
+                    generator=self.generator,
+                )
+                * 2
+                - 1
             )
-            * 2
-            - 1
-        )
-        delta, opponent = (
-            draws[:, :192] * a_half_width(actor),
-            draws[:, 192:] * 0.2,
-        )
+            delta, opponent = (
+                draws[:, :192] * a_half_width(actor),
+                draws[:, 192:] * 0.2,
+            )
         full = delta[:, 90:180].reshape(count, 30, 3)[:, POINT_INDICES]
         world = rotate(matrix(measured["quaternion"][:, 0])[:, None], full)
         reset = reset.repeat_interleave(2)
@@ -117,11 +124,12 @@ class ActorObservationNoise:
             -1,
         )
         repeated = raw[:, None].expand(-1, 10, -1)
-        shifted = (
-            repeated
-            if self.raw_history is None
-            else torch.cat((self.raw_history[:, 1:], raw[:, None]), 1)
-        )
+        if self.raw_history is None:
+            shifted = repeated
+        elif refresh:
+            shifted = self.raw_history
+        else:
+            shifted = torch.cat((self.raw_history[:, 1:], raw[:, None]), 1)
         self.raw_history = torch.where(reset[:, None, None], repeated, shifted).clone()
         self.previous_position_delta = world.clone()
         self.record = {
@@ -130,5 +138,8 @@ class ActorObservationNoise:
             "raw_history": self.raw_history,
         }
         self.cached = apply_record(measured, self.record)
-        self.last_step, self.last_reset = step, reset[::2].clone()
+        self.last_step = step
+        self.last_reset = (
+            self.last_reset | reset[::2] if refresh else reset[::2].clone()
+        )
         return self.cached

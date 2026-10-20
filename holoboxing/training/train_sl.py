@@ -1,6 +1,7 @@
-"""Train the boxing planner on complete epochs of reference demonstrations."""
+"""Train the boxing planner on complete epochs of InterHuman demonstrations."""
 
 import argparse
+import json
 from pathlib import Path
 
 from holoboxing.data.contract import ROBOT_KINEMATICS
@@ -22,7 +23,7 @@ def main(argv=None):
         "--data",
         type=existing_path,
         required=True,
-        help="prepared directory produced by holoboxing.data prepare",
+        help="prepared directory from holoboxing.data prepare; SL uses only InterHuman",
     )
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--epochs", type=int, default=8)
@@ -34,6 +35,18 @@ def main(argv=None):
         parser.error("--output must be a new directory")
     tree, paths, _ = resolve_resources(args.assets, args.lower)
     records = Records(args.data / "manifest.json")
+    validation = Records(
+        args.data / "manifest.json", split="validation", allow_empty=True
+    )
+    print(
+        json.dumps(
+            {
+                "supervised_source_selection": records.source_selection,
+                "validation_source_selection": validation.source_selection,
+            }
+        ),
+        flush=True,
+    )
     identity = records.manifest["asset_identity"]
     if identity.get("robot_kinematics") != ROBOT_KINEMATICS:
         raise ValueError(
@@ -46,7 +59,9 @@ def main(argv=None):
     ):
         raise ValueError("Prepared data and training assets differ")
     statistics, normalizer = fit_statistics(records)
-    reference = load_neutral_reference(paths["lower_onnx"], paths["arena_scene"])
+    reference = load_neutral_reference(
+        paths["lower_onnx"], paths["arena_scene"]
+    )
     result = train(
         records,
         TrainConfig(),
@@ -59,6 +74,7 @@ def main(argv=None):
         learning_rate=0.0003,
         seed=42,
         device=args.device,
+        validation_records=validation,
     )
     print(result)
 

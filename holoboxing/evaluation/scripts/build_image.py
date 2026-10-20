@@ -8,10 +8,13 @@ import argparse
 import hashlib
 import json
 import os
-from pathlib import Path
 import shutil
 import subprocess
 import sys
+from datetime import datetime, timezone
+from pathlib import Path
+from urllib.error import URLError
+from urllib.request import Request, urlopen
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
@@ -27,7 +30,38 @@ def git(*arguments):
     ).strip()
 
 
-def prepare_context(directory, assets, lower, *, development=False):
+def verify_public_revision(revision):
+    """A release label must identify a commit available from the public source."""
+    repository = "https://github.com/HorizonRobotics/HoloMotion"
+    request = Request(
+        f"https://api.github.com/repos/HorizonRobotics/HoloMotion/commits/{revision}",
+        headers={
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "HoloBoxing-image-builder",
+        },
+    )
+    try:
+        with urlopen(request, timeout=30) as response:
+            result = json.load(response)
+        if result.get("sha") != revision:
+            raise ValueError("Public source returned a different commit")
+    except (URLError, ValueError) as error:
+        raise ValueError(
+            f"Cannot verify public source commit {revision}: {error}. "
+            "Do not publish an image with an unavailable source label. "
+            "Publish/merge the public source first, then rerun verification."
+        ) from error
+    return {
+        "verified": True,
+        "repository": repository,
+        "revision": revision,
+        "verified_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def prepare_context(
+    directory, assets, lower, *, development=False, verify_public_source=False
+):
     directory = Path(directory).expanduser().resolve()
     if directory.exists():
         raise FileExistsError(
@@ -42,6 +76,13 @@ def prepare_context(directory, assets, lower, *, development=False):
         raise ValueError(
             "Release builds require a clean public source commit; use --development for an explicit snapshot"
         )
+    public_source = {"verified": False, "reason": "not requested"}
+    if verify_public_source:
+        if dirty:
+            raise ValueError(
+                "Public source verification requires a clean committed source tree"
+            )
+        public_source = verify_public_revision(revision)
     if directory.is_relative_to(ROOT) or ROOT.is_relative_to(directory):
         raise ValueError(
             "Keep the generated image context outside the public source repository"
@@ -130,6 +171,7 @@ def prepare_context(directory, assets, lower, *, development=False):
         "image_version": "v11",
         "code_revision": revision,
         "development_snapshot": dirty,
+        "public_source_verification": public_source,
         "source_fingerprint": source_fingerprint,
         "resource_manifest_sha256": resources.manifest_sha256,
         "robot_contract": "urdf-gloves-v1",
@@ -161,6 +203,11 @@ def main():
     )
     parser.add_argument("--development", action="store_true")
     parser.add_argument("--prepare-only", action="store_true")
+    parser.add_argument(
+        "--verify-public-source",
+        action="store_true",
+        help="require a clean source commit reachable through the public GitHub API before a release build",
+    )
     args = parser.parse_args()
     for reference in (args.python_base, args.node_base):
         if (
@@ -171,7 +218,11 @@ def main():
                 "Base references must include their verified SHA256 digest"
             )
     manifest = prepare_context(
-        args.context, args.assets, args.lower, development=args.development
+        args.context,
+        args.assets,
+        args.lower,
+        development=args.development,
+        verify_public_source=args.verify_public_source,
     )
     if args.prepare_only:
         print(
@@ -224,6 +275,7 @@ def main():
         "bytes": inspect["Size"],
         "code_revision": manifest["code_revision"],
         "development_snapshot": manifest["development_snapshot"],
+        "public_source_verification": manifest["public_source_verification"],
         "inputs_sha256": sha256(Path(args.context) / "build-inputs.json"),
         "python_base": args.python_base,
         "node_base": args.node_base,

@@ -31,16 +31,22 @@ def motion_files(path, *, resource_manifest_sha256=None):
 
     path = Path(path).resolve(strict=True)
     if not path.is_dir():
-        raise ValueError("AMP requires the prepared directory from holoboxing.data prepare")
+        raise ValueError(
+            "AMP requires the prepared directory from holoboxing.data prepare"
+        )
     dataset = PreparedDataset(path / "manifest.json", validate_contents=False)
     identity = dataset.manifest["asset_identity"]
     if identity.get("robot_kinematics") != ROBOT_KINEMATICS:
-        raise ValueError("Regenerate AMP data with competition XML reference kinematics")
+        raise ValueError(
+            "Regenerate AMP data with competition XML reference kinematics"
+        )
     if (
         resource_manifest_sha256 is not None
-        and identity.get("resource_manifest_sha256") != resource_manifest_sha256
+        and identity.get("resource_manifest_sha256")
+        != resource_manifest_sha256
     ):
         raise ValueError("Prepared AMP data and training assets differ")
+    dataset.select_sources(split="train")
     return sorted(dataset.root / record["path"] for record in dataset.records)
 
 
@@ -70,7 +76,11 @@ def amp_pairs(frames):
 
 
 def load_amp_motions(
-    path, default_position, default_velocity, device="cpu", *,
+    path,
+    default_position,
+    default_velocity,
+    device="cpu",
+    *,
     resource_manifest_sha256=None,
 ):
     """Read prepared world states using the original AMP rotation and offsets."""
@@ -89,8 +99,11 @@ def load_amp_motions(
     ):
         with np.load(file, allow_pickle=False) as data:
             if not {
-                "amp_reference", "amp_joint_names", "amp_fps",
-                "amp_root_quaternion_wxyz", "amp_angular_velocity_frame",
+                "amp_reference",
+                "amp_joint_names",
+                "amp_fps",
+                "amp_root_quaternion_wxyz",
+                "amp_angular_velocity_frame",
             }.issubset(data.files):
                 raise ValueError(
                     f"{file.name}: run holoboxing.data prepare and pass its prepared directory"
@@ -100,9 +113,13 @@ def load_amp_motions(
                     f"{file.name}: AMP joint order differs from training"
                 )
             if data["amp_fps"].shape != () or data["amp_fps"].item() != 1 / DT:
-                raise ValueError(f"{file.name}: expected 50 Hz AMP transitions")
+                raise ValueError(
+                    f"{file.name}: expected 50 Hz AMP transitions"
+                )
             if str(data["amp_angular_velocity_frame"]) != "world":
-                raise ValueError(f"{file.name}: AMP angular velocity must be world-frame")
+                raise ValueError(
+                    f"{file.name}: AMP angular velocity must be world-frame"
+                )
             values = data["amp_reference"]
             if (
                 values.ndim != 2
@@ -122,11 +139,15 @@ def load_amp_motions(
                 or not np.isfinite(quaternion).all()
                 or not np.allclose(
                     np.linalg.norm(quaternion.astype(np.float64), axis=-1),
-                    1, atol=1e-3, rtol=0,
+                    1,
+                    atol=1e-3,
+                    rtol=0,
                 )
             ):
                 raise ValueError(f"{file.name}: invalid AMP root quaternions")
-            quaternion = torch.as_tensor(quaternion, device=device).reshape(-1, 4)
+            quaternion = torch.as_tensor(quaternion, device=device).reshape(
+                -1, 4
+            )
         angular = quat_apply_wxyz(
             quat_conjugate_wxyz(normalize_quaternion_wxyz(quaternion)),
             frames[:, :3],
@@ -138,7 +159,11 @@ def load_amp_motions(
             raise ValueError(f"{file.name}: AMP conversion must remain finite")
         pairs.append(pair)
         receipt.append(
-            {"file": file.name, "sha256": sha256(file), "transitions": len(values)}
+            {
+                "file": file.name,
+                "sha256": sha256(file),
+                "transitions": len(values),
+            }
         )
     return torch.cat(pairs), receipt
 
@@ -155,15 +180,17 @@ class AMP:
         ):
             raise ValueError("Expected finite 122D AMP demonstrations")
         self.config, self.device = config, device
-        self.discriminator = AMPDiscriminator(122, config.disc_hidden_dims, "relu").to(
-            device
-        )
+        self.discriminator = AMPDiscriminator(
+            122, config.disc_hidden_dims, "relu"
+        ).to(device)
         self.optimizer = torch.optim.Adam(
             self.discriminator.parameters(),
             lr=config.disc_learning_rate,
             weight_decay=config.disc_weight_decay,
         )
-        self.normalizer = EmpiricalNormalization([61], until=100_000_000).to(device)
+        self.normalizer = EmpiricalNormalization([61], until=100_000_000).to(
+            device
+        )
         with torch.no_grad():
             self.normalizer(demo.to(device).reshape(-1, 61))
         self.normalizer.eval()
@@ -183,7 +210,8 @@ class AMP:
         logits = self.discriminator(self.normalize(pairs))
         prob = 1 / (1 + torch.exp(-logits))
         return (
-            -torch.log((1 - prob).clamp_min(0.0001)) * self.config.disc_reward_scale
+            -torch.log((1 - prob).clamp_min(0.0001))
+            * self.config.disc_reward_scale
         ).squeeze(-1)
 
     def loss(self, current, replay, demo):
@@ -239,9 +267,9 @@ class AMP:
                 if len(self.replay)
                 else current.clone()
             )
-            demo = self.normalize(self.demo.sample(cfg.amp_batch_size)).requires_grad_(
-                True
-            )
+            demo = self.normalize(
+                self.demo.sample(cfg.amp_batch_size)
+            ).requires_grad_(True)
             loss, penalty = self.loss(
                 self.normalize(current), self.normalize(replay), demo
             )

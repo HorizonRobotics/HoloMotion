@@ -6,8 +6,8 @@ CPU-only environments explicitly skip these tests.
 
 import importlib.util
 import os
-from types import SimpleNamespace
 import unittest
+from types import SimpleNamespace
 
 import mujoco
 import numpy as np
@@ -15,7 +15,6 @@ import warp as wp
 
 from holoboxing.evaluation.runtime.lean_runtime import Bound
 from holoboxing.evaluation.runtime.observation_fk import CurrentObservationFK
-
 
 XML = """
 <mujoco>
@@ -70,10 +69,18 @@ class ObservationStateGPUTest(unittest.TestCase):
         cls.device = os.environ.get("BOXING_TEST_DEVICE", "cuda:0")
 
     def setUp(self):
+        self.addCleanup(
+            self.torch.cuda.set_device, self.torch.cuda.current_device()
+        )
         self.torch.cuda.set_device(self.device)
-        wp.set_device(self.device)
-        wp.set_stream(
-            wp.stream_from_torch(self.torch.cuda.current_stream(self.device))
+        # Restore Warp's device and stream even when setup or a test fails.
+        # Leaving Torch's default stream active breaks later Warp captures.
+        self.enterContext(
+            wp.ScopedStream(
+                wp.stream_from_torch(
+                    self.torch.cuda.current_stream(self.device)
+                )
+            )
         )
         self.model = mujoco.MjModel.from_xml_string(XML)
         self.gpu_model = self.mjw.put_model(self.model)

@@ -9,10 +9,6 @@ import torch
 
 from holoboxing.evaluation.resources import ResourceTree
 from holoboxing.evaluation.runtime import representation as geometry
-from holoboxing.evaluation.runtime.hand_hit_rules import (
-    SCORING_VERSION,
-    scoring_config,
-)
 from holoboxing.evaluation.runtime.model_contract import (
     CONTRACT,
     sha256,
@@ -21,6 +17,17 @@ from holoboxing.evaluation.runtime.model_contract import (
 OBSERVATION_DIM = 1097
 HISTORY_LENGTH = 10
 ROBOT_KINEMATICS = "urdf_gloves_xml_v2"
+
+
+def same_data_assets(recorded, expected):
+    """Compare data contracts, ignoring only legacy referee metadata."""
+    if not isinstance(recorded, dict) or not isinstance(expected, dict):
+        return False
+    ignored = {"scoring", "scoring_version"}
+    return (
+        {key: value for key, value in recorded.items() if key not in ignored}
+        == {key: value for key, value in expected.items() if key not in ignored}
+    )
 
 
 @dataclass(frozen=True)
@@ -38,8 +45,6 @@ class CompetitionAssets:
         return {
             "robot_kinematics": ROBOT_KINEMATICS,
             "policy_contract": CONTRACT,
-            "scoring_version": SCORING_VERSION,
-            "scoring": scoring_config(),
             "resource_manifest_sha256": tree.manifest_sha256,
             "scene_sha256": sha256(tree.scene),
             "initial_state_sha256": sha256(tree.initial_state),

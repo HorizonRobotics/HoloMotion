@@ -3,6 +3,7 @@
 """RoboStriker paired PPO/GAE/AMP recipe for joint C policies."""
 
 import math
+from contextlib import nullcontext
 
 import torch
 from torch import nn
@@ -23,6 +24,31 @@ from holoboxing.training.tasks.combat.config.sandbag import (
 def require_finite(value, context):
     checks = {}
 
+    def describe(item, path="value"):
+        if torch.is_tensor(item):
+            invalid = ~torch.isfinite(item)
+            if bool(invalid.any()):
+                indices = invalid.nonzero()[:8].tolist()
+                return [
+                    f"{path}: shape={tuple(item.shape)}, "
+                    f"invalid={int(invalid.sum())}, first_indices={indices}"
+                ]
+        elif isinstance(item, dict):
+            return [
+                detail
+                for key, child in item.items()
+                for detail in describe(child, f"{path}[{key!r}]")
+            ]
+        elif isinstance(item, (list, tuple)):
+            return [
+                detail
+                for index, child in enumerate(item)
+                for detail in describe(child, f"{path}[{index}]")
+            ]
+        elif isinstance(item, float) and not math.isfinite(item):
+            return [f"{path}: {item!r}"]
+        return []
+
     def collect(item):
         if torch.is_tensor(item):
             checks.setdefault(item.device, []).append(torch.isfinite(item).all())
@@ -33,14 +59,18 @@ def require_finite(value, context):
             for child in item:
                 collect(child)
         elif isinstance(item, float) and not math.isfinite(item):
-            raise FloatingPointError(f"Nonfinite {context}")
+            raise FloatingPointError(
+                f"Nonfinite {context}: {'; '.join(describe(value)[:8])}"
+            )
 
     collect(value)
     # Keep every check at the same update boundary, with one host wait per device.
     for flags in checks.values():
         valid = flags[0] if len(flags) == 1 else torch.stack(flags).all()
         if not bool(valid):
-            raise FloatingPointError(f"Nonfinite {context}")
+            raise FloatingPointError(
+                f"Nonfinite {context}: {'; '.join(describe(value)[:8])}"
+            )
 
 
 def gaussian_kl(old_mean, old_std, mean, std):
@@ -129,9 +159,15 @@ class PPO:
 
     @torch.no_grad()
     def process_env_step(self, rewards, done, infos):
-        require_finite((rewards, infos), "transition")
+        require_finite({"rewards": rewards, "infos": infos}, "transition")
         if done.dtype != torch.bool or done.shape != (self.config.num_envs,):
             raise ValueError("Expected paired boolean done mask")
+        invalid = infos.get("invalid_envs", torch.zeros_like(done))
+        if invalid.dtype != torch.bool or invalid.shape != done.shape:
+            raise ValueError("Expected paired boolean invalid mask")
+        if bool((invalid & ~done).any()):
+            raise ValueError("Invalid worlds must be reset before storage")
+        self.transition.valid = ~invalid
         for role, agent in zip(ROLES, AGENTS, strict=True):
             setattr(self.transition, f"rewards_{role}", rewards[agent])
             setattr(self.transition, f"dones_{role}", done)
@@ -154,15 +190,24 @@ class PPO:
     def check_collection_probabilities(self):
         """Fail before either optimizer runs; never rewrite saved probabilities."""
         self.last_parity = {}
+        valid_indices = (
+            self.storage.valid.flatten().nonzero().flatten()
+            if self.storage.has_invalid else None
+        )
         for role in ROLES:
             obs = getattr(self.storage, f"observations_{role}").flatten(0, 1)
             actions = getattr(self.storage, f"actions_{role}").flatten(0, 1)
             old_logp = getattr(self.storage, f"actions_log_prob_{role}").flatten()
             old_mean = getattr(self.storage, f"mu_{role}").flatten(0, 1)
             old_std = getattr(self.storage, f"sigma_{role}").flatten(0, 1)
+            count = len(obs) if valid_indices is None else len(valid_indices)
+            if not count:
+                raise FloatingPointError("No valid transitions for PPO")
             maximum, kl_sum = 0.0, 0.0
-            for start in range(0, len(obs), self.config.actor_forward_rows):
+            for start in range(0, count, self.config.actor_forward_rows):
                 sl = slice(start, start + self.config.actor_forward_rows)
+                if valid_indices is not None:
+                    sl = valid_indices[sl]
                 law = self.policy.distribution(role, obs[sl])
                 logp = law.log_prob(actions[sl]).sum(-1)
                 factor = factors(law)
@@ -173,8 +218,8 @@ class PPO:
                 kl_sum += kl.double().sum().item()
             self.last_parity[role] = {
                 "max_abs_log_ratio": maximum,
-                "mean_kl": kl_sum / len(obs),
-                "rows": len(obs),
+                "mean_kl": kl_sum / count,
+                "rows": count,
             }
         if any(
             record["max_abs_log_ratio"] > 0.1 or abs(record["mean_kl"]) > 0.001
@@ -258,7 +303,11 @@ class PPO:
         for batch in self.storage.mini_batch_generator(
             cfg.num_mini_batches, cfg.num_learning_epochs
         ):
-            with self.policy.actor_graph_batch():
+            # Filtered minibatches no longer fit the fixed CUDA graph shape.
+            with (
+                nullcontext() if self.storage.has_invalid
+                else self.policy.actor_graph_batch()
+            ):
                 losses = []
                 for role, role_batch in zip(ROLES, batch, strict=True):
                     loss, record = self._role_loss(role, role_batch)
@@ -298,8 +347,8 @@ class PPO:
         }
         metrics.update(
             self.amp.update(
-                self.storage.amp_obs_ego.flatten(0, 1),
-                self.storage.amp_obs_opponent.flatten(0, 1),
+                self.storage.valid_flattened("amp_obs_ego"),
+                self.storage.valid_flattened("amp_obs_opponent"),
                 count,
             )
         )

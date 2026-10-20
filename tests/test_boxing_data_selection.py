@@ -160,6 +160,7 @@ def test_same_name_drive_files_keep_independent_paths():
 
 def test_download_detects_corruption_and_repairs_only_on_request(tmp_path):
     import hashlib
+
     from holoboxing.data.download import _fetch
 
     content = b"verified public motion bytes"
@@ -229,8 +230,8 @@ def test_data_iterations_do_not_change_global_default():
 def test_robot_export_runs_both_real_training_readers(tmp_path, monkeypatch):
     pytest.importorskip("mujoco")
     pytest.importorskip("warp")
-    from holoboxing.data.prepare import prepare_dataset
     from holoboxing.data.contract import CompetitionAssets
+    from holoboxing.data.prepare import prepare_dataset
     from holoboxing.data.records import (
         initial_qpos,
         load_scene_model,
@@ -300,8 +301,13 @@ def test_robot_export_runs_both_real_training_readers(tmp_path, monkeypatch):
     supervision = Records(
         tmp_path / "processed" / "prepared" / "manifest.json"
     )
-    assert supervision.sample_count() == 12
-    assert sum(len(batch["self"]) for batch in supervision.batches(4)) == 12
+    assert supervision.sample_count() == 6
+    assert sum(len(batch["self"]) for batch in supervision.batches(4)) == 6
+    validation = Records(
+        tmp_path / "processed" / "prepared" / "manifest.json",
+        split="validation",
+    )
+    assert validation.sample_count() == 6
     manifest = json.loads(
         (tmp_path / "processed" / "robot_h5" / "manifest.json").read_text()
     )

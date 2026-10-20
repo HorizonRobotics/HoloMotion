@@ -1,9 +1,4 @@
-"""Rebuild supervised references with competition XML kinematics.
-
-Offline observations are explicitly reference-derived kinematic proxies.
-Stored motion body COM velocities and old actor features are never reused as
-observations.
-"""
+"""Prepare actual-state supervision and full reference motions for AMP."""
 
 from __future__ import annotations
 
@@ -11,6 +6,7 @@ import argparse
 from concurrent.futures import ProcessPoolExecutor
 import json
 import multiprocessing
+import os
 from pathlib import Path
 
 import mujoco
@@ -22,11 +18,7 @@ from holoboxing.evaluation.runtime.model_contract import (
     INPUT_LINK_NAMES,
     sha256,
 )
-from .contract import (
-    CompetitionAssets,
-    CompetitionHistory,
-    target_from_world,
-)
+from .contract import CompetitionAssets
 from .robot import load_scene_model
 
 DATA_FORMAT = "holoboxing_competition_records_v2"
@@ -277,6 +269,9 @@ def motion_kinematics(assets, path):
                 reset[blue_qi + 3 : blue_qi + 7][[1, 2, 3, 0]]
             )
         ).as_quat()[[3, 0, 1, 2]]
+        trajectory["standing_qpos"] = np.concatenate(
+            (standing[blue_qi : blue_qi + 7], standing[joints[1][0]])
+        )
     for index in range(frames):
         data.qpos[:] = standing
         data.qvel[:] = 0
@@ -327,41 +322,15 @@ def motion_kinematics(assets, path):
     }, trajectory
 
 
-def prepare_clip(assets, source, output):
+def prepare_clip(assets, source, output, *, collector):
     arrays, trajectory = motion_kinematics(assets, source)
     n = len(arrays["position"])
-    history = CompetitionHistory(1)
-    observations = []
-    for frame in range(n):
-        obs = history.observe(
-            *[
-                arrays[name][frame : frame + 1]
-                for name in (
-                    "position",
-                    "quaternion",
-                    "link_origin_velocity",
-                    "pelvis_angular_velocity_b",
-                )
-            ],
-            torch.tensor([60.0 - (frame % 3000) / 50]),
-            torch.zeros(1, 2),
-            reset=torch.tensor([frame % 3000 == 0]),
-            step=frame,
-        )
-        observations.append(obs[0])
-    current = torch.arange(n - 5)
-    current = current[
-        current.div(3000, rounding_mode="floor")
-        == (current + 5).div(3000, rounding_mode="floor")
-    ]
-    future = current[:, None] + torch.arange(1, 6)
     roles = trajectory["roles"]
     amp_joint_names = json.loads(SOURCE_SCHEMA.read_text())["joint_names"]
     amp_order = [
         trajectory["joint_names"].index(name) for name in amp_joint_names
     ]
-    observations = torch.stack(observations)
-    targets, obs_rows, indices, amp_reference = [], [], [], []
+    amp_reference = []
     amp_root_quaternion = []
     world_angular = torch.as_tensor(
         trajectory["root_angular_velocity_world"], dtype=torch.float32
@@ -370,18 +339,6 @@ def prepare_clip(assets, source, output):
         trajectory["amp_root_quaternion"], dtype=torch.float32
     )
     for role in range(roles):
-        targets.append(
-            target_from_world(
-                arrays["position"][current, role],
-                arrays["quaternion"][current, role],
-                arrays["position"][future, role],
-                arrays["quaternion"][future, role],
-            )
-        )
-        obs_rows.append(observations[current, role])
-        indices.append(
-            torch.stack((current, torch.full_like(current, role)), -1)
-        )
         # Keep the world angular velocity and absolute joint states. Training
         # applies its existing rotation and nominal offsets exactly once.
         features = torch.cat(
@@ -398,40 +355,49 @@ def prepare_clip(assets, source, output):
         amp_root_quaternion.append(
             torch.stack((root_quaternion[:-1, role], root_quaternion[1:, role]), 1)
         )
-    np.savez_compressed(
-        output,
+    packet = dict(
         format=np.asarray(DATA_FORMAT),
-        obs=torch.cat(obs_rows).numpy(),
-        target_pose=torch.cat(targets).numpy(),
-        sample_index=torch.cat(indices).numpy(),
         amp_reference=torch.cat(amp_reference).numpy(),
         amp_root_quaternion_wxyz=torch.cat(amp_root_quaternion).numpy(),
         amp_angular_velocity_frame=np.asarray("world"),
         amp_joint_names=np.asarray(amp_joint_names),
         amp_fps=np.asarray(50),
     )
-    return {
+    report = {
         "source": Path(source).name,
         "source_sha256": sha256(source),
         "source_schema": trajectory["source_schema"],
         "source_joint_schema_sha256": sha256(SOURCE_SCHEMA),
         "velocity_source": trajectory["velocity_source"],
         "frames": n,
-        "samples": len(current) * roles,
         "roles": roles,
         "amp_reference_samples": (n - 1) * roles,
         "opponent": "recorded paired person"
         if roles == 2
         else "synthetic standing opponent from evaluation reset",
-        "observation_source": "reference_kinematic_proxy_not_measured_rollout",
         "future_padding": False,
     }
+    measured, measured_report = collector.collect(arrays, trajectory)
+    packet.update(measured)
+    report.update(measured_report)
+    np.savez_compressed(output, **packet)
+    return report
 
 
-def _prepare_task(arguments):
-    directory, source, output = arguments
+def _prepare_group(arguments):
+    from .collection import MeasuredCollector
+
+    directory, lower, device, tasks = arguments
     torch.set_num_threads(1)
-    return prepare_clip(CompetitionAssets.load(directory), source, output)
+    assets = CompetitionAssets.load(directory)
+    collector = MeasuredCollector(assets, lower, device)
+    try:
+        return [
+            (index, prepare_clip(assets, source, output, collector=collector))
+            for index, source, output in tasks
+        ]
+    finally:
+        collector.close()
 
 
 def main(argv=None):
@@ -454,48 +420,58 @@ def main(argv=None):
         )
     if args.workers < 1:
         parser.error("Worker count must be positive")
+    from holoboxing.evaluation.models import verify_bundle
+
+    lower = verify_bundle(os.environ.get("HOLOBOXING_LOWER", "models/holomotion-v2"))
+    devices = torch.cuda.device_count()
+    if not devices:
+        raise ValueError("Data preparation requires a CUDA GPU")
     assets = CompetitionAssets.load(args.assets)
     if args.output.exists() and any(args.output.iterdir()):
         raise ValueError("Use a new empty prepared-data directory")
     args.output.mkdir(parents=True, exist_ok=True)
     records = []
     tasks = [
-        (args.assets, path, args.output / f"clip-{index:04d}.npz")
+        (index, path, args.output / f"clip-{index:04d}.npz")
         for index, path in enumerate(args.motion)
     ]
-    if args.workers == 1:
-        prepared = map(_prepare_task, tasks)
-        executor = None
+    workers = min(args.workers, len(tasks))
+    groups = [
+        (args.assets, lower, f"cuda:{index % devices}", tasks[index::workers])
+        for index in range(workers)
+    ]
+    if workers == 1:
+        prepared = _prepare_group(groups[0])
     else:
-        executor = ProcessPoolExecutor(
-            max_workers=args.workers,
+        with ProcessPoolExecutor(
+            max_workers=workers,
             mp_context=multiprocessing.get_context("spawn"),
+        ) as executor:
+            prepared = [
+                item for group in executor.map(_prepare_group, groups)
+                for item in group
+            ]
+    for index, report in sorted(prepared):
+        name = f"clip-{index:04d}.npz"
+        report.update(
+            path=name,
+            sha256=sha256(args.output / name),
+            bytes=(args.output / name).stat().st_size,
+            source_group=args.motion[index].stem.removesuffix("_mirror"),
         )
-        prepared = executor.map(_prepare_task, tasks)
-    try:
-        for index, (path, report) in enumerate(zip(args.motion, prepared)):
-            group = path.stem.removesuffix("_mirror")
-            name = f"clip-{index:04d}.npz"
-            report.update(
-                path=name,
-                sha256=sha256(args.output / name),
-                bytes=(args.output / name).stat().st_size,
-                source_group=group,
-            )
-            records.append(report)
-    finally:
-        if executor is not None:
-            executor.shutdown(cancel_futures=True)
+        records.append(report)
     manifest = {
         "format": DATA_FORMAT,
         "policy_contract": assets.identity()["policy_contract"],
         "asset_identity": assets.identity(),
         "control_hz": 50,
         "records": records,
+        "state": "complete",
+        "collection_recipe": records[0]["collection_recipe"],
     }
-    (args.output / "manifest.json").write_text(
-        json.dumps(manifest, indent=2) + "\n"
-    )
+    from .common import write_json
+
+    write_json(args.output / "manifest.json", manifest)
     print(
         json.dumps(
             {

@@ -1,11 +1,19 @@
 ---
 name: ruff-format
-description: Format HoloMotion Python files with the Ruff binary selected by train.env. Use when the user asks to format Python code, run Ruff formatting, check formatting, format changed files, or explicitly format the whole project.
+description: Format HoloMotion Python files with Ruff from the selected task environment. Use when the user asks to format Python code, run Ruff formatting, check formatting, format changed files, or explicitly format the whole project.
 ---
 
 # Ruff Format
 
 ## Workflow
+
+For standalone HoloBoxing, use the explicit environment selected by
+`holomotion-train-interpreter` and verify its `bin/ruff` executable.
+Install Ruff there if needed; do not source the Isaac training environment
+just to format standalone code. Use the same repository configuration and
+file-scope rules below.
+
+For tracker workflows owned by `train.env`:
 
 1. Resolve and enter the public HoloMotion Git root.
 2. Source `train.env`.

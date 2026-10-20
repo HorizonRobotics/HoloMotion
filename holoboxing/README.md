@@ -7,6 +7,9 @@ A policy is a model that maps observations to action targets.
 You will prepare data, train a policy, export it to ONNX, and evaluate it with the supplied controller on a Unitree G1 robot.
 ONNX is a portable neural-network format; your final submission is one ONNX model containing your high-level policy.
 
+Use the [competition website](https://hbot-competition.horizon.auto/) for submission and leaderboard navigation.
+Current leaderboard methods and scores are test data, not official rankings.
+
 ## 0. Prepare for the competition
 
 Review the rules and policy interface, then install the required environments.
@@ -97,25 +100,48 @@ cd HoloMotion
 Install the following software and download the competition image for Docker-based evaluation.
 Local evaluation needs **Docker and NVIDIA Container Toolkit**, which gives containers GPU access; it does not need host Python.
 Replay playback needs only Docker and a browser.
+Follow the official [Docker installation guide](https://docs.docker.com/engine/install/) and [NVIDIA Container Toolkit guide](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).
 
 ```bash
 export HOLOBOXING_IMAGE="horizonrobotics/holomotion:holoboxing-eval-v11-amd64"
 docker pull --platform linux/amd64 "$HOLOBOXING_IMAGE"
 ```
 
+See the [Docker Hub image page](https://hub.docker.com/layers/horizonrobotics/holomotion/holoboxing-eval-v11-amd64). After installation, check Docker and container GPU access:
+
+```bash
+docker version
+nvidia-smi
+docker run --rm --gpus all --entrypoint nvidia-smi "$HOLOBOXING_IMAGE" -L
+```
+
 The low-level controller model, its parameters, and evaluation resources are bundled; no additional resource downloads are needed.
 Use the round's announced image to reuse the official packaged software and resources.
 GPU hardware and host drivers still depend on the machine running the image.
 
-For an offline delivery, use the supplied archive instead of pulling:
+If the target cannot pull images, first export a delivery on a connected machine.
+The output directory must not exist. The script writes an archive, checksums, and image identity records without publishing or changing image tags.
 
 ```bash
-sha256sum --check SHA256SUMS
-docker load --input holoboxing-eval-v11-amd64.tar.gz
-export HOLOBOXING_IMAGE="holoboxing-eval:local-v11"
+./holoboxing/evaluation/export.sh \
+  --image "$HOLOBOXING_IMAGE" --output-dir /absolute/path/to/new-offline-delivery
 ```
 
-These commands verify the archive before importing the image.
+Copy the complete delivery directory to the offline machine, then verify and import it:
+
+```bash
+cd /path/to/offline-delivery
+sha256sum --check SHA256SUMS
+docker load --input holoboxing-eval-v11-amd64.tar.gz
+export HOLOBOXING_IMAGE="horizonrobotics/holomotion:holoboxing-eval-v11-amd64"
+docker image inspect --format '{{.Id}}' "$HOLOBOXING_IMAGE"
+cat IMAGE_ID
+```
+
+The last two commands must show the same image ID.
+For a custom image, use the exported reference recorded in `IMAGE_REFERENCE`.
+Docker Hub supplies the pull endpoint, not a separate downloadable offline archive.
+If you cannot export it yourself, request a complete delivery directory from the organizers.
 
 ### Install the training environment (optional)
 
@@ -142,14 +168,17 @@ Keep this environment active through training and export. In a new terminal, rea
 Reference reinforcement learning runs on the host and its physics implementation pins Warp 1.11.
 Evaluation runs inside Docker, independently of the host Python environment.
 
-Install Git LFS for resource downloads.
+Install [Git LFS](https://git-lfs.com/) for resource downloads and check it with `git lfs version`.
 The commands below retrieve the matching resources and competition-specified low-level controller.
 The programs automatically verify the resource inventory and file contents.
 
 ```bash
 GIT_LFS_SKIP_SMUDGE=1 git submodule update --init thirdparties/HoloMotion_assets
+git -C thirdparties/HoloMotion_assets lfs install --local
 git -C thirdparties/HoloMotion_assets lfs pull --include="holoboxing/**" --exclude=""
+git -C thirdparties/HoloMotion_assets lfs checkout holoboxing
 export HOLOBOXING_ASSETS="$PWD/holoboxing/assets"
+python -m holoboxing assets --assets "$HOLOBOXING_ASSETS"
 python -m holoboxing download --directory models/holomotion-v2
 export HOLOBOXING_LOWER="$PWD/models/holomotion-v2"
 ```
@@ -157,6 +186,40 @@ export HOLOBOXING_LOWER="$PWD/models/holomotion-v2"
 Keep each resource bundle intact. `HOLOBOXING_ASSETS` must contain `resources.json`.
 `HOLOBOXING_LOWER` must contain `config.yaml` and `exported/model_10500.onnx`.
 Download these resources once.
+
+### Download sizes and storage
+
+These v11 reference sizes use decimal GB and MB. Compressed transfers do not represent installed disk usage.
+
+| Content | Reference size and conditions |
+| --- | --- |
+| Compressed evaluation image layers | About 3.94 GB, including the controller. |
+| Separate controller bundle for training | About 1.65 GB. |
+| RL runtime snapshot | Stores another controller copy, about 1.65 GB. |
+| Robot resources | About 32.2 MB. |
+| Two original RoboStriker groups | About 6.44 MB. |
+| Python environments and generated data | Additional space varies with dependencies and dataset size. |
+| Local image build cache | Can consume tens of GB, alongside the archive and imported image. |
+
+Reserve separate space for environments, data, and images. Docker may store its data on another filesystem.
+Check project storage and Docker usage before downloading or building:
+
+```bash
+df -h .
+docker system df
+```
+
+Universal peak disk and GPU-memory requirements have not been established.
+Start with the example's 16 training environments and measure usage before scaling.
+In a new terminal, restore the default paths together:
+
+```bash
+source .venv-holoboxing/bin/activate
+export HOLOBOXING_IMAGE="horizonrobotics/holomotion:holoboxing-eval-v11-amd64"
+export HOLOBOXING_ASSETS="$PWD/holoboxing/assets"
+export HOLOBOXING_LOWER="$PWD/models/holomotion-v2"
+export HOLOBOXING_DATA="$PWD/holoboxing/data/processed/combined/prepared"
+```
 
 ## Tutorial workflow
 
@@ -176,8 +239,10 @@ flowchart TD
     Check -->|Fail| Prep
     Review --> Feedback(( ))
     Review --> Submit[5. Submit the ONNX file]
+    Export -.->|Skip optional local steps| Submit
+    Check -.->|Skip local matches| Submit
     Submit --> Cloud[Online validation]
-    Cloud -->|Pass| Online["Online leaderboard and replay analysis (next day)"]
+    Cloud -->|Pass| Online["Online leaderboard and replay analysis"]
     Cloud -->|Fail| Prep
     Online --> Feedback
     %% Keep only the arrow pointing back to training.
@@ -205,62 +270,53 @@ Every entry must preserve the competition interface and use the specified low-le
 ### Initialize the policy from reference motions
 
 This example uses supervised learning (SL) to imitate reference motions by predicting future target poses from observations.
-The same reference motions also supply motion-style examples during reinforcement learning.
+Training-split reference motions also supply motion-style examples during reinforcement learning.
 
-The two data sources differ in whether they require retargeting:
+The reference method uses two sources for different training purposes:
 
-| Source | Original data | Preparation |
+| Source | Training purpose | Preparation |
 | --- | --- | --- |
-| **RoboStriker** | G1 robot motions | Preprocess directly into training samples. |
-| **InterHuman** | Two-person human motions | Retarget to G1 with HoloRetarget, then use the same preprocessing pipeline. |
+| **InterHuman** | Paired demonstrations supply supervised targets and motion-style examples. | Retarget human motions to G1. |
+| **RoboStriker** | Single-robot trajectories add motion-style examples. | Read the original G1 trajectories. |
 
-Start with two RoboStriker motion groups. Each group contains an original motion and its mirror.
-Complete this path first before adding optional human-motion data.
+**Supervised learning in this reference method requires InterHuman.** RoboStriker alone cannot run the supervised command below.
+Your own method may select different training data while preserving the competition interface and specified controller.
+
+Download a small set of robot reference motions:
 
 ```bash
 python -m holoboxing.data download robostriker \
   --output holoboxing/data/raw/RoboStriker --limit-groups 2 --workers 2
-python -m holoboxing.data prepare \
-  --source holoboxing/data/raw/RoboStriker \
-  --output holoboxing/data/processed/RoboStriker \
-  --assets "$HOLOBOXING_ASSETS" --workers 2
-python -m holoboxing.data verify \
-  --output holoboxing/data/processed/RoboStriker --assets "$HOLOBOXING_ASSETS"
-export HOLOBOXING_DATA="$PWD/holoboxing/data/processed/RoboStriker/prepared"
 ```
 
-Preparation produces 1097-value observations and 225-value targets. Later training reads `prepared/`.
-Original and mirrored motions stay in the same split. This two-group example assigns one group to training and one to validation.
-RoboStriker contains single-robot trajectories; this example adds a synthetic standing opponent when constructing observations.
-Resolve any preprocessing failure recorded in `FAILED.json` before training.
-Use a new output directory after changing data or resources. Remove `--limit-groups` when expanding the dataset.
-
-<details>
-
-<summary>Optional: use human-motion data</summary>
-
-This path uses [HoloRetarget](../holoretarget/README.md) to convert InterHuman motions to G1 motions.
-The `holoboxing.data retarget` command below calls HoloRetarget.
-Add the converted trajectories to the reference motion dataset.
-The combined data supplies both supervised targets and motion-style examples for reinforcement learning.
-
-HoloRetarget uses Newton for solving. The current Newton 1.0 dependency requires Warp 1.12.
-Run retargeting in the separate environment below. Keep the reference training environment and evaluation image unchanged.
-This path also requires a licensed neutral SMPL body model. You may skip it for your first run.
-Obtain the body model from the [official SMPL website](https://smpl.is.tue.mpg.de/) and replace the model path below.
+Next, download and convert paired human motions using [HoloRetarget](../holoretarget/README.md).
+Obtain a licensed neutral SMPL body model from the [official website](https://smpl.is.tue.mpg.de/) and replace the model path below.
 InterHuman permits noncommercial use and prohibits redistribution. Preserve its license; do not redistribute licensed body models.
+
+HoloRetarget's Newton 1.0 dependency requires Warp 1.12. Use a separate retargeting environment; keep Warp 1.11 in the training environment.
+The requirements include Chumpy, which reads shape parameters in legacy SMPL models.
 
 ```bash
 python -m holoboxing.data download interhuman \
   --output holoboxing/data/raw/InterHuman --limit-clips 2 --workers 2
 python3.11 -m venv .venv-holoboxing-retarget
 .venv-holoboxing-retarget/bin/python -m pip install torch==2.9.1 --index-url https://download.pytorch.org/whl/cu128
-.venv-holoboxing-retarget/bin/python -m pip install numpy==2.2.6 scipy==1.15.3 mujoco==3.5.0 warp-lang==1.12.0 newton==1.0.0 trimesh==4.6.8 PyYAML==6.0.2
+.venv-holoboxing-retarget/bin/python -m pip install -r holoboxing/data/retarget-requirements.txt
+.venv-holoboxing-retarget/bin/python -m pip check
 .venv-holoboxing-retarget/bin/python -m holoboxing.data retarget \
   --source holoboxing/data/raw/InterHuman \
   --output holoboxing/data/converted/InterHuman \
   --smpl-model /path/to/licensed/neutral-smpl.pkl \
   --assets "$HOLOBOXING_ASSETS" --device cuda:0 --iterations 4
+```
+
+Only retargeting uses the separate environment. Continue using `python` from the boxing training environment for other commands.
+
+Combine both sources to collect observations from actual simulated states.
+Preparation requires a CUDA GPU and the pinned low-level controller.
+It runs that controller and expresses future targets in the actual current pelvis frame, rather than treating reference trajectories as measured observations.
+
+```bash
 python -m holoboxing.data prepare \
   --source holoboxing/data/raw/RoboStriker \
   --source holoboxing/data/converted/InterHuman \
@@ -271,11 +327,18 @@ python -m holoboxing.data verify \
 export HOLOBOXING_DATA="$PWD/holoboxing/data/processed/combined/prepared"
 ```
 
-Only retargeting uses `.venv-holoboxing-retarget`; other commands continue using `python` from the boxing environment.
-Downloads and conversion preserve the official data splits.
-`HOLOBOXING_DATA` now selects the combined dataset. Continue with the training commands below.
+Preparation produces 1097-value observations and 225-value targets. Regenerate older prepared datasets into a new directory.
+`COMPLETE.json` pins the dataset and source inventories. Resolve any error recorded in `FAILED.json` before training.
 
-</details>
+Official splits are preserved, and original motions stay with their mirrors.
+Supervision, normalization, and loss statistics use only InterHuman training clips.
+The motion-style reward reads training clips from both sources.
+Validation clips enter neither optimization nor fitted statistics; each supervised epoch reports separate validation metrics.
+
+Regenerate legacy supervised checkpoints that lack verified training-split provenance.
+The small default sample does not guarantee held-out InterHuman clips.
+Without them, validation is `NOT_RUN`; this is not independent validation evidence.
+Include official validation motions when expanding the dataset. Repeat `--clip-id` to select specific download IDs.
 
 Train for one epoch, meaning one complete pass through the selected data:
 
@@ -349,7 +412,7 @@ It writes `results/validation.json`. It leaves complete-chain performance `NOT_R
 The second command measures your policy together with the frozen controller, using 10 warmup steps and 100 measured steps.
 It reports the actual GPU model and measured latency, including on GPUs other than the RTX 5090.
 For a different GPU, the report warns that your hardware differs from the official RTX 5090.
-You may estimate RTX 5090 latency from your own measurements; you are responsible for the conversion and its risk.
+Measurements on another GPU do not establish RTX 5090 qualification.
 Official acceptance depends on measurements taken on the RTX 5090.
 
 The timed chain includes observations, your policy, decoding, controller inference, recurrent-state updates, and target conversion.
@@ -398,15 +461,16 @@ Results are not overwritten. Choose a new `--output` for another run, `--gpu` fo
 
 ## 5. Submit
 
-Upload **`results/boxing.onnx`** through the competition's model submission page.
+Upload **`results/boxing.onnx`** through the submission entry on the [competition website](https://hbot-competition.horizon.auto/).
 Submit the high-level policy only. Training checkpoints, data, the controller bundle, and replay files are not model submissions.
 After upload, the service checks the model interface and complete-chain latency.
 Online validation is mandatory even if you skip local validation.
 The model enters online matches only after validation passes.
 If validation fails, follow the report and return to step 0 to check and fix the issue.
 
-After validation passes, check the leaderboard and online match replays the next day.
-Use the ranking and replays to guide further training, then export, validate, and submit again.
+After online validation, consult the website for published results.
+Current leaderboard methods and scores are test data, not official rankings.
+Competition announcements determine the official schedule and results.
 
 Local matches do not update the official leaderboard.
 
@@ -521,7 +585,11 @@ all five future point sets; its packing, validity masks, weights, and state rema
 | `MODEL_TOO_LARGE` | Keep the complete ONNX file strictly below 50,000,000 bytes. |
 | `FORMAT_CHECK_FAILED` | Export one valid ONNX without external tensor files. |
 | `CONTRACT_CHECK_FAILED` | Check tensor names, types, dimensions, and rotations in the policy interface above. |
-| Timing report identifies a different GPU | Use the reported latency for your own estimate of RTX 5090 performance; you accept the conversion risk. |
+| Interrupted download or HTTP 403 | Check proxy and redirected download-host access. Keep `.partial` and rerun to resume; access denial does not establish a missing model. |
+| Download size or SHA256 mismatch | The diagnostic gives actual and expected values. A complete invalid file is retained as `.invalid` and never installed. |
+| No InterHuman training clips | Complete the required human retargeting and combined preparation. RoboStriker alone cannot run this reference supervised method. |
+| Unreadable SMPL shape parameters | Install `holoboxing/data/retarget-requirements.txt` in the retargeting environment and run `pip check`. |
+| Timing report identifies a different GPU | Local results describe the measured GPU; official qualification requires the specified hardware. |
 | A valid model falls or never hits | Watch the replay. Check coordinate frames, target scale, reference quality, and rewards. |
 
 ## Customize your training
@@ -551,6 +619,16 @@ To reproduce the official environment, use matching source, base images, locked 
   --context /absolute/path/to/new-build-context --image holoboxing-eval:custom
 ```
 
+Generated `models/`, `results/`, and data directories are ignored, so tutorial outputs alone do not make the source dirty.
+If you changed source files, add `--development` to record an explicit working-tree snapshot.
+Release builds still require a clean committed source tree.
+
+The existing v11 revision label does not resolve to a public source commit.
+Do not treat it alone as a reproducible public checkout; pin the existing release by image digest.
+Retain `build-inputs.json` and `build-receipt.json` for custom builds.
+The publisher still needs to provide the public commit-to-release mapping.
+For a release build, add `--verify-public-source`; the builder stops unless the clean committed source is publicly verifiable.
+
 The builder verifies model/resource hashes and records source and dependency identities.
 Self-built images must retain the competition-specified low-level controller without replacement or modification.
 Compare your build with the official version, then rerun model validation and matches.
@@ -567,4 +645,4 @@ Other method references are [PPO](https://arxiv.org/abs/1707.06347),
 [Generalized Advantage Estimation](https://arxiv.org/abs/1506.02438),
 [AMP](https://xbpeng.github.io/projects/AMP/), and [SMPLOlympics](https://arxiv.org/abs/2407.00187).
 The [HoloMotion-1 report](https://arxiv.org/abs/2605.15336) describes V1; the V2 interface follows the pinned controller and current implementation.
-The optional paired-motion source is [InterHuman](https://github.com/tr3e/InterGen#interhuman-dataset).
+The paired-motion source is [InterHuman](https://github.com/tr3e/InterGen#interhuman-dataset).

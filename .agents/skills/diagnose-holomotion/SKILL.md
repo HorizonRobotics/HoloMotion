@@ -53,6 +53,10 @@ Compare independently refreshed poses and velocities from the same current joint
 Keep policy refreshes separate from solver/contact data, and compare trajectories with fixed control inputs.
 After reset, check buffer ownership, captured addresses, and actual container paths.
 
+If GPU tests pass separately but fail together with `unknown stream`, inspect the previous test's active Warp stream.
+Tests selecting a Torch stream must restore Warp's previous device and stream through cleanup scopes, including failed setup.
+A leaked default stream can break a later CUDA graph capture.
+
 After removing heavy initialization, test the real entrypoint without GPU access.
 Keep a lightweight device check before loading native inference libraries.
 Those libraries can terminate the process before Python catches an error.

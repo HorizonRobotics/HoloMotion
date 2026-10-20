@@ -4,6 +4,8 @@
 
 本教程面向 HoloBoxing 参赛选手。目标是尽快训练出满足提交要求的高层拳击策略。教程覆盖数据准备、策略训练、模型导出和本地评测。
 
+比赛官网为 [HoloBoxing 竞赛平台](https://hbot-competition.horizon.auto/)。模型提交和榜单入口请见站内导航。当前榜单中的方法和成绩为测试数据。它们不代表正式排名。
+
 比赛使用 Unitree G1 人形机器人。选手需提交单个 ONNX 模型文件。ONNX 是通用的神经网络模型格式。
 
 教程中的数据和训练方法供选手参考。示例代码已适配比赛接口，可减少训练与评测的接口适配工作。选手可在此基础上调整数据、高层网络结构和训练算法。
@@ -91,8 +93,8 @@ cd HoloMotion
 
 所需软件：
 
-- **Docker**：运行评测容器。
-- **NVIDIA Container Toolkit**：提供显卡支持。
+- **Docker**：运行评测容器。请按[官方安装指南](https://docs.docker.com/engine/install/)安装。
+- **NVIDIA Container Toolkit**：提供显卡支持。请按[官方安装指南](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)配置。
 
 只播放回放时，使用 Docker 和浏览器即可。
 
@@ -101,17 +103,35 @@ export HOLOBOXING_IMAGE="horizonrobotics/holomotion:holoboxing-eval-v11-amd64"
 docker pull --platform linux/amd64 "$HOLOBOXING_IMAGE"
 ```
 
-底层控制器模型、参数及评测资源已内置，无需另行下载。使用当前赛程指定的镜像，可减少本地与云端的环境差异。显卡型号和驱动版本仍以主机配置为准。
-
-离线使用时，可通过归档文件导入镜像：
+镜像信息见 [Docker Hub 仓库页](https://hub.docker.com/layers/horizonrobotics/holomotion/holoboxing-eval-v11-amd64)。安装后，先检查 Docker 与显卡访问：
 
 ```bash
-sha256sum --check SHA256SUMS
-docker load --input holoboxing-eval-v11-amd64.tar.gz
-export HOLOBOXING_IMAGE="holoboxing-eval:local-v11"
+docker version
+nvidia-smi
+docker run --rm --gpus all --entrypoint nvidia-smi "$HOLOBOXING_IMAGE" -L
 ```
 
-上述命令会先校验归档文件，再导入镜像。
+底层控制器模型、参数及评测资源已内置，无需另行下载。使用当前赛程指定的镜像，可减少本地与云端的环境差异。显卡型号和驱动版本仍以主机配置为准。
+
+离线机器不能拉取镜像时，先在联网机器导出。导出目录必须不存在。脚本会生成镜像归档、摘要及镜像身份记录。它不会发布或修改镜像标签。
+
+```bash
+./holoboxing/evaluation/export.sh \
+  --image "$HOLOBOXING_IMAGE" --output-dir /absolute/path/to/new-offline-delivery
+```
+
+将整个交付目录复制到离线机器。随后校验、导入并核对镜像身份：
+
+```bash
+cd /path/to/offline-delivery
+sha256sum --check SHA256SUMS
+docker load --input holoboxing-eval-v11-amd64.tar.gz
+export HOLOBOXING_IMAGE="horizonrobotics/holomotion:holoboxing-eval-v11-amd64"
+docker image inspect --format '{{.Id}}' "$HOLOBOXING_IMAGE"
+cat IMAGE_ID
+```
+
+最后两条命令的镜像身份应一致。自定义镜像需使用交付记录中的镜像引用。该引用保存在 `IMAGE_REFERENCE`。Docker Hub 提供拉取入口。它不是独立离线归档的下载页。无法自行导出时，请向赛事方索取完整交付目录。
 
 ### 安装训练环境（可选）
 
@@ -133,17 +153,53 @@ CUDA 运行库随软件包提供，无需另装编译工具包。训练和导出
 
 参考强化学习在主机运行，物理实现固定使用 Warp 1.11。评测在 Docker 内运行，不受主机 Python 环境影响。
 
-资源下载需要 Git LFS。下方命令会获取配套资源和赛事指定的底层控制器。程序会自动校验资源清单及文件内容。
+资源下载需要 [Git LFS](https://git-lfs.com/)。请先安装，并用 `git lfs version` 检查。下方命令会获取配套资源和赛事指定的底层控制器。程序会自动校验资源清单及文件内容。
 
 ```bash
 GIT_LFS_SKIP_SMUDGE=1 git submodule update --init thirdparties/HoloMotion_assets
+git -C thirdparties/HoloMotion_assets lfs install --local
 git -C thirdparties/HoloMotion_assets lfs pull --include="holoboxing/**" --exclude=""
+git -C thirdparties/HoloMotion_assets lfs checkout holoboxing
 export HOLOBOXING_ASSETS="$PWD/holoboxing/assets"
+python -m holoboxing assets --assets "$HOLOBOXING_ASSETS"
 python -m holoboxing download --directory models/holomotion-v2
 export HOLOBOXING_LOWER="$PWD/models/holomotion-v2"
 ```
 
 请保留资源包的完整目录结构。`HOLOBOXING_ASSETS` 中应有 `resources.json`。`HOLOBOXING_LOWER` 中应有 `config.yaml` 和 `exported/model_10500.onnx`。这些资源只需下载一次。
+
+### 下载量与空间准备
+
+下表为 v11 固定资源的参考体积。GB 和 MB 均按十进制计算。压缩下载量不等于安装后的磁盘占用。
+
+| 内容 | 参考体积与条件 |
+| --- | --- |
+| 评测镜像压缩层 | 约 3.94 GB，已包含底层模型。 |
+| 训练所需底层模型 | 约 1.65 GB，训练时需单独保存。 |
+| 强化学习运行快照 | 另保存底层模型副本，约 1.65 GB。 |
+| 机器人资源 | 约 32.2 MB。 |
+| 两组 RoboStriker 原始样本 | 约 6.44 MB。 |
+| Python 环境与生成数据 | 另行占用空间，随依赖和数据量变化。 |
+| 本地镜像构建缓存 | 可占数十 GB，还需另存归档及导入后的镜像。 |
+
+请分别预留训练环境、数据和镜像空间。Docker 数据目录可能位于另一块磁盘。下载和构建前，检查两处存储容量：
+
+```bash
+df -h .
+docker system df
+```
+
+通用峰值磁盘及显存下限尚未量化。示例先使用 16 个训练环境。扩大规模前，请检查本机实际占用。
+
+打开新终端后，可集中恢复默认路径：
+
+```bash
+source .venv-holoboxing/bin/activate
+export HOLOBOXING_IMAGE="horizonrobotics/holomotion:holoboxing-eval-v11-amd64"
+export HOLOBOXING_ASSETS="$PWD/holoboxing/assets"
+export HOLOBOXING_LOWER="$PWD/models/holomotion-v2"
+export HOLOBOXING_DATA="$PWD/holoboxing/data/processed/combined/prepared"
+```
 
 ## 教程流程
 
@@ -161,8 +217,10 @@ flowchart TD
     Check -->|不通过| Prep
     Review --> Feedback(( ))
     Review --> Submit[5. 提交模型]
+    Export -.->|跳过可选本地步骤| Submit
+    Check -.->|跳过本地对战| Submit
     Submit --> Cloud[线上验证]
-    Cloud -->|通过| Online["线上榜单与回放分析（次日）"]
+    Cloud -->|通过| Online["线上榜单与回放分析"]
     Cloud -->|不通过| Prep
     Online --> Feedback
     %% Keep only the arrow pointing back to training.
@@ -184,58 +242,49 @@ flowchart TD
 
 ### 用参考动作初始化策略
 
-本例通过监督学习（SL）模仿参考动作。策略根据观测，学习预测后续目标位姿。同一批参考动作还用于后续的动作风格奖励。
+本例通过监督学习（SL）模仿参考动作。策略根据观测，学习预测后续目标位姿。训练划分中的参考动作还用于动作风格奖励。
 
-两种数据来源的区别在于是否需要动作重定向：
+参考方案使用两种数据，训练用途不同：
 
-| 数据来源 | 原始数据 | 接入方式 |
+| 数据来源 | 用途 | 接入方式 |
 | --- | --- | --- |
-| **RoboStriker** | G1 机器人动作。 | 直接预处理，生成训练样本。 |
-| **InterHuman** | 双人交互的人体动作。 | 先用 HoloRetarget 转为 G1 动作，再预处理。 |
+| **InterHuman** | 双人动作提供监督目标，也提供动作风格参考。 | 先将人体动作重定向为 G1 动作。 |
+| **RoboStriker** | 单人机器人动作补充动作风格参考。 | 直接读取 G1 轨迹。 |
 
-先下载两组 RoboStriker 动作。每组包含原动作及其左右镜像样本。首次使用可先完成这条路径。
+**本参考方案的监督训练必须使用 InterHuman。** 仅有 RoboStriker 时，不能运行下方监督训练。自选训练方法不受这项数据选择限制。比赛接口和指定底层控制器仍须遵守。
+
+先下载少量机器人参考动作：
 
 ```bash
 python -m holoboxing.data download robostriker \
   --output holoboxing/data/raw/RoboStriker --limit-groups 2 --workers 2
-python -m holoboxing.data prepare \
-  --source holoboxing/data/raw/RoboStriker \
-  --output holoboxing/data/processed/RoboStriker \
-  --assets "$HOLOBOXING_ASSETS" --workers 2
-python -m holoboxing.data verify \
-  --output holoboxing/data/processed/RoboStriker --assets "$HOLOBOXING_ASSETS"
-export HOLOBOXING_DATA="$PWD/holoboxing/data/processed/RoboStriker/prepared"
 ```
 
-预处理会生成 1097 维观测和 225 维目标。`prepared/` 供后续训练读取。原动作与镜像样本保持在同一数据划分中。本例的两组数据分别用于训练和验证。
+随后下载并转换双人动作。本节使用 [HoloRetarget](../holoretarget/README.md)。它将 InterHuman 动作转换为 G1 轨迹。该步骤需要已获授权的中性 SMPL 人体模型。请从 [SMPL 官方网站](https://smpl.is.tue.mpg.de/)取得模型，并替换模型路径。
 
-RoboStriker 只含单个机器人的轨迹。示例会补充一个站姿虚拟对手，以构造观测。
+HoloRetarget 使用 Newton 1.0。该版本需要 Warp 1.12。因此重定向使用单独的环境。训练环境继续使用 Warp 1.11。依赖文件也包含旧版 SMPL 所需的 Chumpy。它用于读取人体模型中的形状参数。
 
-若生成 `FAILED.json`，请先处理预处理错误。修改数据或资源后，应使用新的输出目录。扩大数据量时，可去掉 `--limit-groups`。
-
-<details>
-
-<summary>可选：使用人体动作数据</summary>
-
-本节使用 [HoloRetarget](../holoretarget/README.md)。它将 InterHuman 动作转换为 G1 动作。下方 `holoboxing.data retarget` 命令会调用 HoloRetarget。转换后的轨迹可并入参考动作集。合并数据同样用于监督初始化和动作风格奖励。
-
-HoloRetarget 使用 Newton 求解。当前 Newton 1.0 需要 Warp 1.12。请用下方独立环境运行重定向。无需修改参考训练环境或评测镜像。
-
-该流程还需要已获授权的中性 SMPL 人体模型。请从 [SMPL 官方网站](https://smpl.is.tue.mpg.de/)取得模型，并替换下方模型路径。首次使用可跳过本项。
-
-InterHuman 仅允许非商业使用，禁止再次分发。请保留原始许可，不要分发已获授权的人体模型。
+InterHuman 仅允许非商业使用，禁止再次分发。请保留原始许可。不要分发已获授权的人体模型。
 
 ```bash
 python -m holoboxing.data download interhuman \
   --output holoboxing/data/raw/InterHuman --limit-clips 2 --workers 2
 python3.11 -m venv .venv-holoboxing-retarget
 .venv-holoboxing-retarget/bin/python -m pip install torch==2.9.1 --index-url https://download.pytorch.org/whl/cu128
-.venv-holoboxing-retarget/bin/python -m pip install numpy==2.2.6 scipy==1.15.3 mujoco==3.5.0 warp-lang==1.12.0 newton==1.0.0 trimesh==4.6.8 PyYAML==6.0.2
+.venv-holoboxing-retarget/bin/python -m pip install -r holoboxing/data/retarget-requirements.txt
+.venv-holoboxing-retarget/bin/python -m pip check
 .venv-holoboxing-retarget/bin/python -m holoboxing.data retarget \
   --source holoboxing/data/raw/InterHuman \
   --output holoboxing/data/converted/InterHuman \
   --smpl-model /path/to/licensed/neutral-smpl.pkl \
   --assets "$HOLOBOXING_ASSETS" --device cuda:0 --iterations 4
+```
+
+仅重定向使用独立环境。其余命令继续使用拳击环境中的 `python`。
+
+合并两类轨迹，生成实际状态下的训练观测。此步骤需要 CUDA 显卡及指定底层控制器。程序运行固定底层控制器，采集当前物理状态。未来目标也使用该时刻的实际骨盆坐标系。它不再直接把参考轨迹当作实际观测。
+
+```bash
 python -m holoboxing.data prepare \
   --source holoboxing/data/raw/RoboStriker \
   --source holoboxing/data/converted/InterHuman \
@@ -246,9 +295,11 @@ python -m holoboxing.data verify \
 export HOLOBOXING_DATA="$PWD/holoboxing/data/processed/combined/prepared"
 ```
 
-仅重定向命令使用 `.venv-holoboxing-retarget`。其余命令继续使用拳击环境中的 `python`。下载和转换会保留官方数据划分。新数据路径已写入 `HOLOBOXING_DATA`。随后使用下方命令训练策略。
+预处理生成 1097 维观测及 225 维目标。旧版预处理结果不能直接复用。请使用新目录重新生成。`COMPLETE.json` 固定数据及来源清单。若出现 `FAILED.json`，请先处理所记录的错误。
 
-</details>
+官方数据划分会保留。原动作及其镜像始终属于同一划分。监督训练只读取 InterHuman 训练集。归一化与损失统计也只在该集合拟合。动作风格奖励只读取两类数据的训练集。
+
+验证集不参与上述训练或统计拟合。每轮监督训练单独报告验证指标。缺少训练划分记录的旧监督检查点也须重新训练。默认少量样本不保证含有验证动作。缺少验证动作时，指标标为 `NOT_RUN`。这不能作为独立验证集上的效果证据。扩大数据时，请包含官方验证划分的动作。可重复使用 `--clip-id` 指定下载编号。
 
 先训练 1 个 epoch，即完整遍历一次所选数据：
 
@@ -309,7 +360,7 @@ python -m holoboxing.training.export \
 
 第二条命令测量高层策略与底层控制器的总时延。先预热 10 次，再测量 100 次。计时还包括观测生成、解码、模型缓存更新和目标转换。物理仿真及输出异常值修正不计入 **5 ms** 指标。
 
-使用其他显卡，也会输出实测时延。报告会注明显卡型号，并提示与官方硬件的差异。选手可自行估算 RTX 5090 上的时延。换算结果及相关风险由选手自行承担。时延是否达标，以官方 RTX 5090 实测结果为准。
+使用其他显卡，也会输出实测时延。报告会注明显卡型号，并提示与官方硬件的差异。其他显卡的结果不能证明 RTX 5090 资格。时延是否达标，以官方 RTX 5090 实测结果为准。
 
 模型推理和比赛仿真均需使用显卡。
 
@@ -351,11 +402,11 @@ python -m holoboxing.training.export \
 
 ## 5. 提交模型
 
-在比赛的模型提交页面上传 **`results/boxing.onnx`**。只需提交高层策略的 ONNX 文件。无需上传训练检查点、数据、底层控制器或回放文件。
+在[比赛官网](https://hbot-competition.horizon.auto/)的模型提交入口上传 **`results/boxing.onnx`**。只需提交高层策略的 ONNX 文件。无需上传训练检查点、数据、底层控制器或回放文件。
 
 上传后，服务端会检查模型接口与完整推理链时延。即使跳过本地验证，模型也须通过线上验证。通过验证后，模型才会进入线上对战流程。未通过时，请按报告返回第 0 步检查并修正。
 
-通过验证后，次日可查看榜单排名和线上对战回放。根据排名和回放分析策略表现，再调整训练方案。完成训练后，重复导出、验证和提交。
+线上验证通过后，可在官网查看公布的结果。当前榜单中的方法和成绩为测试数据。它们不代表正式排名。正式赛程和结果以赛事公告为准。
 
 本地对战结果不会更新官方排行榜。
 
@@ -451,7 +502,11 @@ TopK 的选择维度必须具有已知长度。对较长维度执行 TopK 时，
 | `MODEL_TOO_LARGE` | ONNX 文件大小须严格小于 50,000,000 字节。 |
 | `FORMAT_CHECK_FAILED` | 检查 ONNX 文件是否有效，并确认全部权重均保存在该文件中。 |
 | `CONTRACT_CHECK_FAILED` | 核对输入输出名称、类型、维度及旋转表示。 |
-| 测时报告提示显卡不同 | 可自行换算 RTX 5090 上的预计时延，相关风险由选手承担。 |
+| 测时报告提示显卡不同 | 本地结果仅说明实测显卡。正式资格以指定硬件的实测为准。 |
+| 模型下载中断或返回 HTTP 403 | 检查代理及重定向下载域名。403 表示访问被拒绝，不能证明模型缺失。保留 `.partial` 文件，重跑同一命令续传。 |
+| 下载大小或摘要错误 | 错误信息分别给出实际值和期望值。摘要错误的完整文件保存在 `.invalid`，不作为有效模型使用。 |
+| 监督训练提示没有 InterHuman 训练片段 | 完成必需的人体动作重定向及合并预处理。仅有 RoboStriker 不能运行本参考监督训练。 |
+| SMPL 形状参数无法读取 | 在重定向环境安装 `holoboxing/data/retarget-requirements.txt`，再运行 `pip check`。 |
 | 模型通过检查，但对战表现异常 | 查看回放，检查坐标系、目标尺度、参考动作和奖励函数。 |
 
 ## 调整训练方案
@@ -479,6 +534,10 @@ TopK 的选择维度必须具有已知长度。对较长维度执行 TopK 时，
   --assets "$HOLOBOXING_ASSETS" --lower "$HOLOBOXING_LOWER" \
   --context /absolute/path/to/new-build-context --image holoboxing-eval:custom
 ```
+
+教程生成的 `models/`、`results/` 及数据目录已忽略。它们不会单独导致脏工作区错误。若修改过源码，请加 `--development`。该选项明确记录当前工作区快照。正式发布构建仍要求已提交的干净源码。
+
+现有 v11 的提交标签无法在公开仓库查询。不能仅凭该标签重建公开源码版本。使用既有发布包时，应固定镜像摘要。自建镜像须保留 `build-inputs.json` 和 `build-receipt.json`。发布方仍需补齐公开提交与发布包的对应关系。正式发布构建请加 `--verify-public-source`。脚本会先检查公开提交是否可查询。无法验证时，构建会停止。
 
 构建脚本会校验模型与资源文件，并记录源码及依赖版本。构建完成后，请核对记录，重新运行模型检查和本地对战。
 

@@ -43,6 +43,10 @@ def fit_statistics(
     floors = dict(position=position_floor, rotation225=rotation225_floor)
     if any(not math.isfinite(v) or v <= 0 for v in floors.values()):
         raise ValueError("Statistics floors must be positive finite values")
+    if records.source_selection.get("split") != "train":
+        raise ValueError(
+            "Fit normalization and loss statistics on the train split only"
+        )
     count = records.sample_count()
     normalizer = ActorNormalizer(until=max(100_000_000, count))
     moments = {key: Moments() for key in floors}
@@ -53,9 +57,12 @@ def fit_statistics(
         moments["rotation225"].update(target[..., 3:])
     if int(normalizer.count) != count:
         raise ValueError("Statistics did not cover the full train population")
-    statistics = {key: value.result(floors[key]) for key, value in moments.items()}
+    statistics = {
+        key: value.result(floors[key]) for key, value in moments.items()
+    }
     statistics.update(
         manifest_sha256=records.manifest_sha256,
+        source_selection=records.source_selection,
         count=count,
     )
     return statistics, normalizer
@@ -101,11 +108,15 @@ def physical_metrics(prediction, batch):
     target = batch["target_pose"].reshape(-1, 5, 5, 9)
     x, z = target[..., 3:6], target[..., 6:9]
     target_rotation = torch.stack((x, torch.cross(z, x, dim=-1), z), -1)
-    relative = g.project_xz(predicted[..., 3:]).transpose(-1, -2) @ target_rotation
+    relative = (
+        g.project_xz(predicted[..., 3:]).transpose(-1, -2) @ target_rotation
+    )
     cosine = ((relative.diagonal(dim1=-2, dim2=-1).sum(-1) - 1) / 2).clamp(
         -1, 1
     )
     return {
-        "position_m": (predicted[..., :3] - target[..., :3]).norm(dim=-1).mean(),
+        "position_m": (predicted[..., :3] - target[..., :3])
+        .norm(dim=-1)
+        .mean(),
         "rotation_radians": torch.acos(cosine).mean(),
     }

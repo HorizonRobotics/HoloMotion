@@ -10,10 +10,20 @@ from holoboxing.training.rsl_rl.modules.normalization import (
 
 
 class Records(PreparedDataset):
-    def __init__(self, manifest, *, asset_identity=None):
+    def __init__(
+        self,
+        manifest,
+        *,
+        asset_identity=None,
+        split="train",
+        allow_empty=False,
+    ):
         # Validate arrays when consumed, rather than decompressing every clip twice.
         super().__init__(
             manifest, asset_identity=asset_identity, validate_contents=False
+        )
+        self.select_sources(
+            split=split, dataset="interhuman", allow_empty=allow_empty
         )
         self.cached_index, self.cached = None, None
 
@@ -22,8 +32,12 @@ class Records(PreparedDataset):
         rotations = packet["target_pose"].reshape(-1, 5, 5, 9)[..., 3:]
         x, z = rotations[..., :3], rotations[..., 3:]
         if (
-            not torch.allclose(x.norm(dim=-1), torch.ones_like(x[..., 0]), atol=2e-4)
-            or not torch.allclose(z.norm(dim=-1), torch.ones_like(z[..., 0]), atol=2e-4)
+            not torch.allclose(
+                x.norm(dim=-1), torch.ones_like(x[..., 0]), atol=2e-4
+            )
+            or not torch.allclose(
+                z.norm(dim=-1), torch.ones_like(z[..., 0]), atol=2e-4
+            )
             or not ((x * z).sum(-1).abs() <= 2e-4).all()
         ):
             raise ValueError("Targets must contain orthonormal rotation axes")

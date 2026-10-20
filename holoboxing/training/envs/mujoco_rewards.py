@@ -26,6 +26,14 @@ def joint_limits(env, asset_cfg):
     ).sum(-1)
 
 
+def terminate_reward(env, asset_cfg, minimum_height):
+    return rewards.terminate_reward(
+        env,
+        asset_cfg=asset_cfg,
+        minimum_height=env.physics.floor_height + minimum_height,
+    )
+
+
 def terms(agent):
     own = entity(agent)
     other = "robot_B" if agent == "robot_A" else "robot_A"
@@ -111,7 +119,7 @@ def terms(agent):
         (
             "terminate_reward",
             0.3,
-            rewards.terminate_reward,
+            terminate_reward,
             dict(asset_cfg=own, minimum_height=0.4),
         ),
         (

@@ -1,7 +1,6 @@
 """Produce compact HoloMotion V2 H5 and current boxing training records."""
 
 from __future__ import annotations
-
 import hashlib
 import json
 import math
@@ -29,9 +28,7 @@ def source_records(root):
     elif receipt.is_file():
         metadata = json.loads(receipt.read_text())
         if metadata.get("dataset") != "robostriker":
-            raise ValueError(
-                "Raw InterHuman must be retargeted first"
-            )
+            raise ValueError("Raw InterHuman must be retargeted first")
         records = metadata["files"]
         dataset = "robostriker"
     else:
@@ -105,6 +102,7 @@ def export_robot_h5(records, output, *, assets, splits, _partition=None):
     from holomotion.src.training.data_production.robot_h5 import (
         RobotH5ShardWriter,
     )
+
     from .records import (
         load_scene_model,
         load_trajectory,
@@ -150,8 +148,8 @@ def export_robot_h5(records, output, *, assets, splits, _partition=None):
             "motion_keys": all_keys,
             "split": "aggregate_for_verification",
             **{
-                ("training" if partition == "train" else partition) + "_manifest":
-                f"{partition}/manifest.json"
+                ("training" if partition == "train" else partition)
+                + "_manifest": f"{partition}/manifest.json"
                 for partition in ("train", "validation")
                 if (output / partition / "manifest.json").is_file()
             },
@@ -239,19 +237,35 @@ def export_robot_h5(records, output, *, assets, splits, _partition=None):
     return manifest
 
 
-def verify_dataset(output, *, assets):
+def verify_dataset(output, *, assets, _preparing=False):
     import h5py
     import torch
+
     from holomotion.src.training.h5_dataloader import Hdf5RootDofDataset
-    from .contract import CompetitionAssets
+
+    from .contract import CompetitionAssets, same_data_assets
     from .dataset import PreparedDataset
     from .records import SOURCE_SCHEMA
 
     output = Path(output).expanduser().resolve(strict=True)
     tree = CompetitionAssets.load(assets)
     dataset = PreparedDataset(
-        output / "prepared" / "manifest.json", asset_identity=tree.identity()
+        output / "prepared" / "manifest.json",
+        asset_identity=tree.identity(),
+        allow_incomplete_parent=_preparing,
     )
+    if dataset.collection_recipe is not None:
+        dataset.source_metadata(require_complete=not _preparing)
+        provenance = json.loads((output / "sources.json").read_text())
+        expected = [row["sha256"] for row in provenance["records"]]
+        actual = [row["source_sha256"] for row in dataset.records]
+        if (
+            expected != actual
+            or len(expected) != provenance["expected_source_clips"]
+        ):
+            raise ValueError(
+                "Measured source coverage differs from the requested inventory"
+            )
     maximum_rotation_error = 0.0
     supervised_samples = 0
     amp_joint_names = json.loads(SOURCE_SCHEMA.read_text())["joint_names"]
@@ -299,9 +313,8 @@ def verify_dataset(output, *, assets):
         )
     robot_root = output / "robot_h5"
     robot = json.loads((robot_root / "manifest.json").read_text())
-    if (
-        robot.get("version") != 2
-        or robot.get("asset_identity") != tree.identity()
+    if robot.get("version") != 2 or not same_data_assets(
+        robot.get("asset_identity"), tree.identity()
     ):
         raise ValueError("Compact robot H5 contract or assets differ")
     for clip in robot["clips"].values():
@@ -327,7 +340,9 @@ def verify_dataset(output, *, assets):
             )
             if (
                 split_manifest.get("split") != partition
-                or split_manifest.get("asset_identity") != tree.identity()
+                or not same_data_assets(
+                    split_manifest.get("asset_identity"), tree.identity()
+                )
                 or split_manifest.get("dof_names") != robot["dof_names"]
                 or set(split_manifest["clips"]) != set(expected)
             ):
@@ -453,7 +468,7 @@ def verify_dataset(output, *, assets):
 def prepare_dataset(
     sources, output, *, assets, workers=1, seed=42, validation_fraction=0.1
 ):
-    from .contract import CompetitionAssets
+    from .contract import CompetitionAssets, same_data_assets
     from .records import main as prepare_main
 
     if workers < 1:
@@ -469,10 +484,9 @@ def prepare_dataset(
     tree = CompetitionAssets.load(assets)
     for root in sources:
         paired = Path(root).expanduser().resolve() / "motions.json"
-        if (
-            paired.is_file()
-            and json.loads(paired.read_text()).get("asset_identity")
-            != tree.identity()
+        if paired.is_file() and not same_data_assets(
+            json.loads(paired.read_text()).get("asset_identity"),
+            tree.identity(),
         ):
             raise ValueError(
                 "Retargeted source and requested competition assets differ"
@@ -503,6 +517,7 @@ def prepare_dataset(
                 | {"split": splits[record["group"]]}
                 for record in used
             ],
+            "expected_source_clips": len(used),
         }
         write_json(output / "sources.json", provenance)
         export_robot_h5(used, output / "robot_h5", assets=tree, splits=splits)
@@ -517,12 +532,21 @@ def prepare_dataset(
         for record in used:
             arguments += ["--motion", str(record["file"])]
         prepare_main(arguments)
-        report = verify_dataset(output, assets=assets)
+        prepared_path = output / "prepared" / "manifest.json"
+        prepared = json.loads(prepared_path.read_text())
+        for row, source in zip(
+            prepared["records"], provenance["records"], strict=True
+        ):
+            if row["source_sha256"] != source["sha256"]:
+                raise ValueError("Prepared clips differ from source order")
+            row.update(dataset=source["dataset"], split=source["split"])
+        write_json(prepared_path, prepared)
+        report = verify_dataset(output, assets=assets, _preparing=True)
         report.update(
             {
                 "source_clips": len(used),
                 "sources_sha256": sha256(output / "sources.json"),
-                "conversion": "competition XML kinematics and current boxing prepare implementation",
+                "conversion": "measured",
             }
         )
         write_json(output / "COMPLETE.json", report)

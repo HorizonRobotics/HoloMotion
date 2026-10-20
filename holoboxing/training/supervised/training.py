@@ -43,10 +43,22 @@ def _finite_state(state):
 def load_supervised(path, config, neutral_reference, device="cpu"):
     """Load attack-only policy without advancing global random streams."""
     saved = torch.load(path, map_location="cpu", weights_only=False)
-    if saved.get("format") != FORMAT or _actor_config(saved["config"]) != _actor_config(
-        config
-    ):
+    if saved.get("format") != FORMAT or _actor_config(
+        saved["config"]
+    ) != _actor_config(config):
         raise ValueError("Supervised action/network configuration differs")
+    selection = saved.get("loss_statistics", {}).get("source_selection", {})
+    if (
+        selection.get("dataset") != "interhuman"
+        or selection.get("split") != "train"
+        or not selection.get("sources_sha256")
+        or selection.get("samples") != saved["loss_statistics"]["count"]
+        or saved.get("coverage", {}).get("source_selection") != selection
+    ):
+        raise ValueError(
+            "Regenerate the supervised checkpoint: verified training split "
+            "provenance is required"
+        )
     _finite_state(saved["actor"])
     _finite_state(saved["normalizer"])
     with torch.random.fork_rng(devices=[]):
@@ -61,7 +73,9 @@ def load_supervised(path, config, neutral_reference, device="cpu"):
             else torch.equal(expected, actual)
         )
         if not matches:
-            raise ValueError(f"Cannot change supervised execution mapping: {key}")
+            raise ValueError(
+                f"Cannot change supervised execution mapping: {key}"
+            )
     actor.load_state_dict(saved["actor"], strict=True)
     normalizer.load_state_dict(saved["normalizer"], strict=True)
     if int(normalizer.count) <= 0:
@@ -94,9 +108,12 @@ def save_checkpoint(
     path = Path(path)
     payload = {
         "format": FORMAT,
-        "actor": {k: v.detach().cpu().clone() for k, v in actor.state_dict().items()},
+        "actor": {
+            k: v.detach().cpu().clone() for k, v in actor.state_dict().items()
+        },
         "normalizer": {
-            k: v.detach().cpu().clone() for k, v in normalizer.state_dict().items()
+            k: v.detach().cpu().clone()
+            for k, v in normalizer.state_dict().items()
         },
         "config": asdict(config),
         "loss_statistics": statistics,
@@ -113,6 +130,7 @@ def save_checkpoint(
         "coverage": {
             "whole_epoch_complete": True,
             "rows_per_epoch": records.sample_count(),
+            "source_selection": records.source_selection,
         },
     }
     _finite_state(payload["actor"])
@@ -138,8 +156,11 @@ def train(
     device="cpu",
     save_every=1,
     max_grad_norm=1.0,
+    validation_records=None,
 ):
-    if any(type(v) is not int or v < 1 for v in (epochs, batch_size, save_every)):
+    if any(
+        type(v) is not int or v < 1 for v in (epochs, batch_size, save_every)
+    ):
         raise ValueError(
             "Epochs, batch size and save cadence must be positive integers"
         )
@@ -152,16 +173,35 @@ def train(
         raise ValueError("Invalid supervised optimizer configuration")
     if statistics["manifest_sha256"] != records.manifest_sha256:
         raise ValueError("Statistics do not belong to this dataset")
+    if statistics.get("source_selection") != records.source_selection:
+        raise ValueError(
+            "Statistics do not belong to this supervised source selection"
+        )
+    if records.source_selection.get("split") != "train":
+        raise ValueError("Supervised optimization requires the train split")
+    if validation_records is not None and (
+        validation_records.manifest_sha256 != records.manifest_sha256
+        or validation_records.source_selection.get("split") != "validation"
+        or validation_records.source_selection.get("sources_sha256")
+        != records.source_selection.get("sources_sha256")
+    ):
+        raise ValueError(
+            "Validation must use the held-out split of the same verified dataset"
+        )
     expected_train_rows = records.sample_count()
     if (
         statistics["count"] != expected_train_rows
         or int(normalizer.count) != expected_train_rows
     ):
-        raise ValueError("Statistics must cover the complete training population")
+        raise ValueError(
+            "Statistics must cover the complete training population"
+        )
     _finite_state(normalizer.state_dict())
     validate_statistics(normalizer.state_dict())
     if normalizer.actor_dim != config.actor_dim:
-        raise ValueError("Supervised normalizer and actor input layouts differ")
+        raise ValueError(
+            "Supervised normalizer and actor input layouts differ"
+        )
     output = Path(output)
     output.mkdir(parents=True, exist_ok=False)
     torch.manual_seed(seed)
@@ -176,13 +216,17 @@ def train(
         for key in ("position", "rotation225")
     }
     fixed_buffers = {k: v.detach().clone() for k, v in actor.named_buffers()}
-    input_stats = {k: v.detach().clone() for k, v in normalizer.state_dict().items()}
+    input_stats = {
+        k: v.detach().clone() for k, v in normalizer.state_dict().items()
+    }
     log = output / "metrics.jsonl"
     for epoch in range(epochs):
         report = {"epoch": epoch + 1}
         actor.train()
         sums, seen = {}, 0
-        for batch in records.batches(batch_size, seed=seed + epoch, device=device):
+        for batch in records.batches(
+            batch_size, seed=seed + epoch, device=device
+        ):
             prediction = actor(normalizer(batch))
             target = batch["target_pose"]
             losses = normalized_loss(prediction, target, loss_statistics)
@@ -193,7 +237,10 @@ def train(
             )
             optimizer.step()
             step += 1
-            metrics = {**losses, **physical_metrics(prediction.detach(), batch)}
+            metrics = {
+                **losses,
+                **physical_metrics(prediction.detach(), batch),
+            }
             size = len(batch["self"])
             seen += size
             for key, value in metrics.items():
@@ -204,6 +251,47 @@ def train(
             **{key: value / seen for key, value in sums.items()},
             "samples": seen,
         }
+        if (
+            validation_records is not None
+            and validation_records.sample_count()
+        ):
+            actor.eval()
+            validation_sums, validation_seen = {}, 0
+            with torch.no_grad():
+                for batch in validation_records.batches(
+                    batch_size, device=device
+                ):
+                    prediction = actor(normalizer(batch))
+                    metrics = {
+                        **normalized_loss(
+                            prediction, batch["target_pose"], loss_statistics
+                        ),
+                        **physical_metrics(prediction, batch),
+                    }
+                    size = len(batch["self"])
+                    validation_seen += size
+                    for key, value in metrics.items():
+                        validation_sums[key] = (
+                            validation_sums.get(key, 0.0) + float(value) * size
+                        )
+            if validation_seen != validation_records.sample_count():
+                raise ValueError(
+                    "Validation did not cover the complete held-out population"
+                )
+            report["validation"] = {
+                **{
+                    key: value / validation_seen
+                    for key, value in validation_sums.items()
+                },
+                "samples": validation_seen,
+                "status": "PASS",
+            }
+        else:
+            report["validation"] = {
+                "status": "NOT_RUN",
+                "samples": 0,
+                "reason": "No held-out InterHuman clips in the selected data",
+            }
         if any(
             not torch.equal(value, dict(actor.named_buffers())[key])
             for key, value in fixed_buffers.items()

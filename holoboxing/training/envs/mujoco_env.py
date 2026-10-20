@@ -1,5 +1,6 @@
 """Sandbag task on competition physics; policy and reward algorithms are shared."""
 
+import logging
 import re
 from types import SimpleNamespace
 
@@ -19,7 +20,12 @@ from holoboxing.training.envs.control import (
 )
 from holoboxing.training.envs.mujoco_physics import CompetitionPhysics
 from holoboxing.training.envs.mujoco_rewards import terms
+from holoboxing.training.envs.nonfinite import (
+    clear_invalid_rows,
+    nonfinite_rows,
+)
 from holoboxing.training.envs.onnx_lower import OnnxLower
+from holoboxing.training.rsl_rl.algorithms.ppo import require_finite
 from holoboxing.training.rsl_rl.modules.amp import amp_frame
 from holoboxing.training.tasks.combat.config.sandbag import (
     AGENTS,
@@ -89,6 +95,8 @@ CRITIC_BODIES = [
     "right_wrist_yaw_link",
 ]
 
+logger = logging.getLogger(__name__)
+
 
 def action_scale(device):
     frequency = 10 * 2 * 3.1415926535
@@ -149,6 +157,13 @@ class MujocoSandbagEnv:
         self.step_dt = 0.02
         self.max_episode_length = int(
             np.ceil(scoring_config()["round_duration_s"] / self.step_dt)
+        )
+        # Use the evaluator's CPU frame timestamps even on CUDA. Reciprocal
+        # multiplication can otherwise move a strict KO boundary by one frame.
+        self.frame_times = torch.tensor(
+            [frame / 50 for frame in range(self.max_episode_length + 1)],
+            dtype=torch.float64,
+            device=device,
         )
         # Keep the runner's initial episode-length randomization unchanged.
         self.env = self
@@ -284,41 +299,46 @@ class MujocoSandbagEnv:
             torso.force_matrix_w = torso.force_matrix_w_history[:, 0]
         return state
 
-    def _critic(self, agent):
+    def _critic(self, agent, worlds=None):
         data = self.scene[agent].data
+        count = self.num_envs if worlds is None else len(worlds)
+        worlds = slice(None) if worlds is None else worlds
+        body_pos, body_quat = data.body_pos_w[worlds], data.body_quat_w[worlds]
         ids = [BODY_NAMES.index(n) for n in CRITIC_BODIES]
         torso = BODY_NAMES.index("torso_link")
-        inverse = matrix(data.body_quat_w[:, torso]).transpose(-1, -2)
+        inverse = matrix(body_quat[:, torso]).transpose(-1, -2)
         pos = rotate(
             inverse[:, None],
-            data.body_pos_w[:, ids] - data.body_pos_w[:, torso, None],
+            body_pos[:, ids] - body_pos[:, torso, None],
         )
-        orientation = inverse[:, None] @ matrix(data.body_quat_w[:, ids])
-        root_inv = matrix(data.root_quat_w).transpose(-1, -2)
+        orientation = inverse[:, None] @ matrix(body_quat[:, ids])
+        root_inv = matrix(data.root_quat_w[worlds]).transpose(-1, -2)
         fists = [BODY_NAMES.index(n) for n in POINTS[1:3]]
         target = rotate(
             root_inv[:, None],
-            data.body_pos_w[:, fists]
-            - self.get_opponent(agent).data.body_pos_w[:, torso, None],
+            body_pos[:, fists]
+            - self.get_opponent(agent).data.body_pos_w[worlds, torso, None],
         ).flatten(1)
         return torch.cat(
             (
                 pos.flatten(1),
                 orientation[..., :2].flatten(1),
-                rotate(root_inv, data.root_lin_vel_w),
-                data.root_ang_vel_b
-                + self.uniform((self.num_envs, 3), -0.2, 0.2),
-                data.joint_pos
-                - data.default_joint_pos
-                + self.uniform((self.num_envs, 29), -0.01, 0.01),
-                data.joint_vel + self.uniform((self.num_envs, 29), -0.5, 0.5),
-                self.action_managers[agent].action,
-                target + self.uniform((self.num_envs, 6), -0.2, 0.2),
+                rotate(root_inv, data.root_lin_vel_w[worlds]),
+                data.root_ang_vel_b[worlds]
+                + self.uniform((count, 3), -0.2, 0.2),
+                data.joint_pos[worlds]
+                - data.default_joint_pos[worlds]
+                + self.uniform((count, 29), -0.01, 0.01),
+                data.joint_vel[worlds] + self.uniform((count, 29), -0.5, 0.5),
+                self.action_managers[agent].action[worlds],
+                target + self.uniform((count, 6), -0.2, 0.2),
             ),
             -1,
         )
 
-    def _read(self, reset):
+    def _read(self, reset, previous=None):
+        """Read a frame, or refresh only reset worlds in an already-read frame."""
+        measured_before = self.measured if previous is not None else None
         state = self._state()
         ids = [BODY_NAMES.index(n) for n in POINTS]
         p = state["position"][:, :, ids].flatten(0, 1)
@@ -346,7 +366,8 @@ class MujocoSandbagEnv:
             else torch.where(
                 mask[:, None, None],
                 repeated,
-                torch.cat((self.history[:, 1:], raw[:, None]), 1),
+                self.history if previous is not None
+                else torch.cat((self.history[:, 1:], raw[:, None]), 1),
             )
         )
         self.measured = reframe_c(
@@ -392,8 +413,15 @@ class MujocoSandbagEnv:
             link_velocity_w=v,
             omega_b=omega,
         )
+        if measured_before is not None:
+            # A local reset must not replace healthy lower-controller inputs.
+            for name, value in self.measured.items():
+                measured_before[name][mask] = value[mask]
+            self.measured = measured_before
+            p, q = self.measured["position"], self.measured["quaternion"]
         noisy = self.actor_noise.observe(
-            self.measured, self.common_step_counter, reset
+            self.measured, self.common_step_counter, reset,
+            refresh=previous is not None,
         )
         packed = torch.cat(
             (
@@ -404,6 +432,12 @@ class MujocoSandbagEnv:
             -1,
         )
         self.previous_p, self.previous_q = p.clone(), q.clone()
+        if previous is not None:
+            worlds = reset.nonzero().flatten()
+            for i, agent in enumerate(AGENTS):
+                previous[agent]["task_policy"][worlds] = packed[i::2][worlds]
+                previous[agent]["critic"][worlds] = self._critic(agent, worlds)
+            return previous
         return {
             a: {"task_policy": packed[i::2].clone(), "critic": self._critic(a)}
             for i, a in enumerate(AGENTS)
@@ -476,10 +510,50 @@ class MujocoSandbagEnv:
             torch.zeros_like(self.nominal),
         ).clone()
 
+    def _update_falls(self):
+        # The official referee reads solver xpos, not the refreshed policy FK.
+        body_ids = self.physics.body_ids[
+            :, [BODY_NAMES.index(name) for name in FALL_BODY_NAMES]
+        ]
+        heights = wp.to_torch(self.physics.data.xpos)[:, body_ids, 2]
+        low = (
+            heights.double() < self.physics.floor_height + FALL_HEIGHT_M
+        ).any(-1)
+        step = self.episode_length_buf[:, None]
+        self.fall_started = torch.where(
+            low,
+            torch.where(self.fall_started < 0, step, self.fall_started),
+            -1,
+        )
+        fallen = low & (
+            (
+                self.frame_times[step]
+                - self.frame_times[self.fall_started.clamp_min(0)]
+            )
+            >= scoring_config()["ko_confirmation_s"]
+        )
+        return low, fallen
+
+    def _nonfinite_worlds(self, values):
+        invalid = nonfinite_rows(values, self.num_envs, self.device)
+        if bool(invalid.any()):
+            try:
+                require_finite(values, "local environment transition")
+            except FloatingPointError as error:
+                logger.warning(
+                    "Resetting %d nonfinite worlds at step %d; first ids=%s; %s",
+                    int(invalid.sum()),
+                    self.common_step_counter,
+                    invalid.nonzero().flatten()[:16].tolist(),
+                    error,
+                )
+        return invalid
+
     def step(self, actions):
         physical = torch.stack([actions[a] for a in AGENTS], 1).flatten(0, 1)
         start = {a: self._amp(a) for a in AGENTS}
         joint_actions, outputs = self.lower.autonomous(self.measured, physical)
+        require_finite((joint_actions, outputs), "lower controller output")
         for role, agent in enumerate(AGENTS):
             manager = self.action_managers[agent]
             manager.prev_action.copy_(manager.action)
@@ -491,28 +565,7 @@ class MujocoSandbagEnv:
         self.common_step_counter += 1
         self.episode_length_buf += 1
         self._state()
-        low = torch.stack(
-            [
-                (
-                    self.scene[a].data.body_pos_w[
-                        :, [BODY_NAMES.index(n) for n in FALL_BODY_NAMES], 2
-                    ]
-                    < FALL_HEIGHT_M
-                ).any(-1)
-                for a in AGENTS
-            ],
-            1,
-        )
-        step = self.episode_length_buf[:, None]
-        self.fall_started = torch.where(
-            low,
-            torch.where(self.fall_started < 0, step, self.fall_started),
-            -1,
-        )
-        fallen = low & (
-            (step - self.fall_started).double() * 0.02
-            >= scoring_config()["ko_confirmation_s"]
-        )
+        low, fallen = self._update_falls()
         terminated = {}
         for role, agent in enumerate(AGENTS):
             buffer = self.continuous_time_buffers[agent]
@@ -536,6 +589,24 @@ class MujocoSandbagEnv:
             )
             infos[f"terminal_critic_{role}"] = self._critic(agent)
             self.metrics[agent] = {"fallen": low[:, AGENTS.index(agent)]}
+        invalid = self._nonfinite_worlds(
+            {
+                "physics": {
+                    name: wp.to_torch(getattr(self.physics.data, name))
+                    for name in (
+                        "qpos", "qvel", "qacc", "qacc_warmstart", "ctrl"
+                    )
+                },
+                "targets": self.physics.targets,
+                "joint_acceleration": self.physics.joint_acceleration,
+                "net_history": self.physics.net_history,
+                "paired_history": self.physics.paired_history,
+                "rewards": rewards,
+                "reward_terms": self.reward_terms,
+                "infos": infos,
+            }
+        )
+        done = done | invalid
         ids = done.nonzero().flatten()
         if len(ids):
             self._reset(ids)
@@ -560,7 +631,48 @@ class MujocoSandbagEnv:
                 self.next_push[pushed, role] = self.uniform(
                     (len(pushed),), 1.0, 3.0
                 )
-        return self._read(done), rewards, done, infos
+        observations = self._read(done)
+        bad_observation = self._nonfinite_worlds(observations)
+        if bool(bad_observation.any()):
+            self._reset(bad_observation.nonzero().flatten())
+            invalid |= bad_observation
+            done |= bad_observation
+            observations = self._read(bad_observation, previous=observations)
+        # A failed reset is not recoverable; never pass bad data to normalizers.
+        require_finite(observations, "post-reset environment observation")
+        if bool(invalid.any()):
+            clear_invalid_rows(
+                (rewards, infos, self.reward_terms, self.metrics), invalid
+            )
+        infos["invalid_envs"] = invalid
+        return observations, rewards, done, infos
 
     def close(self):
         wp.synchronize_device(str(self.device))
+
+    def diagnostic_state(self):
+        """Failure-only evidence; post-step/reset state is not a replay checkpoint."""
+        physics = self.physics
+        data = physics.data
+        ncon = min(int(wp.to_torch(data.nacon)[0]), data.naconmax)
+        nefc = wp.to_torch(data.nefc)
+        width = min(int(nefc.max()), data.njmax)
+        return {
+            "phase": "exception_time_may_follow_episode_reset",
+            "physics_steps": physics.steps,
+            "state": {
+                name: wp.to_torch(getattr(data, name)).detach().cpu().clone()
+                for name in ("qpos", "qvel", "qacc", "qacc_warmstart", "ctrl", "time")
+            },
+            "contacts": {
+                name: wp.to_torch(getattr(data.contact, name))[:ncon].detach().cpu().clone()
+                for name in ("worldid", "geom", "dim", "dist", "frame", "pos", "efc_address", "friction")
+            },
+            "constraint_count": nefc.cpu().clone(),
+            "constraint_force": wp.to_torch(data.efc.force)[:, :width].cpu().clone(),
+            "body_ipos": wp.to_torch(physics.model.body_ipos).cpu().clone(),
+            "targets": physics.targets.cpu().clone(),
+            "joint_acceleration": physics.joint_acceleration.cpu().clone(),
+            "net_history": physics.net_history.cpu().clone(),
+            "paired_history": physics.paired_history.cpu().clone(),
+        }

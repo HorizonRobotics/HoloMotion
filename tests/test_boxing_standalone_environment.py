@@ -1,10 +1,10 @@
 """The boxing MJCF workflow must not import unrelated simulator stacks."""
 
-from pathlib import Path
 import subprocess
 import sys
 import textwrap
 import unittest
+from pathlib import Path
 
 
 class BoxingStandaloneEnvironmentTest(unittest.TestCase):
@@ -17,8 +17,11 @@ class BoxingStandaloneEnvironmentTest(unittest.TestCase):
 
         import numpy as np
 
+        from holoboxing.data.collection import RECIPE
+        from holoboxing.data.common import sha256, write_json
         from holoboxing.data.contract import ROBOT_KINEMATICS
         from holoboxing.data.records import DATA_FORMAT
+        from holoboxing.evaluation.models import frozen_manifest
         from holoboxing.evaluation.runtime.model_contract import CONTRACT
         from holoboxing.training.rsl_rl.modules.amp import motion_files
 
@@ -30,15 +33,29 @@ class BoxingStandaloneEnvironmentTest(unittest.TestCase):
                 "robot_kinematics": ROBOT_KINEMATICS,
                 "resource_manifest_sha256": "current-resources",
             }
+            files = frozen_manifest()["files"]
+            recipe = {
+                **RECIPE,
+                "lower_identity": {
+                    name: files[name]["sha256"]
+                    for name in ("exported/model_10500.onnx", "config.yaml")
+                },
+            }
             manifest = {
                 "format": DATA_FORMAT,
+                "state": "complete",
+                "collection_recipe": recipe,
                 "policy_contract": CONTRACT,
                 "control_hz": 50,
                 "asset_identity": identity,
                 "records": [
                     {
                         "path": clip.name,
+                        "source_sha256": "original-motion",
+                        "source_group": "motion",
                         "samples": 1,
+                        "collection_recipe": recipe,
+                        "observation_source": "measured_frozen_lower_rollout_current_state",
                         "bytes": clip.stat().st_size,
                         "sha256": hashlib.sha256(
                             clip.read_bytes()
@@ -48,19 +65,55 @@ class BoxingStandaloneEnvironmentTest(unittest.TestCase):
             }
             path = root / "manifest.json"
             path.write_text(json.dumps(manifest))
+            # Keep the provenance beside a dedicated prepared directory.
+            prepared = root / "prepared"
+            prepared.mkdir()
+            clip = clip.rename(prepared / clip.name)
+            path = path.rename(prepared / path.name)
+            source_path = root / "sources.json"
+            complete_path = root / "COMPLETE.json"
+            write_json(
+                source_path,
+                {
+                    "format": "holoboxing_data_sources_v1",
+                    "expected_source_clips": 1,
+                    "records": [
+                        {
+                            "sha256": "original-motion",
+                            "group": "motion",
+                            "dataset": "robostriker",
+                            "split": "train",
+                        }
+                    ],
+                },
+            )
+
+            def update_receipt():
+                write_json(
+                    complete_path,
+                    {
+                        "prepared_manifest_sha256": sha256(path),
+                        "sources_sha256": sha256(source_path),
+                    },
+                )
+
+            update_receipt()
             self.assertEqual(
                 motion_files(
-                    root, resource_manifest_sha256="current-resources"
+                    prepared, resource_manifest_sha256="current-resources"
                 ),
                 [clip],
             )
             with self.assertRaisesRegex(ValueError, "training assets differ"):
-                motion_files(root, resource_manifest_sha256="other-resources")
+                motion_files(
+                    prepared, resource_manifest_sha256="other-resources"
+                )
             identity["robot_kinematics"] = "competition_xml_v1"
             path.write_text(json.dumps(manifest))
+            update_receipt()
             with self.assertRaisesRegex(ValueError, "competition XML"):
                 motion_files(
-                    root, resource_manifest_sha256="current-resources"
+                    prepared, resource_manifest_sha256="current-resources"
                 )
 
     def test_training_data_and_export_without_optional_stacks(self):
