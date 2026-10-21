@@ -13,6 +13,56 @@ from holoboxing.evaluation.runtime.model_contract import sha256
 from holoboxing.evaluation.runtime.onnx_device import create_device_session
 
 
+class TrainingBoundSession(BoundSession):
+    """Adapt the runtime's lightweight CUDA descriptor for Torch buffers.
+
+    Preserve the compiled bundle's source files and reuse its execution fence.
+    Training owns the Torch allocations even when compiled observations exist.
+    """
+
+    def __init__(self, session, device):
+        from holoboxing.evaluation.runtime.onnx_device import (
+            require_gpu,
+            require_gpu_session,
+        )
+
+        self.device = torch.device(str(require_gpu(device)))
+        require_gpu_session(session)
+        self.session = session
+        self.inputs, self.outputs = {}, {}
+        self.binding = session.io_binding()
+        for nodes, buffers, bind, allocate in (
+            (
+                session.get_inputs(),
+                self.inputs,
+                self.binding.bind_input,
+                torch.zeros,
+            ),
+            (
+                session.get_outputs(),
+                self.outputs,
+                self.binding.bind_output,
+                torch.empty,
+            ),
+        ):
+            for node in nodes:
+                shape = tuple(
+                    x if isinstance(x, int) else 1 for x in node.shape
+                )
+                integer = "int64" in node.type
+                dtype = torch.int64 if integer else torch.float32
+                buffer = allocate(shape, device=self.device, dtype=dtype)
+                buffers[node.name] = buffer
+                bind(
+                    node.name,
+                    "cuda",
+                    self.device.index or 0,
+                    np.int64 if integer else np.float32,
+                    shape,
+                    buffer.data_ptr(),
+                )
+
+
 def specialize_graph(path, batch_size):
     if type(batch_size) is not int or batch_size < 1:
         raise ValueError("Batch size must be a positive integer")
@@ -80,13 +130,16 @@ class OnnxLower:
             raise ValueError("Batch sizes must be positive integers")
         self.device = torch.device(device)
         if self.device.type != "cuda":
-            raise ValueError("The frozen ONNX controller requires a CUDA device")
+            raise ValueError(
+                "The frozen ONNX controller requires a CUDA device"
+            )
         if self.device.index is None:
             self.device = torch.device("cuda", torch.cuda.current_device())
         self.batch_size = batch_size
         # Keep static ONNX batches without restricting the environment count.
         self.chunk_size = next(
-            size for size in range(min(batch_size, inference_batch_size), 0, -1)
+            size
+            for size in range(min(batch_size, inference_batch_size), 0, -1)
             if batch_size % size == 0
         )
         graph = specialize_graph(path, self.chunk_size)
@@ -118,7 +171,7 @@ class OnnxLower:
             or outputs.get("present_key_values") != expected["past_key_values"]
         ):
             raise ValueError("Public ONNX output contract differs")
-        self.bound = BoundSession(self.session, self.device)
+        self.bound = TrainingBoundSession(self.session, self.device)
 
     @torch.inference_mode()
     def __call__(self, observation, cache, step):
@@ -131,7 +184,7 @@ class OnnxLower:
             self.bound.inputs["step_idx"].copy_(step[rows])
             # ORT may use its own stream (CUDA stream 0 is not an external
             # stream). Finish input writes and the previous output reads before
-            # reusing the bound buffers; BoundSession fences ORT's output writes.
+            # reusing bound buffers; the shared runner fences output writes.
             torch.cuda.current_stream(self.device).synchronize()
             output = self.bound.run()
             actions[rows].copy_(output["actions"])

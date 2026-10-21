@@ -1,4 +1,4 @@
-# hbot-competition Track 2 tutorial: build a competition boxing policy
+# H-bot Competition Track 2 Tutorial: Build a Competition Boxing Policy
 
 English | [简体中文](README.zh-CN.md)
 
@@ -7,7 +7,7 @@ A policy is a model that maps observations to action targets.
 You will prepare data, train a policy, export it to ONNX, and evaluate it with the supplied controller on a Unitree G1 robot.
 ONNX is a portable neural-network format; your final submission is one ONNX model containing your high-level policy.
 
-Use the [hbot-competition platform](https://hbot-competition.horizon.auto/) for submission and leaderboard navigation.
+Use the [H-bot Competition platform](https://hbot-competition.horizon.auto/) for submission and leaderboard navigation.
 Current leaderboard methods and scores are test data, not official rankings.
 
 ## 0. Prepare for the competition
@@ -254,8 +254,9 @@ flowchart TD
 | Module | Purpose | What you change or produce |
 | --- | --- | --- |
 | Reference motions | Supply targets for supervised initialization and examples for motion-style rewards during reinforcement learning. | Your data selection and prepared dataset |
-| Supervised learning (SL) | Jointly trains the high-level policy's task branch, history branch, and decoder on reference targets. | An initial policy checkpoint, `.pt`, for reinforcement learning |
-| Reinforcement learning (RL) | Improves the attacker using boxing rewards. A humanoid sandbag supplies the opposing training role. | Your policy, rewards, and training settings |
+| Motion representation | Encodes future reference poses into a 32-dimensional unit vector and reconstructs the five-point targets. | A reference-only motion prior; its decoder is frozen afterward. |
+| Supervised learning (SL) | Learns a planner from the current self state and opponent observations, using the frozen decoder. | An initial policy checkpoint, `.pt`, with fitted observation statistics. |
+| Reinforcement learning (RL) | Warms up against a standing opponent, then trains against frozen historical policies. | Your policy, rewards, and self-play settings. |
 | Frozen HoloMotion controller | Tracks five-point targets with the whole robot. Training and evaluation use the competition-specified version. | The supplied controller is mandatory; replacing or modifying it is prohibited. |
 | Evaluator | Executes both policies, simulates contacts, applies the rules, and records results. | Your exported `.onnx` is its input. |
 | Replay | Shows recorded states, scores, and events so you can diagnose the policy. | Inspect behavior and export video. |
@@ -266,29 +267,32 @@ After that, expand the data and training as needed.
 ## 1. Train the high-level policy
 
 Choose your own data, network, and learning method, or use the reference implementation below.
-It initializes a policy through imitation learning, then improves boxing behavior through reinforcement learning.
+The reference has three stages: learn a motion representation, initialize a planner through imitation, then improve boxing behavior through reinforcement learning.
+The decoder and competition controller stay frozen during planner learning.
 Every entry must preserve the competition interface and use the specified low-level controller.
 
-### Initialize the policy from reference motions
+### Prepare reference motions
 
-This example uses supervised learning (SL) to imitate reference motions by predicting future target poses from observations.
+The motion representation learns future target poses without actor or opponent observations.
+Supervised learning (SL) then trains a planner to predict those poses from causal observations.
 Training-split reference motions also supply motion-style examples during reinforcement learning.
 
 The reference method uses two sources for different training purposes:
 
 | Source | Training purpose | Preparation |
 | --- | --- | --- |
-| **InterHuman** | Paired demonstrations supply supervised targets and motion-style examples. | Retarget human motions to G1. |
-| **RoboStriker** | Single-robot trajectories add motion-style examples. | Read the original G1 trajectories. |
+| **InterHuman** | Both people supply motion-prior examples; paired demonstrations also supply supervised targets and motion-style examples. | Retarget human motions to G1. |
+| **RoboStriker** | Single-robot trajectories supply motion-prior and motion-style examples. | Read the original G1 trajectories. |
 
 **Supervised learning in this reference method requires InterHuman.** RoboStriker alone cannot run the supervised command below.
-Your own method may select different training data while preserving the competition interface and specified controller.
+These datasets and their official splits are optional; you may use other data and choose your own split strategy.
+Preserve the competition interface and specified controller.
 
 Download a small set of robot reference motions:
 
 ```bash
 python -m holoboxing.data download robostriker \
-  --output holoboxing/data/raw/RoboStriker --limit-groups 2 --workers 2
+  --output holoboxing/data/raw/RoboStriker --limit-groups 4 --workers 2
 ```
 
 Next, download and convert paired human motions using [HoloRetarget](../holoretarget/README.md).
@@ -300,7 +304,8 @@ The requirements include Chumpy, which reads shape parameters in legacy SMPL mod
 
 ```bash
 python -m holoboxing.data download interhuman \
-  --output holoboxing/data/raw/InterHuman --limit-clips 2 --workers 2
+  --output holoboxing/data/raw/InterHuman \
+  --clip-id 1124 --clip-id 1843 --clip-id 4033 --workers 2
 python3.11 -m venv .venv-holoboxing-retarget
 .venv-holoboxing-retarget/bin/python -m pip install torch==2.9.1 --index-url https://download.pytorch.org/whl/cu128
 .venv-holoboxing-retarget/bin/python -m pip install -r holoboxing/data/retarget-requirements.txt
@@ -313,6 +318,8 @@ python3.11 -m venv .venv-holoboxing-retarget
 ```
 
 Only retargeting uses the separate environment. Continue using `python` from the boxing training environment for other commands.
+The sample includes clips from three official InterHuman splits so the reference workflow can report separate validation and test metrics.
+This is an example for experiment tuning, not a competition requirement.
 
 Combine both sources to collect observations from actual simulated states.
 Preparation requires a CUDA GPU and the pinned low-level controller.
@@ -323,7 +330,7 @@ python -m holoboxing.data prepare \
   --source holoboxing/data/raw/RoboStriker \
   --source holoboxing/data/converted/InterHuman \
   --output holoboxing/data/processed/combined \
-  --assets "$HOLOBOXING_ASSETS" --workers 2
+  --assets "$HOLOBOXING_ASSETS" --test-fraction 0.1 --workers 2
 python -m holoboxing.data verify \
   --output holoboxing/data/processed/combined --assets "$HOLOBOXING_ASSETS"
 export HOLOBOXING_DATA="$PWD/holoboxing/data/processed/combined/prepared"
@@ -332,55 +339,105 @@ export HOLOBOXING_DATA="$PWD/holoboxing/data/processed/combined/prepared"
 Preparation produces 1097-value observations and 225-value targets. Regenerate older prepared datasets into a new directory.
 `COMPLETE.json` pins the dataset and source inventories. Resolve any error recorded in `FAILED.json` before training.
 
-Official splits are preserved, and original motions stay with their mirrors.
+In this reference implementation, preparation preserves InterHuman split labels and keeps original motions with their mirrors.
 Supervision, normalization, and loss statistics use only InterHuman training clips.
 The motion-style reward reads training clips from both sources.
 Validation clips enter neither optimization nor fitted statistics; each supervised epoch reports separate validation metrics.
 
-Regenerate legacy supervised checkpoints that lack verified training-split provenance.
-The small default sample does not guarantee held-out InterHuman clips.
-Without them, validation is `NOT_RUN`; this is not independent validation evidence.
-Include official validation motions when expanding the dataset. Repeat `--clip-id` to select specific download IDs.
+When reusing this reference workflow, regenerate legacy supervised checkpoints that lack verified training-split provenance.
+Keep the same source roots, split seed, and test fraction in both preparation commands.
+Three-way splitting needs at least three original RoboStriker groups; the example downloads four.
+For this reference workflow, include held-out InterHuman clips if you want separate validation metrics.
 
-Train for one epoch, meaning one complete pass through the selected data:
+### Stage 1: learn the motion representation
+
+Prepare reference-only windows separately from the measured policy observations:
+
+```bash
+python -m holoboxing.training.prepare_prior \
+  --source holoboxing/data/raw/RoboStriker \
+  --source holoboxing/data/converted/InterHuman \
+  --assets "$HOLOBOXING_ASSETS" --output results/boxing-reference
+python -m holoboxing.training.train_prior \
+  --data results/boxing-reference --output results/boxing-prior \
+  --hidden-dims 512 256 --batch-size 1024 --epochs 1000 \
+  --seed 43 --device cuda:0
+```
+
+The encoder maps 225 reference coordinates to a 32-dimensional unit vector.
+The decoder reconstructs five future poses, using a 32→256→512→225 network.
+Training uses only training motions and training statistics.
+Early stopping uses validation reconstruction; `results/boxing-prior/best.pt` contains the best completed validation epoch.
+The decoder is then frozen, but gradients still flow through it to train the planner.
+Reference reconstruction alone does not establish physical tracking or boxing performance.
+
+### Stage 2: initialize the planner through imitation
+
+The planner uses 63 current self-state values and 15 opponent values.
+It excludes the cached previous pose and older self-history frames.
+The exported interface remains `obs[1,1097]`; input selection and normalization are included in the model.
+Use the same actor configuration in imitation and reinforcement learning:
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 python -m holoboxing.training.train_sl \
   --assets "$HOLOBOXING_ASSETS" --lower "$HOLOBOXING_LOWER" \
-  --data "$HOLOBOXING_DATA" --output results/boxing-sl \
-  --epochs 1 --device cuda:0
+  --data "$HOLOBOXING_DATA" --prior-checkpoint results/boxing-prior/best.pt \
+  --config holoboxing/training/configs/sample.json \
+  --output results/boxing-sl --epochs 19 --batch-size 512 \
+  --seed 43 --device cuda:0
 ```
 
-The checkpoint `results/boxing-sl/epoch_000001.pt` contains policy parameters and observation statistics for reinforcement learning.
-Export the policy to ONNX before submitting it.
+The checkpoint `results/boxing-sl/epoch_000019.pt` contains the planner, frozen decoder, and fitted observation statistics.
+The example budget is 19 complete epochs. Choose a checkpoint using independent validation when changing data or hyperparameters.
+A training-complete checkpoint is not evidence of a winning boxing policy.
 
-Supervised training jointly updates the task branch, history branch, and decoder.
-The history branch is named `prior` in the code.
-The decoder maps the current state and internal features to target poses.
-Reinforcement learning continues updating these high-level network parameters.
+### Stage 3: warm up and train through self-play
 
-### Improve boxing behavior through reinforcement learning
+Reinforcement learning (RL) uses Proximal Policy Optimization (PPO) to update the planner from simulation rewards.
+An Adversarial Motion Prior (AMP) supplies an additional motion-style reward.
+AMP compares policy motion against training-split reference motion; it is separate from the frozen motion decoder.
+The decoder and competition-specified HoloMotion controller remain fixed.
 
-Reinforcement learning (RL) improves the policy using rewards from simulated interactions.
-The example trains an attacker against a humanoid sandbag with Proximal Policy Optimization (PPO).
-An Adversarial Motion Prior (AMP) uses a discriminator to distinguish policy motions from reference motions.
-Its style reward encourages reference movement patterns.
-The competition-specified controller remains fixed throughout training.
-
-Start with 16 parallel environments and one PPO update:
+Warm up for 32 updates against an opponent holding neutral world targets:
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 python -m holoboxing.training.train_rl \
   --assets "$HOLOBOXING_ASSETS" --lower "$HOLOBOXING_LOWER" \
   --amp-motions "$HOLOBOXING_DATA" \
-  --supervised-checkpoint results/boxing-sl/epoch_000001.pt \
-  --output results/boxing-rl --num-envs 16 --updates 1 --device cuda:0
+  --supervised-checkpoint results/boxing-sl/epoch_000019.pt \
+  --config holoboxing/training/configs/sample.json \
+  --training-mode standing --output results/boxing-warmup \
+  --num-envs 128 --updates 32 --seed 42 --device cuda:0
 ```
 
-The checkpoint is `results/boxing-rl/model_1.pt`. The first launch compiles GPU physics kernels.
-After the first successful run, increase `--epochs` and `--updates`; choose `--num-envs` according to available GPU memory.
-Select the matching checkpoint number when exporting.
-These settings complete an initial training run. Assess boxing performance through evaluation and replays.
+Then initialize a new self-play stage from that actor and its observation statistics:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python -m holoboxing.training.train_rl \
+  --assets "$HOLOBOXING_ASSETS" --lower "$HOLOBOXING_LOWER" \
+  --amp-motions "$HOLOBOXING_DATA" \
+  --policy-checkpoint results/boxing-warmup/model_32.pt \
+  --config holoboxing/training/configs/selfplay.json \
+  --training-mode selfplay --opponent-pool-capacity 8 \
+  --opponent-refresh-updates 256 --output results/boxing-rl \
+  --num-envs 128 --updates 256 --seed 42 --device cuda:0
+```
+
+Self-play opponents are frozen historical policies, including their observation statistics.
+Only the learner receives policy and discriminator updates.
+Opponent replacement resets physical episodes and observation histories at update boundaries.
+The self-play preset changes initial exploration standard deviation from 0.1 to 0.2, preserving the actor architecture.
+The intended output is `results/boxing-rl/model_256.pt`.
+
+The first launch compiles GPU physics kernels. Confirm completed updates in `training-result.json`; a timeout may save an earlier checkpoint.
+Training defaults to the requested epoch or update budget, with periodic checkpoints.
+Set `--max-runtime-seconds` or `--max-training-seconds` explicitly when you need a wall-time limit; zero disables that limit.
+Use `--resume` to continue the same stage; `--policy-checkpoint` starts a new stage and resets learner state.
+See the [training reference](training/README.md) for resume and fixed-opponent development evaluation.
+
+These commands provide one reference recipe, not a guarantee of winning with an arbitrary dataset.
+Exact reproduction needs the same selected weights, observation statistics, data versions, runtime, and opponent.
+The smoke data above checks the pipeline; assess boxing performance through complete matches from the competition reset.
 
 ## 2. Export your policy
 
@@ -392,7 +449,7 @@ It does not export the frozen controller or optimizer.
 
 ```bash
 python -m holoboxing.training.export \
-  --checkpoint results/boxing-rl/model_1.pt --output results/boxing.onnx
+  --checkpoint results/boxing-rl/model_256.pt --output results/boxing.onnx
 ```
 
 A supervised checkpoint can also be exported directly with the same command.
@@ -463,7 +520,7 @@ Results are not overwritten. Choose a new `--output` for another run, `--gpu` fo
 
 ## 5. Submit
 
-Upload **`results/boxing.onnx`** through the submission entry on the [hbot-competition platform](https://hbot-competition.horizon.auto/).
+Upload **`results/boxing.onnx`** through the submission entry on the [H-bot Competition platform](https://hbot-competition.horizon.auto/).
 Submit the high-level policy only. Training checkpoints, data, the controller bundle, and replay files are not model submissions.
 After upload, the service checks the model interface and complete-chain latency.
 Online validation is mandatory even if you skip local validation.
@@ -598,15 +655,17 @@ all five future point sets; its packing, validity masks, weights, and state rema
 
 | Change | Implementation |
 | --- | --- |
-| High-level policy architecture | `training/rsl_rl/modules/actor_critic.py` |
+| Planner and motion representation | `training/spherical_actor.py`, `training/motion_prior.py` |
 | Observation normalization | `training/rsl_rl/modules/normalization.py` |
 | Training environment and observations | `training/envs/mujoco_env.py` |
 | Attacker/sandbag rewards | `training/tasks/combat/mdp/rewards.py`, `training/envs/mujoco_rewards.py` |
+| Standing and self-play presets | `training/configs/sample.json`, `training/configs/selfplay.json` |
 | PPO, AMP, and default settings | `training/configs/training.json` |
 
-The task/history branches form a normalized 32-dimensional internal latent representation.
-A jointly trained decoder turns it into 225 target values; PPO samples those 225-dimensional actions.
-This differs from selecting latent actions for a separately pretrained motion decoder.
+The motion encoder and decoder first learn from reference poses.
+The planner then predicts a 32-dimensional latent action.
+PPO stores its sampled 32-value vectors and their probabilities before projection.
+Execution normalizes those vectors and uses the frozen decoder to produce 225 target values.
 Keep the submitted input/output contract unchanged when modifying the example.
 
 ## Building the image

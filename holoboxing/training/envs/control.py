@@ -438,7 +438,7 @@ class CommonLower:
                 "Expected the two declared frozen lower controllers"
             )
 
-    def autonomous(self, measured, physical):
+    def autonomous(self, measured, physical, *, reference_override=None):
         """Only current measurements and already de-normalized upper predictions."""
         count = self.env.num_envs * 2
         if (
@@ -455,9 +455,14 @@ class CommonLower:
             action_dim=self.action_dim,
         )
         q = F.normalize(quat_from_matrix(r), dim=-1)
-        anchor = measured["position"][:, 0]
+        anchor = measured["position"][:, 0].clone()
         ground = self.env.scene.env_origins[:, 2:3].repeat_interleave(2, dim=0)
-        return self._execute(measured, p, q, anchor, anchor[:, 2:3] - ground)
+        height = anchor[:, 2:3] - ground
+        if reference_override is not None:
+            p, q, anchor, height = reference_override.apply(
+                measured, p, q, anchor, height
+            )
+        return self._execute(measured, p, q, anchor, height)
 
     def _execute(self, measured, position, quaternion, anchor, height):
         count = self.env.num_envs * 2

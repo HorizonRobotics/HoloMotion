@@ -1,10 +1,10 @@
-# hbot-competition 赛道2 参赛入门教程
+# H-bot Competition 赛道2 参赛入门教程
 
 [English](README.md) | 简体中文
 
-本教程面向 hbot-competition 赛道2 参赛选手。目标是尽快训练出满足提交要求的高层拳击策略。教程覆盖数据准备、策略训练、模型导出和本地评测。
+本教程面向 H-bot Competition 赛道2 参赛选手。目标是尽快训练出满足提交要求的高层拳击策略。教程覆盖数据准备、策略训练、模型导出和本地评测。
 
-比赛官网为 [hbot-competition竞赛平台](https://hbot-competition.horizon.auto/)。模型提交和榜单入口请见站内导航。当前榜单中的方法和成绩为测试数据。它们不代表正式排名。
+比赛官网为 [H-bot Competition 竞赛平台](https://hbot-competition.horizon.auto/)。模型提交和榜单入口请见站内导航。当前榜单中的方法和成绩为测试数据。它们不代表正式排名。
 
 比赛使用 Unitree G1 人形机器人。选手需提交单个 ONNX 模型文件。ONNX 是通用的神经网络模型格式。
 
@@ -43,10 +43,14 @@
 | 输出内容 | 骨盆、双腕和双踝在未来五个时刻的目标位姿。五个时刻分布在未来 20–100 ms。 |
 | 底层控制器 | 必须使用赛事指定的 HoloMotion V2 版本。不得替换模型或修改参数。 |
 | 初赛评测显卡 | **RTX 5090**。 |
-| 完整推理链性能 | 高层策略与底层控制器的平均总时延 **≤10 ms**，对应 **≥100 FPS**。先预热 10 次，再测量 100 次。 |
+| 完整推理链性能 | 高层策略与底层控制器的平均总时延 **≤10 ms**。对应性能为 **≥100 FPS**。先预热 10 次，再测量 100 次。 |
 
-云端测试使用的是 **Intel Xeon Platinum 8558P + NVIDIA GeForce RTX 5090**，评测结果可能和本地不一致，以云端系统结果为准。
-这里的 FPS 为 `1000 / mean_ms`，表示完整链路性能，不是策略或物理仿真的更新频率。
+云端测试使用以下硬件：
+
+- CPU：`Intel Xeon Platinum 8558P`。
+- GPU：`NVIDIA GeForce RTX 5090`。
+
+本地结果可能与云端不同。是否通过，以云端系统结果为准。FPS由 `1000 / mean_ms` 计算。它表示完整推理链性能。它不是策略或物理仿真的更新频率。
 
 本地测时可使用其他受支持的 NVIDIA 显卡。初赛时延以官方在 RTX 5090 上的实测为准。后续赛程使用 S600，需另行验收。
 
@@ -181,7 +185,7 @@ export HOLOBOXING_LOWER="$PWD/models/holomotion-v2"
 | 训练所需底层模型 | 约 1.65 GB，训练时需单独保存。 |
 | 强化学习运行快照 | 另保存底层模型副本，约 1.65 GB。 |
 | 机器人资源 | 约 32.2 MB。 |
-| 两组 RoboStriker 原始样本 | 约 6.44 MB。 |
+| RoboStriker 原始样本 | 随动作组变化，以下载清单为准。 |
 | Python 环境与生成数据 | 另行占用空间，随依赖和数据量变化。 |
 | 本地镜像构建缓存 | 可占数十 GB，还需另存归档及导入后的镜像。 |
 
@@ -233,34 +237,35 @@ flowchart TD
 | 模块 | 用途 | 主要输出或配置 |
 | --- | --- | --- |
 | 参考动作 | 用于监督初始化，以及强化学习中的动作风格奖励。 | 数据选择与预处理结果。 |
-| 监督学习（SL） | 根据参考动作，联合训练高层策略的任务分支、历史分支和解码器。 | 强化学习所需的初始模型，保存为 `.pt` 检查点。 |
-| 强化学习（RL） | 让策略在仿真中与人形沙袋对战，根据奖励改进动作。 | 策略模型、奖励函数和训练参数。 |
+| 动作表示 | 将未来参考位姿编码为32维单位向量，并重建目标位姿。 | 仅使用参考动作的先验，随后冻结其解码器。 |
+| 监督学习（SL） | 根据自身当前状态和对手信息，训练使用冻结解码器的规划器。 | 保存规划器、解码器及观测统计量的 `.pt` 检查点。 |
+| 强化学习（RL） | 先与站立对手训练，再与冻结的历史策略自博弈。 | 策略模型、奖励函数和自博弈配置。 |
 | 底层控制器 | 将目标位姿转换为全身关节动作。训练与评测统一使用赛事指定版本。 | 必须使用配套模型，不得替换或修改。 |
 | 评测器 | 运行双方策略、计算物理接触，并按规则计分。 | 输入 ONNX 模型，输出比赛结果与回放。 |
 | 回放工具 | 展示动作、比分和比赛事件，便于分析策略。 | 可交互查看，也可导出视频。 |
 
 ## 1. 训练高层策略
 
-选手可自行选择数据、网络和训练算法。下面给出参考方案，便于完成首次训练。示例先通过模仿学习训练初始策略，再通过强化学习优化拳击动作。比赛接口和指定底层控制器必须保持一致。
+选手可自行选择数据、网络和训练算法。参考方案分为三个阶段。先学习动作表示，再训练模仿规划器。最后通过强化学习优化拳击行为。规划器训练期间，动作解码器保持冻结。比赛接口和指定底层控制器必须保持一致。
 
-### 用参考动作初始化策略
+### 准备参考动作
 
-本例通过监督学习（SL）模仿参考动作。策略根据观测，学习预测后续目标位姿。训练划分中的参考动作还用于动作风格奖励。
+动作表示仅学习未来参考位姿。它不使用策略观测或对手信息。随后通过监督学习（SL）训练规划器。规划器根据当前观测预测目标位姿。训练集中的参考动作还用于动作风格奖励。
 
 参考方案使用两种数据，训练用途不同：
 
 | 数据来源 | 用途 | 接入方式 |
 | --- | --- | --- |
-| **InterHuman** | 双人动作提供监督目标，也提供动作风格参考。 | 先将人体动作重定向为 G1 动作。 |
-| **RoboStriker** | 单人机器人动作补充动作风格参考。 | 直接读取 G1 轨迹。 |
+| **InterHuman** | 双方动作参与先验训练。配对动作还提供监督目标和风格参考。 | 先将人体动作重定向为 G1 动作。 |
+| **RoboStriker** | 单人机器人动作参与先验训练，也补充风格参考。 | 直接读取 G1 轨迹。 |
 
-**本参考方案的监督训练必须使用 InterHuman。** 仅有 RoboStriker 时，不能运行下方监督训练。自选训练方法不受这项数据选择限制。比赛接口和指定底层控制器仍须遵守。
+**本参考方案的监督训练必须使用 InterHuman。** 仅有 RoboStriker 时，不能运行下方监督训练。这些数据及其官方划分都不是参赛要求。选手可使用其他数据，也可自行划分。比赛接口和指定底层控制器仍须遵守。
 
 先下载少量机器人参考动作：
 
 ```bash
 python -m holoboxing.data download robostriker \
-  --output holoboxing/data/raw/RoboStriker --limit-groups 2 --workers 2
+  --output holoboxing/data/raw/RoboStriker --limit-groups 4 --workers 2
 ```
 
 随后下载并转换双人动作。本节使用 [HoloRetarget](../holoretarget/README.md)。它将 InterHuman 动作转换为 G1 轨迹。该步骤需要已获授权的中性 SMPL 人体模型。请从 [SMPL 官方网站](https://smpl.is.tue.mpg.de/)取得模型，并替换模型路径。
@@ -271,7 +276,8 @@ InterHuman 仅允许非商业使用，禁止再次分发。请保留原始许可
 
 ```bash
 python -m holoboxing.data download interhuman \
-  --output holoboxing/data/raw/InterHuman --limit-clips 2 --workers 2
+  --output holoboxing/data/raw/InterHuman \
+  --clip-id 1124 --clip-id 1843 --clip-id 4033 --workers 2
 python3.11 -m venv .venv-holoboxing-retarget
 .venv-holoboxing-retarget/bin/python -m pip install torch==2.9.1 --index-url https://download.pytorch.org/whl/cu128
 .venv-holoboxing-retarget/bin/python -m pip install -r holoboxing/data/retarget-requirements.txt
@@ -283,7 +289,7 @@ python3.11 -m venv .venv-holoboxing-retarget
   --assets "$HOLOBOXING_ASSETS" --device cuda:0 --iterations 4
 ```
 
-仅重定向使用独立环境。其余命令继续使用拳击环境中的 `python`。
+仅重定向使用独立环境。其余命令继续使用拳击环境中的 `python`。示例从三个官方划分中选取人体动作。这样便于调参时分别查看验证和测试指标。这只是实验示例，不是参赛要求。
 
 合并两类轨迹，生成实际状态下的训练观测。此步骤需要 CUDA 显卡及指定底层控制器。程序运行固定底层控制器，采集当前物理状态。未来目标也使用该时刻的实际骨盆坐标系。它不再直接把参考轨迹当作实际观测。
 
@@ -292,7 +298,7 @@ python -m holoboxing.data prepare \
   --source holoboxing/data/raw/RoboStriker \
   --source holoboxing/data/converted/InterHuman \
   --output holoboxing/data/processed/combined \
-  --assets "$HOLOBOXING_ASSETS" --workers 2
+  --assets "$HOLOBOXING_ASSETS" --test-fraction 0.1 --workers 2
 python -m holoboxing.data verify \
   --output holoboxing/data/processed/combined --assets "$HOLOBOXING_ASSETS"
 export HOLOBOXING_DATA="$PWD/holoboxing/data/processed/combined/prepared"
@@ -300,40 +306,80 @@ export HOLOBOXING_DATA="$PWD/holoboxing/data/processed/combined/prepared"
 
 预处理生成 1097 维观测及 225 维目标。旧版预处理结果不能直接复用。请使用新目录重新生成。`COMPLETE.json` 固定数据及来源清单。若出现 `FAILED.json`，请先处理所记录的错误。
 
-官方数据划分会保留。原动作及其镜像始终属于同一划分。监督训练只读取 InterHuman 训练集。归一化与损失统计也只在该集合拟合。动作风格奖励只读取两类数据的训练集。
+本参考实现会保留 InterHuman 划分标签。原动作及其镜像始终属于同一划分。监督训练只读取 InterHuman 训练集。归一化与损失统计也只在该集合拟合。动作风格奖励只读取两类数据的训练集。
 
-验证集不参与上述训练或统计拟合。每轮监督训练单独报告验证指标。缺少训练划分记录的旧监督检查点也须重新训练。默认少量样本不保证含有验证动作。缺少验证动作时，指标标为 `NOT_RUN`。这不能作为独立验证集上的效果证据。扩大数据时，请包含官方验证划分的动作。可重复使用 `--clip-id` 指定下载编号。
+验证集不参与上述训练或统计拟合。每轮监督训练单独报告验证指标。复用本流程时，旧检查点须有训练划分记录。若缺少记录，请重新训练。两次数据准备须使用相同来源和划分参数。三路划分至少需要三个机器人原动作组。本例下载四组。如需单独验证指标，请预留人体动作验证集。
 
-先训练 1 个 epoch，即完整遍历一次所选数据：
+### 第一阶段：学习动作表示
+
+先生成仅含参考位姿的训练窗口。它与实际状态下的策略观测分别保存：
+
+```bash
+python -m holoboxing.training.prepare_prior \
+  --source holoboxing/data/raw/RoboStriker \
+  --source holoboxing/data/converted/InterHuman \
+  --assets "$HOLOBOXING_ASSETS" --output results/boxing-reference
+python -m holoboxing.training.train_prior \
+  --data results/boxing-reference --output results/boxing-prior \
+  --hidden-dims 512 256 --batch-size 1024 --epochs 1000 \
+  --seed 43 --device cuda:0
+```
+
+编码器将225维参考位姿映射到32维单位向量。解码器将该向量重建为未来五帧的目标位姿。解码网络宽度为32→256→512→225。训练和统计拟合仅使用训练集。
+
+程序根据验证集重建误差提前停止。`results/boxing-prior/best.pt` 保存最佳完整验证轮次的权重。随后冻结解码器参数。梯度仍可通过它更新规划器。参考重建通过，不能证明物理跟踪或拳击表现。
+
+### 第二阶段：通过模仿初始化规划器
+
+规划器使用63维自身当前状态和15维对手信息。它不使用缓存的前一帧位姿或更早历史。对外接口仍为 `obs[1,1097]`。输入选择和归一化均包含在导出模型中。监督学习和强化学习使用同一规划器配置：
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 python -m holoboxing.training.train_sl \
   --assets "$HOLOBOXING_ASSETS" --lower "$HOLOBOXING_LOWER" \
-  --data "$HOLOBOXING_DATA" --output results/boxing-sl \
-  --epochs 1 --device cuda:0
+  --data "$HOLOBOXING_DATA" --prior-checkpoint results/boxing-prior/best.pt \
+  --config holoboxing/training/configs/sample.json \
+  --output results/boxing-sl --epochs 19 --batch-size 512 \
+  --seed 43 --device cuda:0
 ```
 
-模型保存为 `results/boxing-sl/epoch_000001.pt`。其中包含策略参数和观测统计量。该检查点用于后续强化学习，提交前还需导出为 ONNX。
+模型保存为 `results/boxing-sl/epoch_000019.pt`。其中包含规划器、冻结解码器和观测统计量。本例预算为完整遍历训练集19次。更换数据或参数时，应根据独立验证选择检查点。训练完成不代表已经能在比赛中获胜。
 
-监督训练会共同更新任务分支、历史分支和解码器。历史分支在代码中名为 `prior`。解码器将当前状态与内部特征转换为目标位姿。进入强化学习后，这些高层网络参数仍会继续更新。
+### 第三阶段：预热及自博弈强化学习
 
-### 通过强化学习优化拳击策略
+强化学习（RL）根据仿真奖励更新规划器。本例使用近端策略优化算法（PPO）。对抗式动作先验（AMP）提供动作风格奖励。它将策略动作与训练集参考动作比较。AMP与冻结动作解码器是不同组件。解码器和赛事指定底层控制器始终保持冻结。
 
-强化学习（RL）根据仿真交互中的奖励优化策略。本例使用近端策略优化算法（PPO）。进攻方与人形沙袋对战。示例还使用对抗式动作先验（AMP）。其判别器区分策略动作和参考动作，并提供风格奖励。该奖励鼓励策略保留参考动作的运动特征。底层控制器始终使用赛事指定模型，参数不参与训练。
-
-先创建 16 个并行环境，完成一次 PPO 更新：
+先与保持世界坐标目标的站立对手训练32次：
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 python -m holoboxing.training.train_rl \
   --assets "$HOLOBOXING_ASSETS" --lower "$HOLOBOXING_LOWER" \
   --amp-motions "$HOLOBOXING_DATA" \
-  --supervised-checkpoint results/boxing-sl/epoch_000001.pt \
-  --output results/boxing-rl --num-envs 16 --updates 1 --device cuda:0
+  --supervised-checkpoint results/boxing-sl/epoch_000019.pt \
+  --config holoboxing/training/configs/sample.json \
+  --training-mode standing --output results/boxing-warmup \
+  --num-envs 128 --updates 32 --seed 42 --device cuda:0
 ```
 
-模型保存为 `results/boxing-rl/model_1.pt`。首次运行需编译物理计算内核。运行成功后，可增加 `--epochs` 和 `--updates`。`--num-envs` 可根据显存容量调整。导出时应选用对应编号的检查点。
+再用预热后的规划器和观测统计量启动自博弈：
 
-以上配置用于完成首次训练。实际对战表现还需通过评测和回放分析。
+```bash
+CUDA_VISIBLE_DEVICES=0 python -m holoboxing.training.train_rl \
+  --assets "$HOLOBOXING_ASSETS" --lower "$HOLOBOXING_LOWER" \
+  --amp-motions "$HOLOBOXING_DATA" \
+  --policy-checkpoint results/boxing-warmup/model_32.pt \
+  --config holoboxing/training/configs/selfplay.json \
+  --training-mode selfplay --opponent-pool-capacity 8 \
+  --opponent-refresh-updates 256 --output results/boxing-rl \
+  --num-envs 128 --updates 256 --seed 42 --device cuda:0
+```
+
+自博弈对手为冻结的历史策略。其观测统计量也保持冻结。只有学习方参与策略和判别器更新。替换对手时，在更新边界重置环境和历史。自博弈配置将初始探索标准差从0.1改为0.2。规划器结构保持一致。预期输出为 `results/boxing-rl/model_256.pt`。
+
+首次运行需编译物理计算内核。请在 `training-result.json` 中核对完成次数。达到时限时，可能只保存了较早的检查点。
+
+训练默认完成指定轮次或更新次数，并定期保存。需要时间限制时，应显式设置。可用参数为 `--max-runtime-seconds` 和 `--max-training-seconds`。零表示取消对应限制。`--resume` 用于恢复同一阶段。`--policy-checkpoint` 启动新阶段，并重置学习状态。续训和固定对手评测见[训练参考](training/README.md)。
+
+以上命令提供一套参考训练方案。它不保证任意数据都能训练出获胜策略。精确复现需使用相同权重、统计量和数据版本。运行时及对手版本也须一致。上述小样本用于走通流程。实际战力须从比赛原始站位进行完整对战验收。
 
 ## 2. 导出策略模型
 
@@ -343,7 +389,7 @@ CUDA_VISIBLE_DEVICES=0 python -m holoboxing.training.train_rl \
 
 ```bash
 python -m holoboxing.training.export \
-  --checkpoint results/boxing-rl/model_1.pt --output results/boxing.onnx
+  --checkpoint results/boxing-rl/model_256.pt --output results/boxing.onnx
 ```
 
 导出程序会在 CPU 上比较训练模型与 ONNX 模型的输出。监督学习检查点也可直接用此命令导出。导出完成后，继续进行模型检查和本地评测。
@@ -363,7 +409,7 @@ python -m holoboxing.training.export \
 
 第二条命令测量高层策略与底层控制器的总时延。先预热 10 次，再测量 100 次。计时还包括观测生成、解码、模型缓存更新和目标转换。物理仿真及输出异常值修正不计入 **10 ms** 指标。
 
-使用其他显卡，也会输出实测时延。报告会注明显卡型号，并提示与官方硬件的差异。其他显卡的结果不能证明 RTX 5090 资格。是否通过，以云端系统结果为准，要求平均时延 **≤10 ms**、对应 **≥100 FPS**。
+使用其他显卡，也会输出实测时延。报告会注明显卡型号，并提示与官方硬件的差异。其他显卡的结果不能证明 RTX 5090 资格。是否通过，以云端系统结果为准。要求平均时延 **≤10 ms**，对应 **≥100 FPS**。
 
 模型推理和比赛仿真均需使用显卡。
 
@@ -516,15 +562,14 @@ TopK 的选择维度必须具有已知长度。对较长维度执行 TopK 时，
 
 | 修改内容 | 对应代码 |
 | --- | --- |
-| 高层策略网络 | `training/rsl_rl/modules/actor_critic.py` |
+| 规划器和动作表示 | `training/spherical_actor.py`、`training/motion_prior.py` |
 | 观测归一化 | `training/rsl_rl/modules/normalization.py` |
 | 训练环境与观测 | `training/envs/mujoco_env.py` |
 | 进攻方及沙袋奖励函数 | `training/tasks/combat/mdp/rewards.py`、`training/envs/mujoco_rewards.py` |
+| 站立预热及自博弈配置 | `training/configs/sample.json`、`training/configs/selfplay.json` |
 | PPO、AMP 与默认训练参数 | `training/configs/training.json` |
 
-示例网络的任务分支和历史分支生成 32 维内部特征。特征经过归一化，再由共同训练的解码器生成 225 维目标。PPO 在这 225 维动作空间中采样。
-
-这里的 32 维特征不是供 PPO 直接采样的动作。解码器也不是单独预训练后固定的模型。调整网络或算法时，需保留比赛要求的输入输出接口。
+动作编码器和解码器先使用参考位姿训练。规划器预测32维潜在动作。PPO在32维采样空间中保存动作和概率。执行时将采样向量归一化，再交给冻结解码器。解码器输出225维目标位姿。调整网络或算法时，需保留比赛输入输出接口。
 
 ## 自行构建评测镜像
 
@@ -546,7 +591,7 @@ TopK 的选择维度必须具有已知长度。对较长维度执行 TopK 时，
 
 ## 参考资料与致谢
 
-示例采用监督初始化和人形沙袋训练流程。相关代码参考了 RoboStriker 的 PPO 与 AMP 实现。详见 [Yin 等人的论文](https://arxiv.org/abs/2608.16195)和[项目仓库](https://github.com/yinkangning0124/RoboStriker-Preview)。
+参考方案包含动作表示、模仿和强化学习。强化学习分为站立预热和自博弈。相关代码参考了 RoboStriker 的 PPO 与 AMP 实现。详见 [Yin 等人的论文](https://arxiv.org/abs/2608.16195)和[项目仓库](https://github.com/yinkangning0124/RoboStriker-Preview)。
 
 本教程提供可参考的数据与训练流程。配套代码已适配比赛接口、底层控制器和评测程序。这样可以减少选手的接口适配工作。实现保留了 [RSL-RL 许可说明](training/rsl_rl/LICENSE)。
 

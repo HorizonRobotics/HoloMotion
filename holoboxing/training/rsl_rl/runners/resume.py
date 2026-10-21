@@ -182,14 +182,44 @@ def validate_learning_state(runner, state):
         raise ValueError("Invalid completed update count")
     transitions = iteration * cfg.num_envs * cfg.num_steps_per_env
     steps = iteration * cfg.num_learning_epochs * cfg.num_mini_batches
+    active_roles = runner.algorithm.active_roles
+    expected_steps = {
+        role: steps if role in active_roles else 0 for role in ROLES
+    }
     if (
         type(state["transitions_per_role"]) is not int
         or state["transitions_per_role"] != transitions
-        or state["optimizer_steps"] != dict.fromkeys(ROLES, steps)
+        or state["optimizer_steps"] != expected_steps
         or state["disc_optimizer_steps"] != steps
         or state["elapsed_seconds"] < 0
     ):
         raise ValueError("Inconsistent completed training progress")
+    if (
+        state.get("training_protocol", {"mode": "paired"})
+        != runner.training_protocol
+    ):
+        raise ValueError("Resume training mode or opponent schedule differs")
+    if runner.opponent_pool is not None:
+        runner.opponent_pool.validate(state["opponent_pool"])
+        selected = state["opponent_pool"]["selected"]
+        if selected is not None:
+            snapshot = state["opponent_pool"]["snapshots"][selected]
+            for prefix, tensors in (
+                ("taskpolicy_opponent.", snapshot["actor"]),
+                ("actor_opponent.", snapshot["normalizer"]),
+            ):
+                saved = (
+                    state["policy"]
+                    if prefix.startswith("taskpolicy")
+                    else state["normalizers"]
+                )
+                if any(
+                    not torch.equal(saved[prefix + key].cpu(), value.cpu())
+                    for key, value in tensors.items()
+                ):
+                    raise ValueError(
+                        "Installed opponent differs from its frozen snapshot"
+                    )
     invalid = state["invalid_transitions"]
     if type(invalid) is not int or not 0 <= invalid <= transitions:
         raise ValueError("Invalid dropped-transition count")
@@ -221,6 +251,10 @@ def validate_learning_state(runner, state):
                     f"Checkpoint action mapping differs: {role}/{name}"
                 )
     validate_statistics(state["normalizers"])
+    if hasattr(runner.policy, "policy_spec"):
+        if state.get("policy_spec") != runner.policy.policy_spec:
+            raise ValueError("Resume frozen-prior specification differs")
+        runner.policy.validate_action_mapping(state["policy"])
     validate_statistics(state["amp_normalizer"])
     provenance = state["supervised_initialization"]
     if (
@@ -243,7 +277,9 @@ def validate_learning_state(runner, state):
         ):
             raise ValueError("Optimizer and scheduler learning rates differ")
         validate_adam(
-            state["optimizers"][role], runner.algorithm.optimizers[role], steps
+            state["optimizers"][role],
+            runner.algorithm.optimizers[role],
+            expected_steps[role],
         )
     validate_adam(state["disc_optimizer"], runner.amp.optimizer, steps)
     if any(
@@ -253,7 +289,7 @@ def validate_learning_state(runner, state):
         raise ValueError("AMP optimizer learning rate differs")
     replay = state["amp_replay"]
     capacity = cfg.amp_replay_buffer_size
-    inserted = 2 * (transitions - invalid)
+    inserted = len(active_roles) * (transitions - invalid)
     if (
         replay["capacity"] != capacity
         or type(replay["size"]) is not int
@@ -285,9 +321,8 @@ def resume(runner, path, checkpoint_format, allow_code_change=False):
     ):
         raise ValueError("Resume requires a fresh runner")
     state = torch.load(path, map_location="cpu", weights_only=False)
-    if not isinstance(state, dict) or not set(
-        runner.checkpoint_state()
-    ).issubset(state):
+    required = set(runner.checkpoint_state()) - {"training_protocol"}
+    if not isinstance(state, dict) or not required.issubset(state):
         raise ValueError(
             "Incomplete resume checkpoint; legacy weights-only checkpoints "
             "cannot restore optimizer, replay or random history"
@@ -325,6 +360,8 @@ def resume(runner, path, checkpoint_format, allow_code_change=False):
     )
     runner.amp.replay.current_size = replay["size"]
     runner.amp.replay.current_idx = replay["index"]
+    if runner.opponent_pool is not None:
+        runner.opponent_pool.load_state_dict(state["opponent_pool"])
     for key in (
         "iteration",
         "transitions_per_role",

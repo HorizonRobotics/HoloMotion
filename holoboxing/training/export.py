@@ -28,8 +28,72 @@ from holoboxing.training.rsl_rl.modules.normalization import (
 from holoboxing.training.rsl_rl.runners.on_policy_runner import (
     CHECKPOINT_FORMAT,
 )
+from holoboxing.training.spherical_actor import (
+    FORMAT as SPHERICAL_FORMAT,
+    actor_from_state,
+)
+from holoboxing.training.spherical_rl import FORMAT as SPHERICAL_RL_FORMAT
 from holoboxing.training.supervised.training import FORMAT, load_supervised
 from holoboxing.training.tasks.combat.config.sandbag import TrainConfig
+
+
+def check_export_parity(actual, expected):
+    """Bound translation in meters and orientation in radians separately.
+
+    FP32 matrix multiplication errors can grow during rotation normalization.
+    A componentwise relative tolerance has no physical meaning for this mix
+    of positions and rotation columns. Keep translation within 10 micrometers
+    and rotations within 0.0001 radians, including near-zero components.
+    """
+    actual, expected = (
+        np.asarray(v, dtype=np.float64) for v in (actual, expected)
+    )
+    if (
+        actual.shape != expected.shape
+        or actual.ndim != 2
+        or not actual.shape[0]
+        or actual.shape[-1] != 225
+    ):
+        raise ValueError("Export parity requires matching C225 targets")
+    if not all(np.isfinite(v).all() for v in (actual, expected)):
+        raise ValueError("Export parity requires finite targets")
+    a, b = (v.reshape(-1, 5, 5, 9) for v in (actual, expected))
+    position_error = np.linalg.norm(a[..., :3] - b[..., :3], axis=-1)
+
+    def rotation(points):
+        x, z = points[..., 3:6], points[..., 6:9]
+        return np.stack((x, np.cross(z, x), z), axis=-1)
+
+    relative = rotation(a) @ rotation(b).swapaxes(-1, -2)
+    skew = np.stack(
+        (
+            relative[..., 2, 1] - relative[..., 1, 2],
+            relative[..., 0, 2] - relative[..., 2, 0],
+            relative[..., 1, 0] - relative[..., 0, 1],
+        ),
+        axis=-1,
+    )
+    angle = np.arctan2(
+        np.linalg.norm(skew, axis=-1),
+        np.trace(relative, axis1=-2, axis2=-1) - 1,
+    )
+    # Bound columns too; a scaled matrix must not evade the angle gate.
+    column_error = np.max(np.abs(a[..., 3:] - b[..., 3:]))
+    result = dict(
+        max_position_error_m=float(position_error.max()),
+        max_rotation_error_rad=float(angle.max()),
+        max_rotation_component_error=float(column_error),
+        max_abs_error=float(np.abs(actual - expected).max()),
+    )
+    if (
+        result["max_position_error_m"] > 1e-5
+        or result["max_rotation_error_rad"] > 1e-4
+        or column_error > 1e-4
+    ):
+        raise ValueError(
+            f"Export parity exceeds physical tolerances: {result}"
+        )
+    return result
 
 
 def load_policy(checkpoint):
@@ -37,11 +101,13 @@ def load_policy(checkpoint):
     saved = torch.load(checkpoint, map_location="cpu", weights_only=False)
     if not isinstance(saved, dict) or saved.get("format") not in (
         FORMAT,
+        SPHERICAL_FORMAT,
         CHECKPOINT_FORMAT,
+        SPHERICAL_RL_FORMAT,
     ):
         raise ValueError("Expected a current supervised or RL checkpoint")
     config = TrainConfig(**saved["config"])
-    if saved["format"] == FORMAT:
+    if saved["format"] in (FORMAT, SPHERICAL_FORMAT):
         actor, normalizer, _ = load_supervised(
             checkpoint, config, saved["actor"]["neutral_reference"]
         )
@@ -58,7 +124,11 @@ def load_policy(checkpoint):
         }
         require_finite((actor_state, norm_state), "export checkpoint")
         with torch.random.fork_rng(devices=[]):
-            actor = JointActor(actor_state["neutral_reference"], config)
+            actor = (
+                actor_from_state(actor_state, saved["policy_spec"], config)
+                if saved["format"] == SPHERICAL_RL_FORMAT
+                else JointActor(actor_state["neutral_reference"], config)
+            )
             normalizer = ActorNormalizer(until=int(norm_state["until"]))
         if not torch.equal(
             actor.physical_scale, actor_state["physical_scale"]
@@ -119,7 +189,15 @@ def export_policy(checkpoint, output):
             rng.normal(0, scale, sample.shape).astype(np.float32)
             for scale in (0.1, 1.0, 10.0, 1000.0)
         )
-        max_error = 0.0
+        parity = dict.fromkeys(
+            (
+                "max_abs_error",
+                "max_position_error_m",
+                "max_rotation_error_rad",
+                "max_rotation_component_error",
+            ),
+            0.0,
+        )
         for observations in probes:
             expected = policy(torch.from_numpy(observations)).numpy()
             actual = session.run(["target_pose"], {"obs": observations})[0]
@@ -128,14 +206,12 @@ def export_policy(checkpoint, output):
             _, repairs = sanitize_target_pose(actual)
             if any(repairs.values()):
                 raise ValueError("Exported targets must not require repair")
-            np.testing.assert_allclose(actual, expected, atol=1e-5, rtol=1e-5)
-            max_error = max(
-                max_error, float(np.max(np.abs(actual - expected)))
-            )
+            errors = check_export_parity(actual, expected)
+            parity = {k: max(v, errors[k]) for k, v in parity.items()}
         del session
         # Publish only after validation, without overwriting an existing file.
         output.hardlink_to(candidate)
-    return dict(model=str(output), bytes=size, max_abs_error=max_error)
+    return dict(model=str(output), bytes=size, **parity)
 
 
 def main(argv=None):

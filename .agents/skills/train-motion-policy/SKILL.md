@@ -59,11 +59,37 @@ Version dataset selection profiles and split original motion groups before
 online augmentation. Verify batch-generated mirrors against independently
 reflected source poses, and check normalization against the equivalent
 balanced population without retaining duplicate training clips.
+For sample training, start with representative small data and a compact model.
+Keep the actor configuration consistent across supervised and reinforcement stages.
+Measure runtime and held-out behavior before accepting a capacity reduction.
+Choose architecture and early stopping with validation data.
+Evaluate held-out test groups only after fixing the selected checkpoint.
+Keep test clips and their mirrors outside pretraining and fitted statistics.
+
+Keep a research opponent's native controller contract separate from the
+candidate's submission contract. Use a dedicated training evaluator when those
+interfaces differ. Preserve the robot, physics and referee rules. Freeze and
+hash the opponent, then verify its observation, normalization and action mapping
+against the original implementation. Qualify the candidate separately in the
+unmodified competition runtime.
+For reproduction, use the fixed competition reset on both candidate sides.
+Keep temporary perturbation studies and repeated-match statistics in experiment records rather than the participant training workflow.
+A source archive can omit generated observation graphs and select another backend.
+Preserve the published runtime's verified compiled bundle for qualification.
+Install the shared contact sampler before constructing a native-match scene.
+Bind the referee to its measured physics substeps; frame aggregates omit impulse evidence.
 
 A passive standing opponent should hold world targets if stationary behavior
 is intended. Repeating a latent does not anchor the resulting physical pose.
 Validate target invariance, physical drift, tilt, and contact response separately;
 do not infer stability from frozen parameters alone.
+Exclude inactive opponents from PPO updates and motion-discriminator negatives.
+Freeze an opponent's observation statistics together with its policy weights.
+Save historical snapshots, selection randomness and refresh progress for resume.
+Change frozen opponents at update boundaries and reset physical episodes and histories.
+Compute the simulated time between forced opponent resets from rollout length,
+control period and refresh interval. Ensure this window exposes the intended
+encounter duration; frequent snapshot refresh can truncate every fight.
 
 For distributed training, distinguish environments per rank from the global
 population and from inference batch size. Preserve each environment's recurrent
@@ -90,6 +116,13 @@ Do not judge a policy from training reward alone.
 6. Run the currently supported simulation evaluation before real-robot use.
 
 Keep training, evaluation, and deployment observation/action contracts aligned. If exported behavior differs from PyTorch evaluation, localize the first divergent stage before tuning the policy.
+Check cached previous-state fields when defining a current-frame observation.
+Preserve the selected information contract through imitation, RL initialization and export.
+When cleaning experimental entrypoints, retain the selected weights and fitted statistics.
+Compare exported outputs before rerunning complete fixed-reset matches.
+For mixed position/rotation outputs, report export errors in meters and radians.
+Inspect pre-projection errors before attributing amplified FP32 rounding to changed weights.
+Keep explicit physical tolerances, invalid-output checks and frozen-tensor identity checks.
 
 ## Completion
 

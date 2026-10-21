@@ -51,7 +51,9 @@ def require_finite(value, context):
 
     def collect(item):
         if torch.is_tensor(item):
-            checks.setdefault(item.device, []).append(torch.isfinite(item).all())
+            checks.setdefault(item.device, []).append(
+                torch.isfinite(item).all()
+            )
         elif isinstance(item, dict):
             for child in item.values():
                 collect(child)
@@ -77,7 +79,8 @@ def gaussian_kl(old_mean, old_std, mean, std):
     # No +1e-5 inside log: unchanged policies must have zero KL.
     return (
         torch.log(std / old_std)
-        + (old_std.square() + (old_mean - mean).square()) / (2.0 * std.square())
+        + (old_std.square() + (old_mean - mean).square())
+        / (2.0 * std.square())
         - 0.5
     ).sum(-1)
 
@@ -87,8 +90,11 @@ def factors(law):
 
 
 class PPO:
-    def __init__(self, policy, amp, config, device):
+    def __init__(self, policy, amp, config, device, *, active_roles=ROLES):
         self.policy, self.amp, self.config = policy, amp, config
+        self.active_roles = tuple(active_roles)
+        if self.active_roles not in (ROLES, ("ego",)):
+            raise ValueError("Expected paired learning or one ego learner")
         self.device = device
         self.optimizers = {
             role: torch.optim.Adam(
@@ -99,7 +105,7 @@ class PPO:
         self.learning_rates = dict.fromkeys(ROLES, config.learning_rate)
         self.histories = {
             role: GenericExplorationHistory(
-                config.num_envs, device, config.actor_dim, config.action_dim
+                config.num_envs, device, config.actor_dim, policy.action_dim
             )
             for role in ROLES
         }
@@ -109,8 +115,9 @@ class PPO:
             config.num_steps_per_env,
             shape,
             [CRITIC_DIM],
-            [config.action_dim],
+            [policy.action_dim],
             device=device,
+            active_roles=self.active_roles,
         )
         self.transition = RolloutStorage.Transition()
         self.last_parity = {}
@@ -127,9 +134,17 @@ class PPO:
             history.reset(done)
 
     @torch.no_grad()
-    def act(self, observations):
-        actions = {}
+    def act(self, observations, *, opponent_actions=None):
+        actions = {} if opponent_actions is None else dict(opponent_actions)
         for role, agent in zip(ROLES, AGENTS, strict=True):
+            if role not in self.active_roles:
+                if agent not in actions:
+                    raise ValueError(
+                        "Inactive role requires an external action"
+                    )
+                continue
+            if agent in actions:
+                raise ValueError("Cannot override an active learner action")
             actor, critic = observations[agent]
             packed = (
                 self.histories[role].pack(actor)
@@ -154,7 +169,11 @@ class PPO:
             require_finite(values, f"{role} rollout")
             for name, value in values.items():
                 setattr(self.transition, f"{name}_{role}", value.detach())
-            actions[agent] = action
+            actions[agent] = (
+                self.policy.execute(role, action)
+                if hasattr(self.policy, "execute")
+                else action
+            )
         return actions
 
     @torch.no_grad()
@@ -169,9 +188,13 @@ class PPO:
             raise ValueError("Invalid worlds must be reset before storage")
         self.transition.valid = ~invalid
         for role, agent in zip(ROLES, AGENTS, strict=True):
+            if role not in self.active_roles:
+                continue
             setattr(self.transition, f"rewards_{role}", rewards[agent])
             setattr(self.transition, f"dones_{role}", done)
-            setattr(self.transition, f"amp_obs_{role}", infos[f"amp_obs_{role}"])
+            setattr(
+                self.transition, f"amp_obs_{role}", infos[f"amp_obs_{role}"]
+            )
         self.storage.add_transitions(self.transition)
         self.transition.clear()
         self.reset_exploration(done)
@@ -181,6 +204,8 @@ class PPO:
         if self.storage.step != self.config.num_steps_per_env:
             raise ValueError("Cannot update a partial rollout")
         for role, agent in zip(ROLES, AGENTS, strict=True):
+            if role not in self.active_roles:
+                continue
             value = self.policy.value(role, observations[agent][1])
             self.storage.compute_returns(
                 role, value, self.config.gamma, self.config.lam
@@ -192,12 +217,15 @@ class PPO:
         self.last_parity = {}
         valid_indices = (
             self.storage.valid.flatten().nonzero().flatten()
-            if self.storage.has_invalid else None
+            if self.storage.has_invalid
+            else None
         )
-        for role in ROLES:
+        for role in self.active_roles:
             obs = getattr(self.storage, f"observations_{role}").flatten(0, 1)
             actions = getattr(self.storage, f"actions_{role}").flatten(0, 1)
-            old_logp = getattr(self.storage, f"actions_log_prob_{role}").flatten()
+            old_logp = getattr(
+                self.storage, f"actions_log_prob_{role}"
+            ).flatten()
             old_mean = getattr(self.storage, f"mu_{role}").flatten(0, 1)
             old_std = getattr(self.storage, f"sigma_{role}").flatten(0, 1)
             count = len(obs) if valid_indices is None else len(valid_indices)
@@ -212,7 +240,9 @@ class PPO:
                 logp = law.log_prob(actions[sl]).sum(-1)
                 factor = factors(law)
                 delta = logp - old_logp[sl]
-                kl = gaussian_kl(old_mean[sl], old_std[sl], factor.mean, factor.stddev)
+                kl = gaussian_kl(
+                    old_mean[sl], old_std[sl], factor.mean, factor.stddev
+                )
                 require_finite((delta, kl), "pre-update likelihood")
                 maximum = max(maximum, delta.abs().max().item())
                 kl_sum += kl.double().sum().item()
@@ -249,7 +279,9 @@ class PPO:
         entropy = law.entropy().sum(-1).mean()
         cfg = self.config
         with torch.no_grad():
-            kl = gaussian_kl(old_mu, old_std, factor.mean, factor.stddev).mean()
+            kl = gaussian_kl(
+                old_mu, old_std, factor.mean, factor.stddev
+            ).mean()
             require_finite(kl, f"{role} adaptive KL")
             lr = self.learning_rates[role]
             if kl > cfg.desired_kl * 2:
@@ -291,7 +323,10 @@ class PPO:
             "entropy": entropy.item(),
             "kl": kl.item(),
             "max_minibatch_kl": kl.item(),
-            "clip_fraction": ((ratio - 1).abs() > cfg.clip_param).float().mean().item(),
+            "clip_fraction": ((ratio - 1).abs() > cfg.clip_param)
+            .float()
+            .mean()
+            .item(),
             "zero_ratio_count": zero_ratios,
             "max_abs_log_ratio": log_ratio.detach().abs().max().item(),
         }
@@ -305,11 +340,14 @@ class PPO:
         ):
             # Filtered minibatches no longer fit the fixed CUDA graph shape.
             with (
-                nullcontext() if self.storage.has_invalid
+                nullcontext()
+                if self.storage.has_invalid
                 else self.policy.actor_graph_batch()
             ):
                 losses = []
-                for role, role_batch in zip(ROLES, batch, strict=True):
+                for role, role_batch in zip(
+                    self.active_roles, batch, strict=True
+                ):
                     loss, record = self._role_loss(role, role_batch)
                     losses.append(loss)
                     self.optimizers[role].zero_grad(set_to_none=True)
@@ -321,13 +359,15 @@ class PPO:
                             metrics[key] = metrics.get(key, 0.0) + value
                 sum(losses).backward()
             # Validate BOTH gradients before either optimizer changes parameters.
-            for role in ROLES:
+            for role in self.active_roles:
                 parameters = self.policy.role_parameters(role)
-                require_finite([p.grad for p in parameters], f"{role} gradients")
+                require_finite(
+                    [p.grad for p in parameters], f"{role} gradients"
+                )
                 nn.utils.clip_grad_norm_(
                     parameters, cfg.max_grad_norm, error_if_nonfinite=True
                 )
-            for role in ROLES:
+            for role in self.active_roles:
                 self.optimizers[role].step()
                 self.optimizer_steps[role] += 1
                 require_finite(
@@ -348,7 +388,9 @@ class PPO:
         metrics.update(
             self.amp.update(
                 self.storage.valid_flattened("amp_obs_ego"),
-                self.storage.valid_flattened("amp_obs_opponent"),
+                self.storage.valid_flattened("amp_obs_opponent")
+                if "opponent" in self.active_roles
+                else None,
                 count,
             )
         )

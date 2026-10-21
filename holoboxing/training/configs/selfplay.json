@@ -1,0 +1,16 @@
+{
+  "num_envs": 128,
+  "hidden_dims": [
+    256,
+    128
+  ],
+  "disc_hidden_dims": [
+    128,
+    64
+  ],
+  "actor_forward_rows": 256,
+  "amp_batch_size": 128,
+  "amp_replay_buffer_size": 16384,
+  "horizon_rho": 0.0,
+  "init_noise_std": 0.2
+}

@@ -46,7 +46,6 @@ from holoboxing.training.tasks.combat.mdp.observations import (
 from holoboxing.training.tasks.combat.mdp.rewards import reset_punch_state
 from holomotion.src.motion_tracking.link_observation import quat_multiply_wxyz
 
-
 NOMINAL = [
     -0.312,
     -0.312,
@@ -147,8 +146,19 @@ class Robot:
 class MujocoSandbagEnv:
     actor_dim, action_dim = 1097, 225
 
-    def __init__(self, assets, paths, worlds, device, directory, seed=42):
+    def __init__(
+        self,
+        assets,
+        paths,
+        worlds,
+        device,
+        directory,
+        seed=42,
+        *,
+        standing_reference=None,
+    ):
         self.device, self.num_envs = torch.device(device), worlds
+        self.standing_reference = standing_reference
         self.physics = CompetitionPhysics(assets, worlds, device)
         self.scene = Scene({a: Robot() for a in AGENTS})
         self.scene.env_origins = torch.zeros((worlds, 3), device=device)
@@ -366,7 +376,8 @@ class MujocoSandbagEnv:
             else torch.where(
                 mask[:, None, None],
                 repeated,
-                self.history if previous is not None
+                self.history
+                if previous is not None
                 else torch.cat((self.history[:, 1:], raw[:, None]), 1),
             )
         )
@@ -420,7 +431,9 @@ class MujocoSandbagEnv:
             self.measured = measured_before
             p, q = self.measured["position"], self.measured["quaternion"]
         noisy = self.actor_noise.observe(
-            self.measured, self.common_step_counter, reset,
+            self.measured,
+            self.common_step_counter,
+            reset,
             refresh=previous is not None,
         )
         packed = torch.cat(
@@ -445,6 +458,8 @@ class MujocoSandbagEnv:
 
     def _reset(self, ids):
         self.physics.reset(ids)
+        if self.standing_reference is not None:
+            self.standing_reference.reset(ids)
         qpos = wp.to_torch(self.physics.data.qpos)
         extent = torch.tensor(
             [0.05, 0.05, 0.01, 0.1, 0.1, 0.2], device=self.device
@@ -552,7 +567,9 @@ class MujocoSandbagEnv:
     def step(self, actions):
         physical = torch.stack([actions[a] for a in AGENTS], 1).flatten(0, 1)
         start = {a: self._amp(a) for a in AGENTS}
-        joint_actions, outputs = self.lower.autonomous(self.measured, physical)
+        joint_actions, outputs = self.lower.autonomous(
+            self.measured, physical, reference_override=self.standing_reference
+        )
         require_finite((joint_actions, outputs), "lower controller output")
         for role, agent in enumerate(AGENTS):
             manager = self.action_managers[agent]
@@ -574,7 +591,7 @@ class MujocoSandbagEnv:
         timeout = self.episode_length_buf >= self.max_episode_length
         done = terminal | timeout
         rewards, infos = {}, {}
-        for role, agent in zip(ROLES, AGENTS):
+        for role, agent in zip(ROLES, AGENTS, strict=True):
             self.reward_terms[agent] = {
                 name: weight * fn(self, **params) * 0.02
                 for name, weight, fn, params in terms(agent)
@@ -594,7 +611,11 @@ class MujocoSandbagEnv:
                 "physics": {
                     name: wp.to_torch(getattr(self.physics.data, name))
                     for name in (
-                        "qpos", "qvel", "qacc", "qacc_warmstart", "ctrl"
+                        "qpos",
+                        "qvel",
+                        "qacc",
+                        "qacc_warmstart",
+                        "ctrl",
                     )
                 },
                 "targets": self.physics.targets,
@@ -662,14 +683,35 @@ class MujocoSandbagEnv:
             "physics_steps": physics.steps,
             "state": {
                 name: wp.to_torch(getattr(data, name)).detach().cpu().clone()
-                for name in ("qpos", "qvel", "qacc", "qacc_warmstart", "ctrl", "time")
+                for name in (
+                    "qpos",
+                    "qvel",
+                    "qacc",
+                    "qacc_warmstart",
+                    "ctrl",
+                    "time",
+                )
             },
             "contacts": {
-                name: wp.to_torch(getattr(data.contact, name))[:ncon].detach().cpu().clone()
-                for name in ("worldid", "geom", "dim", "dist", "frame", "pos", "efc_address", "friction")
+                name: wp.to_torch(getattr(data.contact, name))[:ncon]
+                .detach()
+                .cpu()
+                .clone()
+                for name in (
+                    "worldid",
+                    "geom",
+                    "dim",
+                    "dist",
+                    "frame",
+                    "pos",
+                    "efc_address",
+                    "friction",
+                )
             },
             "constraint_count": nefc.cpu().clone(),
-            "constraint_force": wp.to_torch(data.efc.force)[:, :width].cpu().clone(),
+            "constraint_force": wp.to_torch(data.efc.force)[:, :width]
+            .cpu()
+            .clone(),
             "body_ipos": wp.to_torch(physics.model.body_ipos).cpu().clone(),
             "targets": physics.targets.cpu().clone(),
             "joint_acceleration": physics.joint_acceleration.cpu().clone(),

@@ -249,16 +249,19 @@ class AMP:
         )
 
         cfg = self.config
+        populations = (ego,) if opponent is None else (ego, opponent)
+        if any(not len(values) for values in populations):
+            raise ValueError("AMP requires nonempty learner transitions")
         metrics = {"amp/loss": 0.0, "amp/gradient_penalty": 0.0}
         for _ in range(num_updates):
             current = torch.cat(
                 [
                     values[
                         torch.randperm(len(values), device=self.device)[
-                            : cfg.amp_batch_size // 2
+                            : cfg.amp_batch_size // len(populations)
                         ]
                     ]
-                    for values in (ego, opponent)
+                    for values in populations
                 ],
                 dim=0,
             )
@@ -290,5 +293,6 @@ class AMP:
             metrics["amp/loss"] += loss.item()
             metrics["amp/gradient_penalty"] += penalty.item()
         self.replay.store(ego)
-        self.replay.store(opponent)
+        if opponent is not None:
+            self.replay.store(opponent)
         return {key: value / num_updates for key, value in metrics.items()}

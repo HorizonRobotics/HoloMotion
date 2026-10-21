@@ -47,6 +47,7 @@ def main(argv=None):
     prepare.add_argument("--workers", type=int, default=2)
     prepare.add_argument("--seed", type=int, default=42)
     prepare.add_argument("--validation-fraction", type=float, default=0.1)
+    prepare.add_argument("--test-fraction", type=float, default=0.0)
 
     verify = commands.add_parser(
         "verify", help="Check bytes, current training reader and V2 H5 layout"

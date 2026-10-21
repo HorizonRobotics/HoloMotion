@@ -58,10 +58,16 @@ def source_records(root):
     return result
 
 
-def assign_splits(records, *, seed=42, validation_fraction=0.1):
+def assign_splits(
+    records, *, seed=42, validation_fraction=0.1, test_fraction=0.0
+):
     if not 0 < validation_fraction < 1:
         raise ValueError(
             "Validation fraction must lie strictly between zero and one"
+        )
+    if not 0 <= test_fraction < 1 or validation_fraction + test_fraction >= 1:
+        raise ValueError(
+            "Test fraction must be nonnegative and leave training groups"
         )
     known, unlabelled = {}, set()
     for record in records:
@@ -81,14 +87,31 @@ def assign_splits(records, *, seed=42, validation_fraction=0.1):
         ).hexdigest(),
     )
     if ordered:
+        if test_fraction and len(ordered) < 3:
+            raise ValueError(
+                "Three-way splitting requires at least three "
+                "unlabelled source groups"
+            )
         count = max(1, math.ceil(len(ordered) * validation_fraction))
+        test_count = (
+            max(1, math.ceil(len(ordered) * test_fraction))
+            if test_fraction
+            else 0
+        )
+        if test_count:
+            count = min(count, len(ordered) - 2)
+            test_count = min(test_count, len(ordered) - count - 1)
         if len(ordered) > 1:
             count = min(count, len(ordered) - 1)
         elif "train" not in known.values():
             count = 0
         known.update(
             {
-                group: "validation" if i < count else "train"
+                group: "validation"
+                if i < count
+                else "test"
+                if i < count + test_count
+                else "train"
                 for i, group in enumerate(ordered)
             }
         )
@@ -466,7 +489,14 @@ def verify_dataset(output, *, assets, _preparing=False):
 
 
 def prepare_dataset(
-    sources, output, *, assets, workers=1, seed=42, validation_fraction=0.1
+    sources,
+    output,
+    *,
+    assets,
+    workers=1,
+    seed=42,
+    validation_fraction=0.1,
+    test_fraction=0.0,
 ):
     from .contract import CompetitionAssets, same_data_assets
     from .records import main as prepare_main
@@ -479,7 +509,10 @@ def prepare_dataset(
             "Source clip names must be unique across supplied roots"
         )
     splits, used = assign_splits(
-        records, seed=seed, validation_fraction=validation_fraction
+        records,
+        seed=seed,
+        validation_fraction=validation_fraction,
+        test_fraction=test_fraction,
     )
     tree = CompetitionAssets.load(assets)
     for root in sources:
@@ -506,6 +539,7 @@ def prepare_dataset(
             "format": "holoboxing_data_sources_v1",
             "split_seed": seed,
             "validation_fraction": validation_fraction,
+            "test_fraction": test_fraction,
             "split_policy": "official split when available; exclude test; otherwise deterministic original-plus-mirror groups",
             "excluded_official_test": [
                 record["path"]

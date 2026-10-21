@@ -16,9 +16,16 @@ class RolloutStorage:
             self.valid = None
             for role in ROLES:
                 for name in (
-                    "observations", "privileged_observations", "actions", "rewards",
-                    "dones", "values", "actions_log_prob", "action_mean",
-                    "action_sigma", "amp_obs",
+                    "observations",
+                    "privileged_observations",
+                    "actions",
+                    "rewards",
+                    "dones",
+                    "values",
+                    "actions_log_prob",
+                    "action_mean",
+                    "action_sigma",
+                    "amp_obs",
                 ):
                     setattr(self, f"{name}_{role}", None)
 
@@ -30,8 +37,13 @@ class RolloutStorage:
         privileged_obs_shape,
         actions_shape,
         device="cpu",
+        *,
+        active_roles=ROLES,
     ):
         self.device = device
+        self.active_roles = tuple(active_roles)
+        if self.active_roles not in (ROLES, ("ego",)):
+            raise ValueError("Expected paired learning or one ego learner")
         self.num_envs = num_envs
         self.num_transitions_per_env = num_transitions_per_env
         self.step = 0
@@ -39,7 +51,7 @@ class RolloutStorage:
         self.valid = torch.ones(
             num_transitions_per_env, num_envs, dtype=torch.bool, device=device
         )
-        for role in ROLES:
+        for role in self.active_roles:
             for name, shape in (
                 ("observations", obs_shape),
                 ("privileged_observations", privileged_obs_shape),
@@ -54,7 +66,10 @@ class RolloutStorage:
                 ("advantages", [1]),
             ):
                 value = torch.zeros(
-                    num_transitions_per_env, num_envs, *shape, device=device,
+                    num_transitions_per_env,
+                    num_envs,
+                    *shape,
+                    device=device,
                     dtype=torch.uint8 if name == "dones" else torch.float32,
                 )
                 setattr(self, f"{name}_{role}", value)
@@ -62,18 +77,29 @@ class RolloutStorage:
 
     def add_transitions(self, transition):
         if self.step >= self.num_transitions_per_env:
-            raise OverflowError("Rollout buffer overflow; update before collecting again")
+            raise OverflowError(
+                "Rollout buffer overflow; update before collecting again"
+            )
         if transition.valid is None:
             self.valid[self.step].fill_(True)
         else:
             self.valid[self.step].copy_(transition.valid)
             self.has_invalid |= not bool(transition.valid.all())
-        for role in ROLES:
+        for role in self.active_roles:
             for name in (
-                "observations", "privileged_observations", "actions", "rewards",
-                "dones", "values", "actions_log_prob", "mu", "sigma",
+                "observations",
+                "privileged_observations",
+                "actions",
+                "rewards",
+                "dones",
+                "values",
+                "actions_log_prob",
+                "mu",
+                "sigma",
             ):
-                source = {"mu": "action_mean", "sigma": "action_sigma"}.get(name, name)
+                source = {"mu": "action_mean", "sigma": "action_sigma"}.get(
+                    name, name
+                )
                 value = getattr(transition, f"{source}_{role}")
                 if name in ("rewards", "dones", "actions_log_prob"):
                     value = value.view(-1, 1)
@@ -82,7 +108,9 @@ class RolloutStorage:
             buffer = getattr(self, f"amp_obs_{role}")
             if buffer is None:
                 buffer = torch.zeros(
-                    self.num_transitions_per_env, self.num_envs, *amp.shape[1:],
+                    self.num_transitions_per_env,
+                    self.num_envs,
+                    *amp.shape[1:],
                     device=self.device,
                 )
                 setattr(self, f"amp_obs_{role}", buffer)
@@ -129,34 +157,51 @@ class RolloutStorage:
 
     def mini_batch_generator(self, num_mini_batches, num_epochs):
         valid_indices = (
-            self.valid.flatten().nonzero().flatten() if self.has_invalid else None
+            self.valid.flatten().nonzero().flatten()
+            if self.has_invalid
+            else None
         )
         batch_size = (
-            len(valid_indices) if self.has_invalid
+            len(valid_indices)
+            if self.has_invalid
             else self.num_envs * self.num_transitions_per_env
         )
         mini_batch_size = batch_size // num_mini_batches
         if mini_batch_size < 1:
-            raise FloatingPointError("Not enough valid transitions for PPO batches")
+            raise FloatingPointError(
+                "Not enough valid transitions for PPO batches"
+            )
         # Keep the baseline's single permutation, shared across roles and epochs.
         size = num_mini_batches * mini_batch_size
         indices = torch.randperm(
             batch_size if self.has_invalid else size,
-            requires_grad=False, device=self.device,
+            requires_grad=False,
+            device=self.device,
         )
         if self.has_invalid:
             indices = valid_indices[indices]
         selections = indices.tensor_split(num_mini_batches)
         columns = (
-            "observations", "privileged_observations", "actions", "values",
-            "advantages", "returns", "actions_log_prob", "mu", "sigma",
+            "observations",
+            "privileged_observations",
+            "actions",
+            "values",
+            "advantages",
+            "returns",
+            "actions_log_prob",
+            "mu",
+            "sigma",
         )
         batches = [
-            tuple(getattr(self, f"{name}_{role}").flatten(0, 1) for name in columns)
-            for role in ROLES
+            tuple(
+                getattr(self, f"{name}_{role}").flatten(0, 1)
+                for name in columns
+            )
+            for role in self.active_roles
         ]
         for _ in range(num_epochs):
             for selected in selections:
                 yield tuple(
-                    tuple(value[selected] for value in batch) for batch in batches
+                    tuple(value[selected] for value in batch)
+                    for batch in batches
                 )

@@ -6,7 +6,11 @@ from torch.distributions import Normal
 
 
 def validate_rho(value):
-    if isinstance(value, bool) or not math.isfinite(value) or not 0 <= value < 1:
+    if (
+        isinstance(value, bool)
+        or not math.isfinite(value)
+        or not 0 <= value < 1
+    ):
         raise ValueError("Correlation must be finite in [0, 1)")
     if value and not 0 < torch.tensor(value, dtype=torch.float32).item() < 1:
         raise ValueError("Correlation must remain inside (0, 1) in float32")
@@ -34,7 +38,9 @@ def conditional_distribution(base, previous_mean, value, mode, rho):
     )
     return Normal(
         torch.where(mode == 0, base.mean, base.mean + offset),
-        torch.where(mode == 0, base.stddev, base.stddev * math.sqrt(1 - rho * rho)),
+        torch.where(
+            mode == 0, base.stddev, base.stddev * math.sqrt(1 - rho * rho)
+        ),
     )
 
 
@@ -44,7 +50,9 @@ class HorizonNormal:
     def __init__(self, base, rho):
         self.rho = validate_rho(rho)
         if not rho or base.mean.shape[-1] != 225:
-            raise ValueError("Horizon distribution requires 225D and positive rho")
+            raise ValueError(
+                "Horizon distribution requires 225D and positive rho"
+            )
         self.base, self.factor = base, math.sqrt(1 - rho * rho)
         self.scored_factors = None
 
@@ -62,12 +70,18 @@ class HorizonNormal:
     @torch.no_grad()
     def sample(self):
         noise = self._offsets(
-            Normal(torch.zeros_like(self.mean), torch.ones_like(self.stddev)).sample()
+            Normal(
+                torch.zeros_like(self.mean), torch.ones_like(self.stddev)
+            ).sample()
         )
         values = [noise[..., 0, :]]
         for offset in range(1, 5):
-            values.append(self.rho * values[-1] + self.factor * noise[..., offset, :])
-        return self.mean + self.stddev * torch.stack(values, -2).reshape_as(self.mean)
+            values.append(
+                self.rho * values[-1] + self.factor * noise[..., offset, :]
+            )
+        return self.mean + self.stddev * torch.stack(values, -2).reshape_as(
+            self.mean
+        )
 
     def factors(self, action):
         if action.shape != self.mean.shape or not torch.isfinite(action).all():
@@ -115,7 +129,7 @@ class GenericExplorationHistory:
     """Collection snapshots; mode 1 saves a residual, mode 2 a realized action."""
 
     def __init__(self, num_envs, device, actor_dim, action_dim):
-        if action_dim != 225 or actor_dim < 1 or num_envs < 1:
+        if action_dim not in (32, 225) or actor_dim < 1 or num_envs < 1:
             raise ValueError("Invalid history dimensions")
         self.previous_obs = torch.zeros(num_envs, actor_dim, device=device)
         self.previous_action = torch.zeros(num_envs, action_dim, device=device)
@@ -144,8 +158,12 @@ class GenericExplorationHistory:
     def pack(self, observations):
         if observations.shape != self.previous_obs.shape:
             raise ValueError("History batch differs from current observations")
-        value = torch.where(self.mode == 1, self.last_noise, self.previous_action)
-        return torch.cat((observations, self.previous_obs, value, self.mode), -1)
+        value = torch.where(
+            self.mode == 1, self.last_noise, self.previous_action
+        )
+        return torch.cat(
+            (observations, self.previous_obs, value, self.mode), -1
+        )
 
     @torch.no_grad()
     def record(self, observations, action, base_mean, base_std):
@@ -167,4 +185,6 @@ class GenericExplorationHistory:
         self.mode.fill_(2)
 
     def state_dict(self):
-        return {key: value.detach().clone() for key, value in vars(self).items()}
+        return {
+            key: value.detach().clone() for key, value in vars(self).items()
+        }

@@ -53,6 +53,11 @@ Compare independently refreshed poses and velocities from the same current joint
 Keep policy refreshes separate from solver/contact data, and compare trajectories with fixed control inputs.
 After reset, check buffer ownership, captured addresses, and actual container paths.
 
+Generated observation bundles can select a different device-descriptor backend.
+Reproduce training with the same bundle present, including the first real lower-controller inference.
+Convert foreign framework device descriptors before Torch allocation and synchronization.
+An import or CPU resource preflight does not exercise this boundary.
+
 If GPU tests pass separately but fail together with `unknown stream`, inspect the previous test's active Warp stream.
 Tests selecting a Torch stream must restore Warp's previous device and stream through cleanup scopes, including failed setup.
 A leaked default stream can break a later CUDA graph capture.
