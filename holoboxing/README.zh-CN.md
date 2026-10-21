@@ -1,10 +1,10 @@
-# HoloBoxing 参赛入门教程
+# hbot-competition 赛道2 参赛入门教程
 
 [English](README.md) | 简体中文
 
-本教程面向 HoloBoxing 参赛选手。目标是尽快训练出满足提交要求的高层拳击策略。教程覆盖数据准备、策略训练、模型导出和本地评测。
+本教程面向 hbot-competition 赛道2 参赛选手。目标是尽快训练出满足提交要求的高层拳击策略。教程覆盖数据准备、策略训练、模型导出和本地评测。
 
-比赛官网为 [HoloBoxing 竞赛平台](https://hbot-competition.horizon.auto/)。模型提交和榜单入口请见站内导航。当前榜单中的方法和成绩为测试数据。它们不代表正式排名。
+比赛官网为 [hbot-competition竞赛平台](https://hbot-competition.horizon.auto/)。模型提交和榜单入口请见站内导航。当前榜单中的方法和成绩为测试数据。它们不代表正式排名。
 
 比赛使用 Unitree G1 人形机器人。选手需提交单个 ONNX 模型文件。ONNX 是通用的神经网络模型格式。
 
@@ -43,7 +43,10 @@
 | 输出内容 | 骨盆、双腕和双踝在未来五个时刻的目标位姿。五个时刻分布在未来 20–100 ms。 |
 | 底层控制器 | 必须使用赛事指定的 HoloMotion V2 版本。不得替换模型或修改参数。 |
 | 初赛评测显卡 | **RTX 5090**。 |
-| 完整推理链时延 | 高层策略与底层控制器的平均总时延 **≤5 ms**。先预热 10 次，再测量 100 次。 |
+| 完整推理链性能 | 高层策略与底层控制器的平均总时延 **≤10 ms**，对应 **≥100 FPS**。先预热 10 次，再测量 100 次。 |
+
+云端测试使用的是 **Intel Xeon Platinum 8558P + NVIDIA GeForce RTX 5090**，评测结果可能和本地不一致，以云端系统结果为准。
+这里的 FPS 为 `1000 / mean_ms`，表示完整链路性能，不是策略或物理仿真的更新频率。
 
 本地测时可使用其他受支持的 NVIDIA 显卡。初赛时延以官方在 RTX 5090 上的实测为准。后续赛程使用 S600，需另行验收。
 
@@ -99,11 +102,11 @@ cd HoloMotion
 只播放回放时，使用 Docker 和浏览器即可。
 
 ```bash
-export HOLOBOXING_IMAGE="horizonrobotics/holomotion:holoboxing-eval-v11-amd64"
+export HOLOBOXING_IMAGE="horizonrobotics/holomotion:holoboxing-eval-v12-amd64"
 docker pull --platform linux/amd64 "$HOLOBOXING_IMAGE"
 ```
 
-镜像信息见 [Docker Hub 仓库页](https://hub.docker.com/layers/horizonrobotics/holomotion/holoboxing-eval-v11-amd64)。安装后，先检查 Docker 与显卡访问：
+镜像信息见 [Docker Hub 仓库页](https://hub.docker.com/layers/horizonrobotics/holomotion/holoboxing-eval-v12-amd64)。安装后，先检查 Docker 与显卡访问：
 
 ```bash
 docker version
@@ -125,8 +128,8 @@ docker run --rm --gpus all --entrypoint nvidia-smi "$HOLOBOXING_IMAGE" -L
 ```bash
 cd /path/to/offline-delivery
 sha256sum --check SHA256SUMS
-docker load --input holoboxing-eval-v11-amd64.tar.gz
-export HOLOBOXING_IMAGE="horizonrobotics/holomotion:holoboxing-eval-v11-amd64"
+docker load --input holoboxing-eval-v12-amd64.tar.gz
+export HOLOBOXING_IMAGE="horizonrobotics/holomotion:holoboxing-eval-v12-amd64"
 docker image inspect --format '{{.Id}}' "$HOLOBOXING_IMAGE"
 cat IMAGE_ID
 ```
@@ -170,7 +173,7 @@ export HOLOBOXING_LOWER="$PWD/models/holomotion-v2"
 
 ### 下载量与空间准备
 
-下表为 v11 固定资源的参考体积。GB 和 MB 均按十进制计算。压缩下载量不等于安装后的磁盘占用。
+下表为 v12 固定资源的参考体积。GB 和 MB 均按十进制计算。压缩下载量不等于安装后的磁盘占用。
 
 | 内容 | 参考体积与条件 |
 | --- | --- |
@@ -195,7 +198,7 @@ docker system df
 
 ```bash
 source .venv-holoboxing/bin/activate
-export HOLOBOXING_IMAGE="horizonrobotics/holomotion:holoboxing-eval-v11-amd64"
+export HOLOBOXING_IMAGE="horizonrobotics/holomotion:holoboxing-eval-v12-amd64"
 export HOLOBOXING_ASSETS="$PWD/holoboxing/assets"
 export HOLOBOXING_LOWER="$PWD/models/holomotion-v2"
 export HOLOBOXING_DATA="$PWD/holoboxing/data/processed/combined/prepared"
@@ -358,9 +361,9 @@ python -m holoboxing.training.export \
 
 快速检查不测量完整推理链的性能。结果中的 `NOT_RUN` 表示尚未测时。`NOT_EVALUATED` 表示尚未进行官方硬件验收。`actual_fps=0` 表示未测量，不代表性能为零。
 
-第二条命令测量高层策略与底层控制器的总时延。先预热 10 次，再测量 100 次。计时还包括观测生成、解码、模型缓存更新和目标转换。物理仿真及输出异常值修正不计入 **5 ms** 指标。
+第二条命令测量高层策略与底层控制器的总时延。先预热 10 次，再测量 100 次。计时还包括观测生成、解码、模型缓存更新和目标转换。物理仿真及输出异常值修正不计入 **10 ms** 指标。
 
-使用其他显卡，也会输出实测时延。报告会注明显卡型号，并提示与官方硬件的差异。其他显卡的结果不能证明 RTX 5090 资格。时延是否达标，以官方 RTX 5090 实测结果为准。
+使用其他显卡，也会输出实测时延。报告会注明显卡型号，并提示与官方硬件的差异。其他显卡的结果不能证明 RTX 5090 资格。是否通过，以云端系统结果为准，要求平均时延 **≤10 ms**、对应 **≥100 FPS**。
 
 模型推理和比赛仿真均需使用显卡。
 
@@ -537,7 +540,7 @@ TopK 的选择维度必须具有已知长度。对较长维度执行 TopK 时，
 
 教程生成的 `models/`、`results/` 及数据目录已忽略。它们不会单独导致脏工作区错误。若修改过源码，请加 `--development`。该选项明确记录当前工作区快照。正式发布构建仍要求已提交的干净源码。
 
-现有 v11 的提交标签无法在公开仓库查询。不能仅凭该标签重建公开源码版本。使用既有发布包时，应固定镜像摘要。自建镜像须保留 `build-inputs.json` 和 `build-receipt.json`。发布方仍需补齐公开提交与发布包的对应关系。正式发布构建请加 `--verify-public-source`。脚本会先检查公开提交是否可查询。无法验证时，构建会停止。
+使用已发布的 v12 镜像时，应固定镜像摘要。提交标签本身不能证明公开源码对应关系，请核对发布溯源记录。自建镜像须保留 `build-inputs.json` 和 `build-receipt.json`。发布方仍需补齐公开提交与发布包的对应关系。正式发布构建请加 `--verify-public-source`。脚本会先检查公开提交是否可查询。无法验证时，构建会停止。
 
 构建脚本会校验模型与资源文件，并记录源码及依赖版本。构建完成后，请核对记录，重新运行模型检查和本地对战。
 

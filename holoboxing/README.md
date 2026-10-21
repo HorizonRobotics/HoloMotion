@@ -1,4 +1,4 @@
-# HoloBoxing tutorial: build a competition boxing policy
+# hbot-competition Track 2 tutorial: build a competition boxing policy
 
 English | [简体中文](README.zh-CN.md)
 
@@ -7,7 +7,7 @@ A policy is a model that maps observations to action targets.
 You will prepare data, train a policy, export it to ONNX, and evaluate it with the supplied controller on a Unitree G1 robot.
 ONNX is a portable neural-network format; your final submission is one ONNX model containing your high-level policy.
 
-Use the [competition website](https://hbot-competition.horizon.auto/) for submission and leaderboard navigation.
+Use the [hbot-competition platform](https://hbot-competition.horizon.auto/) for submission and leaderboard navigation.
 Current leaderboard methods and scores are test data, not official rankings.
 
 ## 0. Prepare for the competition
@@ -47,10 +47,12 @@ Your submitted model must meet these requirements:
 | Targets | Pelvis, left wrist, right wrist, left ankle, right ankle; five future times from 20 to 100 ms |
 | Low-level controller | All entries must use the competition-specified HoloMotion V2 controller. Replacing the model or modifying its parameters is prohibited. |
 | Initial-round hardware | **RTX 5090** |
-| Complete-chain latency | Mean **≤5 ms**, including your policy and the frozen controller; 10 warmup steps and 100 measured steps |
+| Complete-chain performance | Mean latency **≤10 ms**, equivalent to **≥100 FPS**, including your policy and the frozen controller; 10 warmup steps and 100 measured steps |
 
 Later-round S600 execution needs separate target validation.
 You can run local timing on other supported NVIDIA GPUs; official qualification uses the RTX 5090.
+Cloud tests use **Intel Xeon Platinum 8558P + NVIDIA GeForce RTX 5090**. Results may differ from local tests; the cloud system results are authoritative.
+Here, FPS is `1000 / mean_ms`, a complete-chain performance metric, not the policy or physics update frequency.
 
 ### How the two policy layers work
 
@@ -103,11 +105,11 @@ Replay playback needs only Docker and a browser.
 Follow the official [Docker installation guide](https://docs.docker.com/engine/install/) and [NVIDIA Container Toolkit guide](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).
 
 ```bash
-export HOLOBOXING_IMAGE="horizonrobotics/holomotion:holoboxing-eval-v11-amd64"
+export HOLOBOXING_IMAGE="horizonrobotics/holomotion:holoboxing-eval-v12-amd64"
 docker pull --platform linux/amd64 "$HOLOBOXING_IMAGE"
 ```
 
-See the [Docker Hub image page](https://hub.docker.com/layers/horizonrobotics/holomotion/holoboxing-eval-v11-amd64). After installation, check Docker and container GPU access:
+See the [Docker Hub image page](https://hub.docker.com/layers/horizonrobotics/holomotion/holoboxing-eval-v12-amd64). After installation, check Docker and container GPU access:
 
 ```bash
 docker version
@@ -132,8 +134,8 @@ Copy the complete delivery directory to the offline machine, then verify and imp
 ```bash
 cd /path/to/offline-delivery
 sha256sum --check SHA256SUMS
-docker load --input holoboxing-eval-v11-amd64.tar.gz
-export HOLOBOXING_IMAGE="horizonrobotics/holomotion:holoboxing-eval-v11-amd64"
+docker load --input holoboxing-eval-v12-amd64.tar.gz
+export HOLOBOXING_IMAGE="horizonrobotics/holomotion:holoboxing-eval-v12-amd64"
 docker image inspect --format '{{.Id}}' "$HOLOBOXING_IMAGE"
 cat IMAGE_ID
 ```
@@ -189,7 +191,7 @@ Download these resources once.
 
 ### Download sizes and storage
 
-These v11 reference sizes use decimal GB and MB. Compressed transfers do not represent installed disk usage.
+These v12 reference sizes use decimal GB and MB. Compressed transfers do not represent installed disk usage.
 
 | Content | Reference size and conditions |
 | --- | --- |
@@ -215,7 +217,7 @@ In a new terminal, restore the default paths together:
 
 ```bash
 source .venv-holoboxing/bin/activate
-export HOLOBOXING_IMAGE="horizonrobotics/holomotion:holoboxing-eval-v11-amd64"
+export HOLOBOXING_IMAGE="horizonrobotics/holomotion:holoboxing-eval-v12-amd64"
 export HOLOBOXING_ASSETS="$PWD/holoboxing/assets"
 export HOLOBOXING_LOWER="$PWD/models/holomotion-v2"
 export HOLOBOXING_DATA="$PWD/holoboxing/data/processed/combined/prepared"
@@ -413,10 +415,10 @@ The second command measures your policy together with the frozen controller, usi
 It reports the actual GPU model and measured latency, including on GPUs other than the RTX 5090.
 For a different GPU, the report warns that your hardware differs from the official RTX 5090.
 Measurements on another GPU do not establish RTX 5090 qualification.
-Official acceptance depends on measurements taken on the RTX 5090.
+Official acceptance depends on the cloud system results, with mean latency **≤10 ms** and **≥100 FPS**.
 
 The timed chain includes observations, your policy, decoding, controller inference, recurrent-state updates, and target conversion.
-Physics and output repair are outside this 5 ms chain measurement. Inference and match physics have no CPU fallback.
+Physics and output repair are outside this 10 ms chain measurement. Inference and match physics have no CPU fallback.
 
 If validation fails, read the report and return to step 0 to check the interface, latency requirements, and evaluation environment.
 Fix the issue, then validate again.
@@ -461,7 +463,7 @@ Results are not overwritten. Choose a new `--output` for another run, `--gpu` fo
 
 ## 5. Submit
 
-Upload **`results/boxing.onnx`** through the submission entry on the [competition website](https://hbot-competition.horizon.auto/).
+Upload **`results/boxing.onnx`** through the submission entry on the [hbot-competition platform](https://hbot-competition.horizon.auto/).
 Submit the high-level policy only. Training checkpoints, data, the controller bundle, and replay files are not model submissions.
 After upload, the service checks the model interface and complete-chain latency.
 Online validation is mandatory even if you skip local validation.
@@ -623,8 +625,7 @@ Generated `models/`, `results/`, and data directories are ignored, so tutorial o
 If you changed source files, add `--development` to record an explicit working-tree snapshot.
 Release builds still require a clean committed source tree.
 
-The existing v11 revision label does not resolve to a public source commit.
-Do not treat it alone as a reproducible public checkout; pin the existing release by image digest.
+Pin the published v12 image by digest. A revision label alone does not verify its public source; use the release provenance records.
 Retain `build-inputs.json` and `build-receipt.json` for custom builds.
 The publisher still needs to provide the public commit-to-release mapping.
 For a release build, add `--verify-public-source`; the builder stops unless the clean committed source is publicly verifiable.
