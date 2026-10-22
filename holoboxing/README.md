@@ -2,6 +2,12 @@
 
 English | [简体中文](README.zh-CN.md)
 
+<p align="center">
+  <img src="../assets/media/holoboxing_highlights.webp" alt="Simulation highlights: HoloBoxing policy vs. RoboStriker" width="480">
+  <br>
+  <em>Simulation highlights: HoloBoxing policy vs. RoboStriker.</em>
+</p>
+
 This tutorial helps participants quickly build a high-level boxing policy that meets the competition's submission requirements.
 A policy is a model that maps observations to action targets.
 You will prepare data, train a policy, export it to ONNX, and evaluate it with the supplied controller on a Unitree G1 robot.

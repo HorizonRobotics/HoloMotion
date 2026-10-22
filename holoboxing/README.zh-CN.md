@@ -2,6 +2,12 @@
 
 [English](README.md) | 简体中文
 
+<p align="center">
+  <img src="../assets/media/holoboxing_highlights.webp" alt="仿真集锦：HoloBoxing 对阵 RoboStriker" width="480">
+  <br>
+  <em>仿真集锦：HoloBoxing 对阵 RoboStriker。</em>
+</p>
+
 本教程面向 H-bot Competition 赛道2 参赛选手。目标是尽快训练出满足提交要求的高层拳击策略。教程覆盖数据准备、策略训练、模型导出和本地评测。
 
 比赛官网为 [H-bot Competition 竞赛平台](https://hbot-competition.horizon.auto/)。模型提交和榜单入口请见站内导航。
