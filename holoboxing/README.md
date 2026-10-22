@@ -8,7 +8,6 @@ You will prepare data, train a policy, export it to ONNX, and evaluate it with t
 ONNX is a portable neural-network format; your final submission is one ONNX model containing your high-level policy.
 
 Use the [H-bot Competition platform](https://hbot-competition.horizon.auto/) for submission and leaderboard navigation.
-Current leaderboard methods and scores are test data, not official rankings.
 
 ## 0. Prepare for the competition
 
@@ -49,7 +48,6 @@ Your submitted model must meet these requirements:
 | Initial-round hardware | **RTX 5090** |
 | Complete-chain performance | Mean latency **≤10 ms**, equivalent to **≥100 FPS**, including your policy and the frozen controller; 10 warmup steps and 100 measured steps |
 
-Later-round S600 execution needs separate target validation.
 You can run local timing on other supported NVIDIA GPUs; official qualification uses the RTX 5090.
 Cloud tests use **Intel Xeon Platinum 8558P + NVIDIA GeForce RTX 5090**. Results may differ from local tests; the cloud system results are authoritative.
 Here, FPS is `1000 / mean_ms`, a complete-chain performance metric, not the policy or physics update frequency.
@@ -528,7 +526,6 @@ The model enters online matches only after validation passes.
 If validation fails, follow the report and return to step 0 to check and fix the issue.
 
 After online validation, consult the website for published results.
-Current leaderboard methods and scores are test data, not official rankings.
 Competition announcements determine the official schedule and results.
 
 Local matches do not update the official leaderboard.
@@ -686,7 +683,6 @@ Release builds still require a clean committed source tree.
 
 Pin the published v12 image by digest. A revision label alone does not verify its public source; use the release provenance records.
 Retain `build-inputs.json` and `build-receipt.json` for custom builds.
-The publisher still needs to provide the public commit-to-release mapping.
 For a release build, add `--verify-public-source`; the builder stops unless the clean committed source is publicly verifiable.
 
 The builder verifies model/resource hashes and records source and dependency identities.

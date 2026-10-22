@@ -14,6 +14,7 @@
 
 # Latest News
 
+- [2026.10.22] The [H-bot Competition](https://hbot-competition.horizon.auto/) is now open! Follow our [Track 2 boxing tutorial](holoboxing/README.md) to train a baseline policy in about **21 minutes**.
 - [2026.10.12] HoloMotion v2.0 brings [one policy for sparse-to-whole-body control](#holomotion-v2-flexible-sparse-to-whole-body-command-following-with-cross-modal-extensibility), with initial 1-point and 5-point real-robot teleoperation demonstrated.
 - [2026.07.16] HoloMotion v1.4 introduces HoloRetarget at 3,000+ FPS on RTX 4090 for training data generation and 300+ FPS entirely on-robot for teleoperation, plus HoloSMPL for 10+ datasets and devices.
 - [2026.05.15] HoloMotion v1.3 scales from 60M to 0.4B parameters and 80 to 2000+ hours of motion data, while improving policy inference from ~100 to ~300 FPS.
