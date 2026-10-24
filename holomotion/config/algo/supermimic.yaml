@@ -1,0 +1,45 @@
+# @package _global_
+
+# Explicit reference recipe, validated by SuperMimicConfig.
+algo:
+  _target_: holomotion.src.algo.supermimic.algorithm.SuperMimic
+  config:
+    resume: null
+    device: ${device}
+    profile: paper
+    num_envs: ${num_envs}
+    buffer_steps: 1000
+    max_hours: 2.0
+    max_vector_steps: 800064
+    max_updates: 320000
+    utd: '0.4'
+    horizon: 32
+    goal_frames: 10
+    hist: 10
+    wm_window: 8
+    wm_batches: 10
+    wm_batch: 2048
+    pi_batch: 4096
+    pi_microbatch: 512
+    lr: 0.0002
+    gamma: 0.99
+    lam: 0.95
+    action_noise: 0.1
+    critic_epochs: 5
+    critic_minibatches: 4
+    no_critic: false
+    warmup_steps: 64
+    world_only_updates: 500
+    lr_decay_updates: 250000
+    policy_snapshot_minutes: 0.0
+    checkpoint_minutes: 15.0
+    evaluate_minutes: 30.0
+    log_steps: 50
+    seed: 0
+    amp: bf16
+    compile: true
+    capture_graph: true
+    release_phase_cache: true
+    preflight_only: false
+    skip_evaluation: false
+    physics_backend: mujoco_warp

@@ -1,0 +1,8 @@
+{
+  "protocol": "canonical_gpu_v1",
+  "model_serialization": "MuJoCo 3.16.0 MjModel.__getstate__ bytes, full model and options",
+  "model_sha256": "d84e5491444c4a0e0fe5efafa34b233c4ec1e67c85bb06a2d8ba2447cac4dbb2",
+  "model_profile": "paper G1 29dof, nq36/nv35/nu29, original fixed solver options",
+  "cross_host_fingerprint_qualified": false,
+  "fresh_reference_baseline_required": true
+}

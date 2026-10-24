@@ -1,0 +1,16 @@
+# @package _global_
+
+defaults:
+  - /training/motion_tracking/supermimic
+  - _self_
+
+# Selected MuJoCo recipe: 32/40 complete training clips on one RTX 5090.
+experiment_name: supermimic-30min
+algo:
+  config:
+    max_hours: 0.5
+    horizon: 24
+    pi_microbatch: 4096
+    lr: 0.0004
+    checkpoint_minutes: 60.0
+    evaluate_minutes: 60.0

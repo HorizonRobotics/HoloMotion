@@ -26,3 +26,7 @@ assets/media/g1_modular_configurations.jpg -filter -diff -merge -text
 
 # Preserve third-party notices exactly as distributed.
 holoboxing/viewer/notices/* -whitespace
+
+# Keep the compact training-reward documentation figure directly in Git.
+docs/media/supermimic_training_reward_20261024.png -filter -diff -merge -text
+docs/media/supermimic_training_loop_en.png -filter -diff -merge -text

@@ -26,6 +26,12 @@ where = ["."]
 include = ["holomotion*", "holoretarget*", "holosmpl*", "holoboxing*"]
 
 
+[tool.setuptools.package-data]
+"holomotion.src.evaluation.reference_tracking.canonical_gpu" = ["*.json"]
+"holomotion.src.algo.supermimic" = ["LICENSE.vibed", "upstream.json"]
+"holomotion.src.env.reference_tracking" = ["LICENSE.vibed"]
+
+
 [tool.ruff]
 
 exclude = [

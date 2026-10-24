@@ -66,6 +66,38 @@ After removing heavy initialization, test the real entrypoint without GPU access
 Keep a lightweight device check before loading native inference libraries.
 Those libraries can terminate the process before Python catches an error.
 
+Persist simulator SDK logs in owned output storage before startup, rather than assuming a container-local printed path survives.
+Keep structured progress records separate from SDK severity records when scanning diagnostics.
+A schema key mentioning overflow is not itself an overflow event.
+If finalization fails after training and evaluation, retain their weights and traces and recover validation before retraining.
+When a shared evaluator adds report fields, exercise report generation through every backend subclass.
+Subclasses that defer simulator creation can bypass base initialization and fail only after the complete rollout.
+
+For recurrent history overhead, separate KV reconstruction from unused action computation.
+Omit a final FFN only when its output cannot affect subsequent KV and its discarded evaluation has no persistent or random side effects.
+Compare padded and wrapped caches, next actions, auxiliary losses and gradients before using a faster burn-in path.
+Keep prefill timings distinct from measured training throughput and task quality.
+
+Before interpreting quality changes, repeat a frozen checkpoint with identical hardware, runtime, scene construction and inputs.
+Compare per-frame actions, states, rewards and termination flags, then localize the first divergence.
+Keep cross-hardware differences separate from same-device nondeterminism and from training variation.
+
+For training throughput, inspect the joint collection, model, actor, critic, allocation, and synchronization timeline.
+Verify effective runtime settings through their APIs instead of assuming environment variables were applied.
+Device memory includes simulator allocations outside Torch's counters.
+Preserve allocator failures, and compare successful candidates with identical logical updates in a profiler-free fixed-work interval.
+Separate cold compilation, stable training, saving, and evaluation costs.
+
+A zero-action startup check does not validate contact stability under sampled policy actions.
+Audit resolved motor effort and velocity limits, then inspect the first actual rollout before interpreting learning losses.
+Finite solver explosions require rejection and saved state evidence; a finite-value check alone is insufficient.
+Restoring a simulator motor constraint can change engine semantics and must be disclosed in controlled comparisons.
+
+For batched simulator geometry audits, separate reference-matmul precision from physical state precision.
+Retain failing link transforms and compare residuals against environment origins and population size.
+Large float32 world coordinates can exceed a local position tolerance after origin subtraction.
+Check compact collision-isolated layouts before changing geometry tolerances or the learning method.
+
 Use the `holomotion-train-interpreter` skill for training-environment Python. Use `isaaclab-source-lookup` for Isaac Lab implementation questions.
 
 ## Safety and cost

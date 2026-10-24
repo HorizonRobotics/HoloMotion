@@ -1,0 +1,27 @@
+# @package _global_
+
+algo:
+  _target_: holomotion.src.algo.reference_ppo.algorithm.ReferencePPO
+  config:
+    physics_backend: mujoco_warp
+    device: ${device}
+    profile: paper
+    num_envs: ${num_envs}
+    rollout_steps: 24
+    hist: 10
+    goal_frames: 10
+    epochs: 5
+    minibatches: 4
+    microbatch: 2048
+    lr: 0.001
+    max_hours: 0.5
+    max_rollouts: 1000000
+    evaluate_minutes: 60.0
+    checkpoint_minutes: 60.0
+    policy_snapshot_minutes: 0.0
+    seed: 0
+    amp: bf16
+    compile: true
+    capture_graph: true
+    release_phase_cache: true
+    skip_evaluation: false

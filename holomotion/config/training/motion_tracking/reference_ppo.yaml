@@ -1,0 +1,26 @@
+# @package _global_
+
+defaults:
+  - /training/train_base
+  - /algo: reference_ppo
+  - _self_
+
+project_name: motion_tracking
+experiment_name: reference-ppo
+num_envs: 4096
+headless: true
+device: cuda:0
+
+# Prepared HoloMotion HDF5 manifest and original robot assets.
+motion_h5_path: ???
+robot_urdf: ???
+
+# This recipe uses its own complete-clip evaluator during training.
+mujoco_eval:
+  enabled: false
+
+env:
+  config:
+    save_rendering_dir: null
+    motion_manifest: ${motion_h5_path}
+    robot_urdf: ${robot_urdf}

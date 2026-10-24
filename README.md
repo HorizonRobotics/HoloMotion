@@ -14,10 +14,14 @@
 
 # Latest News
 
+- [2026.10.24] 🚀 **We now support [SuperMimic](docs/supermimic.md) in HoloMotion!** Train G1 motion trackers from scratch on **a single GPU**, with **MuJoCo Warp or Isaac PhysX**. We achieved **80% SR on LAFAN1 in 30 minutes on a single RTX 5090**.
+
+  <p align="center">
+    <a href="docs/supermimic.md"><img src="docs/media/supermimic_training_progress.webp" alt="HoloMotion: PPO and SuperMimic training in MuJoCo Warp and Isaac PhysX" width="640"></a>
+  </p>
+
 - [2026.10.22] The [H-bot Competition](https://hbot-competition.horizon.auto/) is now open! Follow our [Track 2 boxing tutorial](holoboxing/README.md) to train a baseline policy in about **21 minutes on a single GPU**.
 - [2026.10.12] HoloMotion v2.0 brings one policy for sparse-to-whole-body control, with initial 1-point and 5-point real-robot teleoperation demonstrated.
-- [2026.07.16] HoloMotion v1.4 introduces HoloRetarget at 3,000+ FPS on RTX 4090 for training data generation and 300+ FPS entirely on-robot for teleoperation, plus HoloSMPL for 10+ datasets and devices.
-- [2026.05.15] HoloMotion v1.3 scales from 60M to 0.4B parameters and 80 to 2000+ hours of motion data, while improving policy inference from ~100 to ~300 FPS.
 
 
 # Why HoloMotion?
@@ -84,6 +88,7 @@ Start with the [v2.0.0 motion-tracking checkpoint](https://huggingface.co/Horizo
 | Validate and test a boxing policy | [HoloBoxing local evaluation](holoboxing/README.md) | Your high-level boxing policy (ONNX), the bundled evaluation image, and a compatible GPU. |
 | Teleoperate a G1 | [Robot deployment](docs/realworld_deployment.md) | G1 29-DOF with Orin, matching deployment image, and PICO / XRoboToolkit. |
 | Train or fine-tune | [Training](docs/train_motion_tracking.md) | Labeled robot HDF5 data and GPU resources; a compatible checkpoint for fine-tuning. |
+| Train a lightweight motion tracker from scratch | [SuperMimic](docs/supermimic.md) | G1 reference motions, one CUDA GPU, and the selected simulator environment. |
 
 For workstation workflows, begin with [environment setup](docs/environment_setup.md). Each guide specifies the required artifacts and commands.
 
@@ -130,3 +135,4 @@ Built on and inspired by these open-source projects:
 - [ProtoMotion](https://github.com/NVlabs/ProtoMotions/tree/main/protomotions)
 - [ScaleBFM](https://github.com/zengweishuai/ScaleBFM)
 - [SONIC](https://github.com/NVlabs/GR00T-WholeBodyControl)
+- [SuperMimic](https://arxiv.org/abs/2610.28480) [[1]](https://github.com/zita-ch/supermimic_vibed) [[2]](https://github.com/CuboiLeo/SuperMimic-Reproduced).

@@ -21,6 +21,21 @@ Use `holomotion-train-interpreter` to run the selected environment.
 - Use training from scratch only when requested or when the pretrained policy contract is incompatible.
 - Verify checkpoint completeness and optimizer/model-state compatibility before fine-tuning or resume.
 
+For replay-backed recovery, distinguish restored learning state from simulator continuity.
+When physics restarts, preserve recorded rewards and termination labels.
+Mask replay windows at the restart boundary through separate metadata.
+Validate the saved recipe, data, optimizer clock, and source closure before restoring state.
+Fingerprint implementation sources as well as launchers.
+For microbatch updates, preserve stochastic samples and population statistics across chunks.
+Accumulate weighted gradients before global clipping and the optimizer step.
+Check executable GPU compilation as well as eager inference in a fresh environment.
+Own simulator startup, SDK logs, and shutdown explicitly.
+Record completion or failure before shutdown can exit or crash the process.
+Use independent simulator applications for training and final evaluation when scene replacement cannot complete reliably.
+Validate completion messages and artifacts before accepting a supervised child process.
+Distinguish bounded shutdown cleanup from successful normal SDK closure.
+
+
 Inspect the fully composed training config rather than relying on remembered defaults. Confirm:
 
 - every configured dataset exists, is immutable for the run, and has intentional sampling;

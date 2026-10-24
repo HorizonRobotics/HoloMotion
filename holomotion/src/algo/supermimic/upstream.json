@@ -1,0 +1,47 @@
+{
+  "repository": "https://github.com/zita-ch/supermimic_vibed",
+  "revision": "a1508d42c9d1699a52e8233ab16d08c488441ab9",
+  "files": [
+    {
+      "path": "supermimic/rotations.py",
+      "sha256": "f0d75dd6d8398220aff7f2910e7ef4a559bf33368fa3324a6d405ee2304be8de"
+    },
+    {
+      "path": "supermimic/networks.py",
+      "sha256": "72bdb2bf11f927663dec82ef00f75123dfe810cba9879fee455faac4042b1efe"
+    },
+    {
+      "path": "supermimic/buffer.py",
+      "sha256": "cb59cea95d37fec4085168f9801808f03d946cf16d44a4c79beb12d7d97aa04c"
+    },
+    {
+      "path": "supermimic/mdp.py",
+      "sha256": "f19186f70e259ee37b2d8dd6b9beb1ae0c2fd875b67902bb5544779b9792d074"
+    },
+    {
+      "path": "supermimic/motion.py",
+      "sha256": "610e2da4812828fffca265544e0c1dd6ea467984220c26126384a88658f2dab3"
+    },
+    {
+      "path": "supermimic/kinematics.py",
+      "sha256": "0a3d416b5456cc768c083198b11b59116fd64c9148ce5c7b738c80a83c986eb5"
+    },
+    {
+      "path": "supermimic/robot.py",
+      "sha256": "db3c9adfe2ce9975bbf6b114b4c78466bfe4275ee1a4d569f5c947d505782924"
+    },
+    {
+      "path": "supermimic/train.py",
+      "sha256": "6f364bb904fb173a6d76f6da2af4bbe0eeb7dd51dd8370d35c7f067b117218c6"
+    }
+  ],
+  "adaptations": [
+    "Backend-independent robot constants and kinematics",
+    "Original HoloMotion HDF5 Dataset/DataLoader for complete clips",
+    "Explicit paper versus augmented observation/collision profiles",
+    "Direct MuJoCo Warp physics with retained status diagnostics",
+    "Class-scoped reference update functions with finite-gradient rejection",
+    "No terminal-frame-only reset bins; bounded valid-start sampling",
+    "Aggregate simultaneous per-bin returns before EMA"
+  ]
+}
