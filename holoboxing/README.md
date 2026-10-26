@@ -3,15 +3,21 @@
 English | [简体中文](README.zh-CN.md)
 
 <p align="center">
-  <img src="../assets/media/holoboxing_highlights.webp" alt="Simulation highlights: HoloBoxing policy vs. RoboStriker" width="480">
+  <img src="../assets/media/holoboxing_highlights.webp" alt="Simulation highlights: HoloBoxing long version (21.4 min) vs. RoboStriker" width="480">
   <br>
-  <em>Simulation highlights: HoloBoxing policy vs. RoboStriker.</em>
+  <em>Simulation highlights: HoloBoxing long version (21.4 min) vs. RoboStriker.</em>
 </p>
 
 This tutorial helps participants quickly build a high-level boxing policy that meets the competition's submission requirements.
 A policy is a model that maps observations to action targets.
 You will prepare data, train a policy, export it to ONNX, and evaluate it with the supplied controller on a Unitree G1 robot.
 ONNX is a portable neural-network format; your final submission is one ONNX model containing your high-level policy.
+
+The [HoloBoxing paper](https://arxiv.org/abs/2610.32909) describes a simple recipe above a frozen HoloMotion controller.
+It combines a compact target decoder, measured-state imitation, and reinforcement learning.
+The paper accounts for about **7 minutes of additional training**, including target-representation fitting and the new policy-training process.
+It excludes controller and training-opponent pretraining, data preparation, evaluation, and search.
+See the paper for experiment settings and timing details, and [Citation](#citation) for BibTeX.
 
 Use the [H-bot Competition platform](https://hbot-competition.horizon.auto/) for submission and leaderboard navigation.
 
@@ -353,6 +359,27 @@ Keep the same source roots, split seed, and test fraction in both preparation co
 Three-way splitting needs at least three original RoboStriker groups; the example downloads four.
 For this reference workflow, include held-out InterHuman clips if you want separate validation metrics.
 
+### Paper versions and tutorial settings
+
+The [paper](https://arxiv.org/abs/2610.32909) distinguishes its main 7-min version from the 21.4-min long version.
+The commands below use the main version's imitation and reinforcement-learning budgets:
+
+| Setting | Main version (7 min) | Long version (21.4 min) |
+| --- | --- | --- |
+| Imitation checkpoint | Epoch 20; batch size 256 | Epoch 19 |
+| Standing updates | 32 | 32 |
+| Interaction updates | 128 | 256 |
+| RL seed | 43 | 42 |
+| Training opponent | Fixed external standing actor | Frozen copy of its own warmup actor |
+| Accounted training time | 422.2 s | 1282 s |
+
+The main version's new process takes 375.0 seconds on one RTX 4090, plus 47.2 seconds of previously recorded target-prior fitting.
+The long version sums separate RTX 5090 training runs.
+These measurements exclude data preparation, evaluation, search, and pretraining of the reused controller and training opponent.
+The tutorial uses sample data, fits a new prior, and uses its own warmup actor as the interaction opponent.
+It therefore follows the main version's update budget, without reproducing its exact training inputs or promising a seven-minute runtime.
+The animation above shows the long version.
+
 ### Stage 1: learn the motion representation
 
 Prepare reference-only windows separately from the measured policy observations:
@@ -387,12 +414,12 @@ CUDA_VISIBLE_DEVICES=0 python -m holoboxing.training.train_sl \
   --assets "$HOLOBOXING_ASSETS" --lower "$HOLOBOXING_LOWER" \
   --data "$HOLOBOXING_DATA" --prior-checkpoint results/boxing-prior/best.pt \
   --config holoboxing/training/configs/sample.json \
-  --output results/boxing-sl --epochs 19 --batch-size 512 \
+  --output results/boxing-sl --epochs 20 --batch-size 256 \
   --seed 43 --device cuda:0
 ```
 
-The checkpoint `results/boxing-sl/epoch_000019.pt` contains the planner, frozen decoder, and fitted observation statistics.
-The example budget is 19 complete epochs. Choose a checkpoint using independent validation when changing data or hyperparameters.
+The checkpoint `results/boxing-sl/epoch_000020.pt` contains the planner, frozen decoder, and fitted observation statistics.
+The example budget is 20 complete epochs. Choose a checkpoint using independent validation when changing data or hyperparameters.
 A training-complete checkpoint is not evidence of a winning boxing policy.
 
 ### Stage 3: warm up and train through self-play
@@ -408,10 +435,10 @@ Warm up for 32 updates against an opponent holding neutral world targets:
 CUDA_VISIBLE_DEVICES=0 python -m holoboxing.training.train_rl \
   --assets "$HOLOBOXING_ASSETS" --lower "$HOLOBOXING_LOWER" \
   --amp-motions "$HOLOBOXING_DATA" \
-  --supervised-checkpoint results/boxing-sl/epoch_000019.pt \
+  --supervised-checkpoint results/boxing-sl/epoch_000020.pt \
   --config holoboxing/training/configs/sample.json \
   --training-mode standing --output results/boxing-warmup \
-  --num-envs 128 --updates 32 --seed 42 --device cuda:0
+  --num-envs 128 --updates 32 --seed 43 --device cuda:0
 ```
 
 Then initialize a new self-play stage from that actor and its observation statistics:
@@ -423,25 +450,41 @@ CUDA_VISIBLE_DEVICES=0 python -m holoboxing.training.train_rl \
   --policy-checkpoint results/boxing-warmup/model_32.pt \
   --config holoboxing/training/configs/selfplay.json \
   --training-mode selfplay --opponent-pool-capacity 8 \
-  --opponent-refresh-updates 256 --output results/boxing-rl \
-  --num-envs 128 --updates 256 --seed 42 --device cuda:0
+  --opponent-refresh-updates 128 --output results/boxing-rl \
+  --num-envs 128 --updates 128 --seed 43 --device cuda:0
 ```
 
-Self-play opponents are frozen historical policies, including their observation statistics.
+This 128-update example keeps one frozen copy of its warmup actor and observation statistics as the opponent.
+The refresh interval equals the stage length, so no opponent replacement occurs during this run.
+Longer runs can add historical opponents at refresh boundaries.
 Only the learner receives policy and discriminator updates.
 Opponent replacement resets physical episodes and observation histories at update boundaries.
 The self-play preset changes initial exploration standard deviation from 0.1 to 0.2, preserving the actor architecture.
-The intended output is `results/boxing-rl/model_256.pt`.
+The intended output is `results/boxing-rl/model_128.pt`.
 
 The first launch compiles GPU physics kernels. Confirm completed updates in `training-result.json`; a timeout may save an earlier checkpoint.
 Training defaults to the requested epoch or update budget, with periodic checkpoints.
 Set `--max-runtime-seconds` or `--max-training-seconds` explicitly when you need a wall-time limit; zero disables that limit.
-Use `--resume` to continue the same stage; `--policy-checkpoint` starts a new stage and resets learner state.
-See the [training reference](training/README.md) for resume and fixed-opponent development evaluation.
 
 These commands provide one reference recipe, not a guarantee of winning with an arbitrary dataset.
 Exact reproduction needs the same selected weights, observation statistics, data versions, runtime, and opponent.
 The smoke data above checks the pipeline; assess boxing performance through complete matches from the competition reset.
+
+### Checkpoints and resume
+
+Keep the planner, frozen decoder, and observation statistics together when saving or reusing a policy.
+Preserve the data, controller, and source versions; matching hyperparameters alone does not reproduce a checkpoint.
+Older checkpoints retain their original observation contract.
+
+For imitation, `train_sl --resume` restores the decoder, optimizer, random state, and next batch.
+Keep the same data and training configuration; `--epochs` specifies the total target, including completed epochs.
+
+For reinforcement learning, `train_rl --resume` restores learner state and the opponent pool, while physical episodes and observation histories restart.
+Here, `--updates` specifies additional updates. Use a new output directory for each invocation.
+
+Use `--policy-checkpoint` for a new stage, such as standing-to-self-play, rather than resuming the previous stage.
+It copies actor weights and observation statistics while initializing new critics, optimizers, exploration, and opponent-pool state.
+Check `training-result.json` for completed progress and the saved checkpoint hash.
 
 ## 2. Export your policy
 
@@ -453,7 +496,7 @@ It does not export the frozen controller or optimizer.
 
 ```bash
 python -m holoboxing.training.export \
-  --checkpoint results/boxing-rl/model_256.pt --output results/boxing.onnx
+  --checkpoint results/boxing-rl/model_128.pt --output results/boxing.onnx
 ```
 
 A supervised checkpoint can also be exported directly with the same command.
@@ -708,3 +751,19 @@ Other method references are [PPO](https://arxiv.org/abs/1707.06347),
 [AMP](https://xbpeng.github.io/projects/AMP/), and [SMPLOlympics](https://arxiv.org/abs/2407.00187).
 The [HoloMotion-1 report](https://arxiv.org/abs/2605.15336) describes V1; the V2 interface follows the pinned controller and current implementation.
 The paired-motion source is [InterHuman](https://github.com/tr3e/InterGen#interhuman-dataset).
+
+## Citation
+
+If you use the HoloBoxing method or its boxing experiments, please cite:
+
+```bibtex
+@misc{ma2026holoboxing,
+  title = {{HoloBoxing}: A Simple Recipe for Humanoid Boxing with 7 Minutes of Single-GPU Training},
+  author = {Xihan Ma and Bo Zhang and Boxiong Li and Yuhan Bao and Ziyue Liu and Yucheng Wang},
+  year = {2026},
+  eprint = {2610.32909},
+  archivePrefix = {arXiv},
+  primaryClass = {cs.RO},
+  url = {https://arxiv.org/abs/2610.32909}
+}
+```

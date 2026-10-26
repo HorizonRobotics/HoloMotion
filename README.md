@@ -20,7 +20,7 @@
     <a href="docs/supermimic.md"><img src="docs/media/supermimic_training_progress.webp" alt="HoloMotion: PPO and SuperMimic training in MuJoCo Warp and Isaac PhysX" width="640"></a>
   </p>
 
-- [2026.10.22] The [H-bot Competition](https://hbot-competition.horizon.auto/) is now open! Follow our [Track 2 boxing tutorial](holoboxing/README.md) to train a baseline policy in about **21 minutes on a single GPU**.
+- [2026.10.22] The [H-bot Competition](https://hbot-competition.horizon.auto/) is open! [**HoloBoxing**](https://arxiv.org/abs/2610.32909) learns boxing with about **7 minutes of additional single-GPU training** above frozen HoloMotion; see the [Track 2 tutorial](holoboxing/README.md).
 - [2026.10.12] HoloMotion v2.0 brings one policy for sparse-to-whole-body control, with initial 1-point and 5-point real-robot teleoperation demonstrated.
 
 
@@ -119,6 +119,20 @@ The **HoloMotion-2 Technical Report** is scheduled for release alongside **HoloM
 }
 ```
 
+For the HoloBoxing method and boxing experiments, please cite [the HoloBoxing paper](https://arxiv.org/abs/2610.32909):
+
+```bibtex
+@misc{ma2026holoboxing,
+  title = {{HoloBoxing}: A Simple Recipe for Humanoid Boxing with 7 Minutes of Single-GPU Training},
+  author = {Xihan Ma and Bo Zhang and Boxiong Li and Yuhan Bao and Ziyue Liu and Yucheng Wang},
+  year = {2026},
+  eprint = {2610.32909},
+  archivePrefix = {arXiv},
+  primaryClass = {cs.RO},
+  url = {https://arxiv.org/abs/2610.32909}
+}
+```
+
 # Acknowledgements
 
 Built on and inspired by these open-source projects:
@@ -133,6 +147,7 @@ Built on and inspired by these open-source projects:
 - [PBHC](https://github.com/TeleHuman/PBHC)
 - [PHC](https://github.com/ZhengyiLuo/PHC)
 - [ProtoMotion](https://github.com/NVlabs/ProtoMotions/tree/main/protomotions)
+- [RoboStriker](https://github.com/yinkangning0124/RoboStriker-Preview)
 - [ScaleBFM](https://github.com/zengweishuai/ScaleBFM)
 - [SONIC](https://github.com/NVlabs/GR00T-WholeBodyControl)
 - [SuperMimic](https://arxiv.org/abs/2610.28480) [[1]](https://github.com/zita-ch/supermimic_vibed) [[2]](https://github.com/CuboiLeo/SuperMimic-Reproduced).

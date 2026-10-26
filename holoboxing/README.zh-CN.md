@@ -3,12 +3,16 @@
 [English](README.md) | 简体中文
 
 <p align="center">
-  <img src="../assets/media/holoboxing_highlights.webp" alt="仿真集锦：HoloBoxing 对阵 RoboStriker" width="480">
+  <img src="../assets/media/holoboxing_highlights.webp" alt="仿真集锦：HoloBoxing长版本（21.4分钟）对阵RoboStriker" width="480">
   <br>
-  <em>仿真集锦：HoloBoxing 对阵 RoboStriker。</em>
+  <em>集锦采用21.4分钟长版本。对手为RoboStriker。</em>
 </p>
 
 本教程面向 H-bot Competition 赛道2 参赛选手。目标是尽快训练出满足提交要求的高层拳击策略。教程覆盖数据准备、策略训练、模型导出和本地评测。
+
+[HoloBoxing论文](https://arxiv.org/abs/2610.32909)介绍了这套训练方案。方案复用冻结的HoloMotion控制器。高层结合紧凑目标解码、实测状态模仿和强化学习。
+
+论文报告约**7分钟的新增训练**。计时包括目标表示拟合和新的策略训练。底层控制器和固定训练对手均予以复用。二者的原始训练不计入这7分钟。数据准备、评测和搜索也不计入。实验配置和计时细节见论文。BibTeX见[引用](#引用)。
 
 比赛官网为 [H-bot Competition 竞赛平台](https://hbot-competition.horizon.auto/)。模型提交和榜单入口请见站内导航。
 
@@ -316,6 +320,26 @@ export HOLOBOXING_DATA="$PWD/holoboxing/data/processed/combined/prepared"
 
 验证集不参与上述训练或统计拟合。每轮监督训练单独报告验证指标。复用本流程时，旧检查点须有训练划分记录。若缺少记录，请重新训练。两次数据准备须使用相同来源和划分参数。三路划分至少需要三个机器人原动作组。本例下载四组。如需单独验证指标，请预留人体动作验证集。
 
+### 论文版本与教程配置
+
+[论文](https://arxiv.org/abs/2610.32909)区分7分钟主版本和21.4分钟长版本。
+下方命令采用主版本的模仿与强化学习预算。
+
+| 设置 | 主版本（7分钟） | 长版本（21.4分钟） |
+| --- | --- | --- |
+| 模仿检查点 | 第20轮；批大小256 | 第19轮 |
+| 站立预热 | 32次更新 | 32次更新 |
+| 交互训练 | 128次更新 | 256次更新 |
+| 强化学习随机种子 | 43 | 42 |
+| 训练对手 | 固定的外部站立策略 | 自身预热策略的冻结副本 |
+| 计入的训练时间 | 422.2秒 | 1282秒 |
+
+主版本的新进程耗时375.0秒。该进程使用单张RTX 4090。另计此前目标先验拟合的47.2秒。长版本累计多次RTX 5090训练的耗时。
+
+上述计时不含数据准备、评测和搜索。复用控制器的预训练也不计入。训练对手的原始训练同样不计入。
+
+教程使用小样本，并重新拟合先验。交互对手采用自身预热策略。因此，它只对齐主版本的训练预算。它没有复现论文的全部训练输入。实际耗时需在本机测量。页面上方集锦展示的是长版本。
+
 ### 第一阶段：学习动作表示
 
 先生成仅含参考位姿的训练窗口。它与实际状态下的策略观测分别保存：
@@ -344,11 +368,11 @@ CUDA_VISIBLE_DEVICES=0 python -m holoboxing.training.train_sl \
   --assets "$HOLOBOXING_ASSETS" --lower "$HOLOBOXING_LOWER" \
   --data "$HOLOBOXING_DATA" --prior-checkpoint results/boxing-prior/best.pt \
   --config holoboxing/training/configs/sample.json \
-  --output results/boxing-sl --epochs 19 --batch-size 512 \
+  --output results/boxing-sl --epochs 20 --batch-size 256 \
   --seed 43 --device cuda:0
 ```
 
-模型保存为 `results/boxing-sl/epoch_000019.pt`。其中包含规划器、冻结解码器和观测统计量。本例预算为完整遍历训练集19次。更换数据或参数时，应根据独立验证选择检查点。训练完成不代表已经能在比赛中获胜。
+模型保存为 `results/boxing-sl/epoch_000020.pt`。其中包含规划器、冻结解码器和观测统计量。本例预算为完整遍历训练集20次。更换数据或参数时，应根据独立验证选择检查点。训练完成不代表已经能在比赛中获胜。
 
 ### 第三阶段：预热及自博弈强化学习
 
@@ -360,10 +384,10 @@ CUDA_VISIBLE_DEVICES=0 python -m holoboxing.training.train_sl \
 CUDA_VISIBLE_DEVICES=0 python -m holoboxing.training.train_rl \
   --assets "$HOLOBOXING_ASSETS" --lower "$HOLOBOXING_LOWER" \
   --amp-motions "$HOLOBOXING_DATA" \
-  --supervised-checkpoint results/boxing-sl/epoch_000019.pt \
+  --supervised-checkpoint results/boxing-sl/epoch_000020.pt \
   --config holoboxing/training/configs/sample.json \
   --training-mode standing --output results/boxing-warmup \
-  --num-envs 128 --updates 32 --seed 42 --device cuda:0
+  --num-envs 128 --updates 32 --seed 43 --device cuda:0
 ```
 
 再用预热后的规划器和观测统计量启动自博弈：
@@ -375,17 +399,27 @@ CUDA_VISIBLE_DEVICES=0 python -m holoboxing.training.train_rl \
   --policy-checkpoint results/boxing-warmup/model_32.pt \
   --config holoboxing/training/configs/selfplay.json \
   --training-mode selfplay --opponent-pool-capacity 8 \
-  --opponent-refresh-updates 256 --output results/boxing-rl \
-  --num-envs 128 --updates 256 --seed 42 --device cuda:0
+  --opponent-refresh-updates 128 --output results/boxing-rl \
+  --num-envs 128 --updates 128 --seed 43 --device cuda:0
 ```
 
-自博弈对手为冻结的历史策略。其观测统计量也保持冻结。只有学习方参与策略和判别器更新。替换对手时，在更新边界重置环境和历史。自博弈配置将初始探索标准差从0.1改为0.2。规划器结构保持一致。预期输出为 `results/boxing-rl/model_256.pt`。
+本例将自身预热策略的冻结副本作为对手。其观测统计量也保持冻结。刷新间隔等于训练长度。因此，这128次更新期间不会更换对手。延长训练后，可在刷新边界引入历史对手。只有学习方参与策略和判别器更新。替换对手时，在更新边界重置环境和历史。自博弈配置将初始探索标准差从0.1改为0.2。规划器结构保持一致。预期输出为 `results/boxing-rl/model_128.pt`。
 
 首次运行需编译物理计算内核。请在 `training-result.json` 中核对完成次数。达到时限时，可能只保存了较早的检查点。
 
-训练默认完成指定轮次或更新次数，并定期保存。需要时间限制时，应显式设置。可用参数为 `--max-runtime-seconds` 和 `--max-training-seconds`。零表示取消对应限制。`--resume` 用于恢复同一阶段。`--policy-checkpoint` 启动新阶段，并重置学习状态。续训和固定对手评测见[训练参考](training/README.md)。
+训练默认完成指定轮次或更新次数，并定期保存。需要时间限制时，应显式设置。可用参数为 `--max-runtime-seconds` 和 `--max-training-seconds`。零表示取消对应限制。
 
 以上命令提供一套参考训练方案。它不保证任意数据都能训练出获胜策略。精确复现需使用相同权重、统计量和数据版本。运行时及对手版本也须一致。上述小样本用于走通流程。实际战力须从比赛原始站位进行完整对战验收。
+
+### 检查点与续训
+
+规划器、冻结解码器和观测统计量须一起保存。还应记录数据、控制器和源码版本。参数相同不等于检查点相同。旧检查点须保留原观测接口。
+
+模仿续训使用 `train_sl --resume`。它恢复解码器、优化器和随机状态。训练从下一批数据继续。数据与训练配置须保持一致。`--epochs` 指包含已完成轮次的总目标。
+
+强化学习续训使用 `train_rl --resume`。它恢复学习状态和对手池。物理回合和观测历史则重新开始。此时 `--updates` 指额外更新次数。每次运行均需使用新的输出目录。
+
+从站立预热进入自博弈时，使用 `--policy-checkpoint`。它复用策略权重和观测统计量。优化器、价值网络和探索状态重新初始化。对手池也重新初始化。完成进度和检查点摘要见 `training-result.json`。
 
 ## 2. 导出策略模型
 
@@ -395,7 +429,7 @@ CUDA_VISIBLE_DEVICES=0 python -m holoboxing.training.train_rl \
 
 ```bash
 python -m holoboxing.training.export \
-  --checkpoint results/boxing-rl/model_256.pt --output results/boxing.onnx
+  --checkpoint results/boxing-rl/model_128.pt --output results/boxing.onnx
 ```
 
 导出程序会在 CPU 上比较训练模型与 ONNX 模型的输出。监督学习检查点也可直接用此命令导出。导出完成后，继续进行模型检查和本地评测。
@@ -604,3 +638,19 @@ TopK 的选择维度必须具有已知长度。对较长维度执行 TopK 时，
 其他方法资料见 [PPO](https://arxiv.org/abs/1707.06347)、[广义优势估计](https://arxiv.org/abs/1506.02438)和 [AMP](https://xbpeng.github.io/projects/AMP/)。训练实现也参考了 [SMPLOlympics](https://arxiv.org/abs/2407.00187)。人体动作数据来源为 [InterHuman](https://github.com/tr3e/InterGen#interhuman-dataset)。
 
 [HoloMotion-1 技术报告](https://arxiv.org/abs/2605.15336)介绍 V1。V2 的模型接口以配套控制器和当前代码为准。
+
+## 引用
+
+使用HoloBoxing方法或拳击实验时，请引用：
+
+```bibtex
+@misc{ma2026holoboxing,
+  title = {{HoloBoxing}: A Simple Recipe for Humanoid Boxing with 7 Minutes of Single-GPU Training},
+  author = {Xihan Ma and Bo Zhang and Boxiong Li and Yuhan Bao and Ziyue Liu and Yucheng Wang},
+  year = {2026},
+  eprint = {2610.32909},
+  archivePrefix = {arXiv},
+  primaryClass = {cs.RO},
+  url = {https://arxiv.org/abs/2610.32909}
+}
+```
